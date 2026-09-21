@@ -229,7 +229,7 @@ class QAUIApp(App[int]):
         self.drafts: dict[str, str] = {}
         self.undo_stack: list[dict[str, Any]] = []
         self.free_text_mode = False
-        self.last_cursor: tuple[int, str] = (-1, "")
+        self.last_cursor: tuple[int, str, int] = (-1, "", -1)
         self._rebuilding = False
         self._synced_key: str | None = None
 

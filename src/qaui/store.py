@@ -422,15 +422,18 @@ class Store:
         walk(None, 0)
         return ordered
 
-    def cursor(self) -> tuple[int, str]:
-        """Cheap change token: (max question id, max updated_at).
+    def cursor(self) -> tuple[int, str, int]:
+        """Cheap change token: (max question id, max updated_at, row count).
 
-        Watch and TUI poll this and only re-read rows when it moves.
+        Pollers compare it for equality and only re-read rows when it moves.
+        The count is load-bearing: purging a row that is not the newest leaves
+        both maxima untouched, so a deletion would otherwise be invisible.
         """
         row = self.conn.execute(
-            "SELECT COALESCE(MAX(id), 0) AS mid, COALESCE(MAX(updated_at), '') AS mts FROM questions"
+            "SELECT COALESCE(MAX(id), 0) AS mid, COALESCE(MAX(updated_at), '') AS mts, "
+            "COUNT(*) AS n FROM questions"
         ).fetchone()
-        return (int(row["mid"]), str(row["mts"]))
+        return (int(row["mid"]), str(row["mts"]), int(row["n"]))
 
     def wait_for_answer(
         self, key: str, *, timeout: float | None = None, poll: float = 0.4

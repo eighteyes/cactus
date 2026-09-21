@@ -51,6 +51,19 @@ Other verbs:
 prints the whole agent-side roadmap: the ask/work/collect arc, what belongs in
 `--context`, when `--wait` is worth the block, and the exit codes.
 
+Stream every change as plain lines, for a watcher in an agent loop:
+
+    qaui --monitor
+
+    q7  asked     Which auth backend?  (2 choices)
+    q7  answered  [oidc] staging first
+    q7  reopened  Which auth backend?
+    q9  gone
+
+Events are `asked`, `answered`, `skipped`, `cleared`, `reopened`, `changed`, and
+`gone`. Add `--all` to span projects, `--json` for one object per line,
+`--replay` to emit the current inbox first, `--interval` to change the poll.
+
 ## Human side
 
     qaui --tui      answer the inbox

@@ -5,7 +5,7 @@ Responsibilities:
 - Parse the agent-facing verbs (ask, get, list, answer, clear, purge, threads, projects).
 - Resolve project scope from the working directory for every invocation.
 - Render results as human text or JSON, and implement --wait blocking.
-- Dispatch the human-facing --tui and --watch modes.
+- Dispatch the human-facing --tui and --watch modes, and the agent --monitor stream.
 - Serve the agent roadmap behind --agent-help.
 """
 
@@ -75,6 +75,32 @@ BLOCK ONLY WHEN BLOCKED
   means the human declined. Always pair it with --timeout and handle exit 2
   as "proceed on the stated default" rather than as a failure. Prefer asking
   early without --wait and collecting later.
+
+MONITOR
+
+  qaui --monitor
+
+  One line per change, flushed as it happens, until interrupted. Point a
+  line-oriented watcher at it and keep working; the frontier moves in both
+  directions and every move is a line:
+
+  q7  asked     Which auth backend?  (2 choices)
+  q7  answered  [oidc] staging first
+  q8  skipped   (no answer given)
+  q8  cleared   Drop the legacy column?
+  q7  reopened  Which auth backend?
+  q9  gone
+
+  reopened means a human undid an answer already given: a verdict read earlier
+  is stale. gone means the question was purged. A watcher that listens only for
+  `answered` cannot tell a quiet inbox from a withdrawn question.
+
+  --all         span every project, prefixing each line with its label
+  --json        one JSON object per line, the question plus an event field
+  --replay      emit the current inbox first, then stream
+  --interval N  seconds between polls (default 1.0)
+
+  Scoped to the current project unless --all is passed.
 
 COLLECT
 
@@ -368,6 +394,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", help=f"database path (default: {default_db_path()})")
     p.add_argument("--tui", action="store_true", help="open the interactive answering TUI")
     p.add_argument("--watch", action="store_true", help="open the live read-only feed")
+    p.add_argument("--monitor", action="store_true",
+                   help="stream inbox events as plain lines, one per change")
+    p.add_argument("--all", action="store_true",
+                   help="with --monitor, span every project instead of this one")
+    p.add_argument("--replay", action="store_true",
+                   help="with --monitor, emit the current inbox before streaming")
+    p.add_argument("--interval", type=float, default=1.0,
+                   help="with --monitor, seconds between polls (default: 1.0)")
     p.add_argument("--here", action="store_true",
                    help="with --tui/--watch, scope to the current project only")
     p.add_argument("--json", action="store_true", help="machine-readable output")
@@ -468,6 +502,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.watch:
             from .watch import run_watch
             return run_watch(store, project=None if not args.here else project)
+        if args.monitor:
+            from .monitor import run_monitor
+            return run_monitor(
+                store,
+                project=project,
+                all_projects=args.all,
+                as_json=args.json,
+                interval=args.interval,
+                replay=args.replay,
+            )
         if args.command is None:
             parser.print_help()
             return EXIT_OK

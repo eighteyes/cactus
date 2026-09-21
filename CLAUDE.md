@@ -26,11 +26,15 @@ Four layers, one direction of dependency:
                  plus AGENT_HELP, the agent-facing roadmap behind --agent-help
     tui.py       Textual answering surface (human): question rail + detail card
     watch.py     Textual read-only feed (human)
+    monitor.py   plain-stdout event stream (agent): one line per transition
 
 `cli.main` resolves scope once, constructs one `Store`, dispatches to a `cmd_*`
 function or to `run_tui`/`run_watch`, and closes the store in a `finally`. The
 Textual modules are imported lazily inside `main` so agent-side verbs never pay
 for them.
+
+`monitor.py` diffs a signature per question between ticks, so it reports content
+changes and deletions, not just status flips.
 
 **Two clients, one database.** Agent processes write; the TUI and watch feed are
 separate long-lived processes reading the same file. Everything about the store is
@@ -50,6 +54,9 @@ scope.
 
 ## Invariants
 
+- `cursor()` carries a row count alongside the two maxima. Without it, purging
+  any row that is not the newest leaves the token unchanged and deletions are
+  invisible to every poller.
 - `_now()` uses microsecond resolution. Second resolution lets two writes inside
   one second share a cursor token, and pollers silently miss the later write.
 - Keys are `q{rowid}`: `ask()` inserts with an empty key, then updates it from

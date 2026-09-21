@@ -81,7 +81,7 @@ class WatchApp(App[None]):
         self.store = store
         self.project = project
         self._seen: dict[str, _Seen] = {}
-        self._cursor: tuple[int, str] = (0, "")
+        self._cursor: tuple[int, str, int] = (0, "", 0)
         self._paused = False
         self._pending: list[Question] = []
         self._show_answered = True
