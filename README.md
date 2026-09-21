@@ -46,6 +46,11 @@ Other verbs:
 
 `--json` works before or after the verb.
 
+    qaui --agent-help
+
+prints the whole agent-side roadmap: the ask/work/collect arc, what belongs in
+`--context`, when `--wait` is worth the block, and the exit codes.
+
 ## Human side
 
     qaui --tui      answer the inbox

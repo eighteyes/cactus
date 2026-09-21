@@ -6,6 +6,7 @@ Responsibilities:
 - Resolve project scope from the working directory for every invocation.
 - Render results as human text or JSON, and implement --wait blocking.
 - Dispatch the human-facing --tui and --watch modes.
+- Serve the agent roadmap behind --agent-help.
 """
 
 from __future__ import annotations
@@ -23,6 +24,95 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_TIMEOUT = 2
 EXIT_EMPTY = 3
+
+AGENT_HELP = """\
+qaui — ask a human a question without stopping work.
+
+THE ARC
+
+  1  ask       write the question, get a key back, keep working
+  2  work      do everything the answer does not block
+  3  get/list  collect answers when you reach the fork
+  4  ask -p    follow up in the same thread if the answer opens a new question
+
+  The inbox is durable and scoped to the project. A question asked in one
+  session is readable from the next, by any agent in the same repository.
+
+ASK
+
+  qaui ask "Which auth backend?" \\
+    -c "oidc: existing IdP" \\
+    -c "local: bcrypt table" \\
+    --context "Staging tenant is provisioned. Local means owning password reset." \\
+    -t auth --by "$QAUI_AGENT"
+  q7
+
+  Exactly one question per ask. Choices are taken verbatim, one -c each.
+
+  choice     -c a -c b              one label
+  multi      -c a -c b --multi      several labels
+  confirm    --confirm              yes / no
+  text       no choices             free entry
+
+  Free text is accepted alongside a pick unless --no-free is passed, so an
+  answer may carry a selection, typed text, or both.
+
+CONTEXT CARRIES THE DECISION
+
+  --context is what the human needs to decide without opening the repo:
+  the tradeoff the labels hide, what has already been checked, what happens
+  by default if nobody answers, and what is hard to reverse. Long detail
+  reads from stdin with --context -.
+
+  Leave out restatements of the question, reasoning chains, and anything
+  already visible in the choice labels.
+
+BLOCK ONLY WHEN BLOCKED
+
+  qaui ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
+
+  --wait returns the moment the status leaves open, including a clear, which
+  means the human declined. Always pair it with --timeout and handle exit 2
+  as "proceed on the stated default" rather than as a failure. Prefer asking
+  early without --wait and collecting later.
+
+COLLECT
+
+  qaui get q7 --json
+  qaui list -s answered -t auth --json
+  qaui list -s open
+
+  A question in an answered state carries selected[], text, and skipped.
+  A skipped answer means the human saw it and chose not to decide.
+
+THREADS AND FOLLOW-UPS
+
+  -t NAME     groups related questions; one thread per decision
+  -p KEY      attaches a follow-up, inheriting the parent thread
+
+  Ask the whole batch up front under one thread. The human answers them as a
+  set, which is faster for them than a drip of separate interrupts.
+
+SCOPE
+
+  Questions record the project they were asked from: the git toplevel, else
+  the working directory. Agent verbs see only the current project. The human
+  surfaces span every project at once.
+
+  qaui where       the resolved project and database path
+  qaui projects    projects with live questions
+
+EXIT CODES
+
+  0  success
+  1  error
+  2  --wait timed out
+  3  nothing matched
+
+A question is retired with `clear` and stays readable. Answers a human undoes
+return to open, so a key that read answered may read open again; re-read
+rather than caching the verdict if it still matters.
+"""
 
 
 # ---- rendering ------------------------------------------------------------
@@ -281,6 +371,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--here", action="store_true",
                    help="with --tui/--watch, scope to the current project only")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--agent-help", action="store_true",
+                   help="how an agent should use qaui, end to end")
 
     # --json is accepted both before and after the verb; argparse needs it declared
     # on every parser for the trailing form to work.
@@ -361,6 +453,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.agent_help:
+        print(AGENT_HELP, end="")
+        return EXIT_OK
 
     project, cwd = resolve_project()
     store = Store(args.db)

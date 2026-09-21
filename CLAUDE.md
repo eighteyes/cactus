@@ -23,6 +23,7 @@ Four layers, one direction of dependency:
     scope.py     cwd -> (project_root, cwd); git toplevel or the directory itself
     store.py     all SQLite; the only module that touches the database
     cli.py       argparse verbs, scope resolution, JSON/text rendering, --wait
+                 plus AGENT_HELP, the agent-facing roadmap behind --agent-help
     tui.py       Textual answering surface (human): question rail + detail card
     watch.py     Textual read-only feed (human)
 
