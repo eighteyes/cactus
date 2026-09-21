@@ -60,7 +60,11 @@ class QuestionRow(ListItem):
     def __init__(self, question: Question, *, focused: bool, selected: set[str]) -> None:
         super().__init__(id=f"row-{question.key}")
         self.key = question.key
-        self._text = Static(_format_question(question, focused=focused, selected=selected))
+        # markup=False: question text carries literal brackets — the [x]/[ ] multi marks
+        # and the [asked_by] tag — which Textual's markup parser would consume silently.
+        self._text = Static(
+            _format_question(question, focused=focused, selected=selected), markup=False
+        )
 
     def compose(self) -> ComposeResult:
         yield self._text
@@ -76,7 +80,7 @@ class ProjectRow(ListItem):
         super().__init__(id=f"proj-{project_label(project)}")
         self.project = project
         marker = ">" if active else " "
-        self._text = Static(f"{marker} {project_label(project)}  {open_count}")
+        self._text = Static(f"{marker} {project_label(project)}  {open_count}", markup=False)
 
     def compose(self) -> ComposeResult:
         yield self._text
@@ -164,7 +168,7 @@ class QAUIApp(App[int]):
                 yield ListView(id="question-list")
                 yield Static("inbox empty — waiting for questions", id="empty-state")
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
-        yield Static(id="status-bar")
+        yield Static(id="status-bar", markup=False)
         yield Footer()
 
     async def on_mount(self) -> None:
