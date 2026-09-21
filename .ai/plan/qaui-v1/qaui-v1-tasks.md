@@ -9,9 +9,11 @@
 - [x] --json on every verb, leading and trailing forms
 - [x] Package entry points, pyproject, console script
 - [x] CLI smoke test end to end
-- [ ] tui.py — Textual answering session with live refresh
-- [ ] watch.py — Textual read-only live feed
-- [ ] --wait round trip test (agent blocks, human answers, agent returns)
-- [ ] README
-- [ ] Install as a tool on PATH
-- [ ] Commit on a branch
+- [x] tui.py — Textual answering session with live refresh
+- [x] watch.py — Textual read-only live feed
+- [x] --wait round trip test (agent blocks, human answers, agent returns)
+- [x] README
+- [x] Install as a tool on PATH
+- [x] Commit on a branch
+- [x] Fix same-second cursor blindness (microsecond timestamps)
+- [x] Verify pwd scoping across two real repos
