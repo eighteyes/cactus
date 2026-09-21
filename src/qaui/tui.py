@@ -2,8 +2,8 @@
 tui.py — interactive Textual application for answering questions in the qaui inbox.
 
 Responsibilities:
-- Render the active question as a detail card and the rest of the inbox as a
-  secondary one-line queue.
+- Render the active question as a full-width detail card, with the rest of the
+  inbox as fixed-height blocks in a left rail under a project header.
 - Let a human answer choice, multi, confirm, and text questions from the keyboard,
   including free text attached to the active question.
 - Poll the store's change cursor and refresh the view without losing focus or
@@ -83,40 +83,45 @@ def _card_lines(
     return "\n".join(lines)
 
 
-class QueueRow(ListItem):
-    """One line of the secondary queue — identity and gist only."""
+class QuestionBlock(ListItem):
+    """One block of the question rail — key, gist, and kind, at a fixed height."""
 
-    def __init__(self, question: Question, *, active: bool) -> None:
+    HEIGHT = 4
+
+    def __init__(self, question: Question, *, active: bool, draft: bool) -> None:
         super().__init__(id=f"row-{question.key}")
         self.key = question.key
-        self._text = Static(self._line(question, active), markup=False)
+        self._text = Static(self._block(question, active, draft), markup=False)
         self.set_class(active, "active")
 
     @staticmethod
-    def _line(q: Question, active: bool) -> str:
+    def _kind_line(q: Question, draft: bool) -> str:
+        if q.kind == "choice":
+            kind = f"{len(q.choices)} choices"
+        elif q.kind == "multi":
+            kind = f"{len(q.choices)} choices · multi"
+        elif q.kind == "confirm":
+            kind = "yes / no"
+        else:
+            kind = "text"
+        return f"{kind} · draft" if draft else kind
+
+    @classmethod
+    def _block(cls, q: Question, active: bool, draft: bool) -> str:
+        pad = "  " * q.depth
         marker = "▸" if active else " "
-        indent = "  " * q.depth
-        return f"{marker} {indent}{q.key}  {_flatten(q.text)}"
+        return "\n".join([
+            f"{marker} {pad}{q.key}",
+            f"  {pad}{_flatten(q.text)}",
+            f"  {pad}{cls._kind_line(q, draft)}",
+        ])
 
     def compose(self) -> ComposeResult:
         yield self._text
 
-    def update(self, question: Question, *, active: bool) -> None:
-        self._text.update(self._line(question, active))
+    def update(self, question: Question, *, active: bool, draft: bool) -> None:
+        self._text.update(self._block(question, active, draft))
         self.set_class(active, "active")
-
-
-class ProjectRow(ListItem):
-    """One row of the project rail."""
-
-    def __init__(self, project: str, open_count: int, *, active: bool) -> None:
-        super().__init__(id=f"proj-{project_label(project)}")
-        self.project = project
-        marker = "▸" if active else " "
-        self._text = Static(f"{marker} {project_label(project)}  {open_count}", markup=False)
-
-    def compose(self) -> ComposeResult:
-        yield self._text
 
 
 class QAUIApp(App[int]):
@@ -126,9 +131,33 @@ class QAUIApp(App[int]):
     #body {
         height: 1fr;
     }
-    #project-rail {
-        width: 24;
+    #rail {
+        width: 32;
         border-right: solid $panel;
+    }
+    #project-head {
+        height: 1;
+        padding: 0 1;
+        background: $panel;
+        color: $text;
+    }
+    #rail-list {
+        height: 1fr;
+    }
+    #rail-list > ListItem {
+        /* Fixed block height: a rail that resizes per question would shift
+           every other block under the reader's eye on each refresh. */
+        height: 4;
+        padding: 0 1;
+        color: $text-muted;
+    }
+    #rail-list > ListItem.active {
+        color: $text;
+        text-style: bold;
+    }
+    #rail-list Static {
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     #main {
         width: 1fr;
@@ -137,34 +166,12 @@ class QAUIApp(App[int]):
         border: round $accent;
         padding: 0 2;
         height: 1fr;
-        min-height: 8;
         margin: 0 1;
         overflow-y: auto;
     }
     #answer-input {
         display: none;
         margin: 0 1;
-    }
-    #queue-head {
-        color: $text-muted;
-        padding: 1 3 0 3;
-    }
-    #queue {
-        height: auto;
-        max-height: 30%;
-        margin: 0 1;
-    }
-    #queue > ListItem {
-        color: $text-muted;
-        height: 1;
-    }
-    #queue Static {
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-    #queue > ListItem.active {
-        color: $text;
-        text-style: bold;
     }
     #empty-state {
         display: none;
@@ -245,13 +252,12 @@ class QAUIApp(App[int]):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="body"):
-            if self.scoped_project is None:
-                yield ListView(id="project-rail")
+            with Vertical(id="rail"):
+                yield Static(id="project-head", markup=False)
+                yield ListView(id="rail-list")
             with Vertical(id="main"):
                 yield Static(id="card", markup=False)
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
-                yield Static(id="queue-head", markup=False)
-                yield ListView(id="queue")
                 yield Static("inbox empty — waiting for questions", id="empty-state")
         yield Static(id="status-bar", markup=False)
         yield Footer()
@@ -263,7 +269,7 @@ class QAUIApp(App[int]):
                 self.current_project = rows[0]["project"]
         self.query_one("#card", Static).border_title = "answering"
         await self._reload(force=True)
-        self.query_one("#queue", ListView).focus()
+        self.query_one("#rail-list", ListView).focus()
         self._sync_input_focus()
         self.set_interval(POLL_INTERVAL, self._poll)
 
@@ -279,8 +285,8 @@ class QAUIApp(App[int]):
             status="open",
             all_projects=self.current_project is None,
         )
-        await self._rebuild_project_rail()
-        await self._rebuild_queue()
+        self._rebuild_project_head()
+        await self._rebuild_rail()
         self._rebuild_card()
         self._rebuild_status_bar()
 
@@ -296,36 +302,30 @@ class QAUIApp(App[int]):
     def _show_project(self) -> bool:
         return self.scoped_project is None
 
-    async def _rebuild_project_rail(self) -> None:
-        if self.scoped_project is not None:
-            return
-        try:
-            rail = self.query_one("#project-rail", ListView)
-        except Exception:
+    def _rebuild_project_head(self) -> None:
+        head = self.query_one("#project-head", Static)
+        if self.current_project is None:
+            head.update("no project")
             return
         rows = self.store.projects()
-        prior_index = rail.index
-        await rail.clear()
-        for r in rows:
-            await rail.append(
-                ProjectRow(r["project"], r["open_count"], active=r["project"] == self.current_project)
-            )
-        for i, r in enumerate(rows):
-            if r["project"] == self.current_project:
-                rail.index = i
-                return
-        if prior_index is not None and rows:
-            rail.index = min(prior_index, len(rows) - 1)
+        count = next(
+            (r["open_count"] for r in rows if r["project"] == self.current_project), 0
+        )
+        label = project_label(self.current_project)
+        switch = "" if self.scoped_project is not None or len(rows) < 2 else "  [ ]"
+        head.update(f"{label}  {count} open{switch}")
 
-    async def _rebuild_queue(self) -> None:
-        listview = self.query_one("#queue", ListView)
+    async def _rebuild_rail(self) -> None:
+        listview = self.query_one("#rail-list", ListView)
         empty_state = self.query_one("#empty-state", Static)
         prior_key = self.focused_key
         self._rebuilding = True
         try:
             await listview.clear()
             for q in self.questions:
-                await listview.append(QueueRow(q, active=q.key == prior_key))
+                await listview.append(
+                    QuestionBlock(q, active=q.key == prior_key, draft=q.key in self.drafts)
+                )
             empty_state.display = not self.questions
             self.query_one("#card", Static).display = bool(self.questions)
             if not self.questions:
@@ -341,18 +341,17 @@ class QAUIApp(App[int]):
             if self.focused_key != prior_key:
                 self.multi_selected = set()
                 row = listview.children[target_index]
-                if isinstance(row, QueueRow):
-                    row.update(self.questions[target_index], active=True)
+                if isinstance(row, QuestionBlock):
+                    active_q = self.questions[target_index]
+                    row.update(active_q, active=True, draft=active_q.key in self.drafts)
         finally:
             self._rebuilding = False
 
     def _rebuild_card(self) -> None:
         card = self.query_one("#card", Static)
-        head = self.query_one("#queue-head", Static)
         q = self._current_question()
         if q is None:
             card.display = False
-            head.update("")
             return
         card.display = True
         card.border_title = f"answering  {q.key}"
@@ -364,8 +363,6 @@ class QAUIApp(App[int]):
                 show_project=self._show_project,
             )
         )
-        rest = len(self.questions) - 1
-        head.update("waiting: none" if rest <= 0 else f"waiting: {rest}")
 
     def _rebuild_status_bar(self) -> None:
         bar = self.query_one("#status-bar", Static)
@@ -388,15 +385,15 @@ class QAUIApp(App[int]):
         if q is None:
             return
         try:
-            row = self.query_one(f"#row-{q.key}", QueueRow)
+            row = self.query_one(f"#row-{q.key}", QuestionBlock)
         except Exception:
             return
-        row.update(q, active=True)
+        row.update(q, active=True, draft=q.key in self.drafts)
 
     # ---- focus / navigation ------------------------------------------------
 
     async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        if event.list_view.id != "queue" or self._rebuilding:
+        if event.list_view.id != "rail-list" or self._rebuilding:
             return
         item = event.item
         if item is None:
@@ -415,29 +412,29 @@ class QAUIApp(App[int]):
             if key is None:
                 continue
             try:
-                row = self.query_one(f"#row-{key}", QueueRow)
+                row = self.query_one(f"#row-{key}", QuestionBlock)
             except Exception:
                 continue
             q = next((x for x in self.questions if x.key == key), None)
             if q is not None:
-                row.update(q, active=key == new_key)
+                row.update(q, active=key == new_key, draft=key in self.drafts)
         self._rebuild_card()
         self._sync_input_focus()
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         # ListView consumes `enter` before the app binding can see it, so the
         # selection event is where submit has to be triggered from.
-        if event.list_view.id != "queue":
+        if event.list_view.id != "rail-list":
             return
         await self.action_submit()
 
     def action_focus_next(self) -> None:
-        listview = self.query_one("#queue", ListView)
+        listview = self.query_one("#rail-list", ListView)
         listview.focus()
         listview.action_cursor_down()
 
     def action_focus_prev(self) -> None:
-        listview = self.query_one("#queue", ListView)
+        listview = self.query_one("#rail-list", ListView)
         listview.focus()
         listview.action_cursor_up()
 
@@ -495,7 +492,7 @@ class QAUIApp(App[int]):
             return
         self._synced_key = q.key
         if not self.free_text_mode:
-            self.query_one("#queue", ListView).focus()
+            self.query_one("#rail-list", ListView).focus()
 
     def action_toggle_free_text(self) -> None:
         q = self._current_question()
@@ -515,7 +512,7 @@ class QAUIApp(App[int]):
             self._focus_input()
         else:
             self._hide_input()
-            self.query_one("#queue", ListView).focus()
+            self.query_one("#rail-list", ListView).focus()
         self._rebuild_status_bar()
 
     def action_leave_input(self) -> None:
@@ -530,7 +527,7 @@ class QAUIApp(App[int]):
             self._hide_input()
         self._redraw_active()
         self._rebuild_status_bar()
-        self.query_one("#queue", ListView).focus()
+        self.query_one("#rail-list", ListView).focus()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         q = self._current_question()
@@ -547,7 +544,7 @@ class QAUIApp(App[int]):
         self.query_one("#answer-input", Input).display = False
         self._redraw_active()
         self._rebuild_status_bar()
-        self.query_one("#queue", ListView).focus()
+        self.query_one("#rail-list", ListView).focus()
 
     # ---- answering ----------------------------------------------------
 
@@ -643,8 +640,8 @@ class QAUIApp(App[int]):
             self.focused_key = self.questions[next_index].key
         else:
             self.focused_key = None
-        await self._rebuild_project_rail()
-        await self._rebuild_queue()
+        self._rebuild_project_head()
+        await self._rebuild_rail()
         self._rebuild_card()
         self._rebuild_status_bar()
         self._synced_key = None

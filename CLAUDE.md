@@ -23,7 +23,7 @@ Four layers, one direction of dependency:
     scope.py     cwd -> (project_root, cwd); git toplevel or the directory itself
     store.py     all SQLite; the only module that touches the database
     cli.py       argparse verbs, scope resolution, JSON/text rendering, --wait
-    tui.py       Textual answering surface (human): detail card + secondary queue
+    tui.py       Textual answering surface (human): question rail + detail card
     watch.py     Textual read-only feed (human)
 
 `cli.main` resolves scope once, constructs one `Store`, dispatches to a `cmd_*`
@@ -64,6 +64,8 @@ scope.
   match.
 - `ListView` consumes `enter` before an App binding can see it, so the TUI
   triggers submit from `on_list_view_selected`, not from the `enter` binding.
+- Rail blocks are a fixed 4 rows and the project header a fixed 1, so an arriving
+  or answered question never shifts the others under the reader's eye.
 - Typing in the TUI is an explicit mode. Auto-focusing the answer input silently
   retargets `j`, `k`, `s`, `c` and the project brackets into the text field.
 - `clear` retires a question and keeps the transcript; only `clear --purge`
