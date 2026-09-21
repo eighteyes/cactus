@@ -22,7 +22,6 @@ from .scope import project_display, project_label
 from .store import Question, Store
 
 POLL_INTERVAL = 0.5
-QUEUE_WIDTH = 72
 
 HINTS = {
     "choice": "1-9 pick   i free text   s skip   c clear",
@@ -32,9 +31,9 @@ HINTS = {
 }
 
 
-def _truncate(text: str, width: int) -> str:
-    flat = " ".join(text.split())
-    return flat if len(flat) <= width else flat[: width - 1] + "…"
+def _flatten(text: str) -> str:
+    """One-line form for a queue row; the row's own CSS ellipsizes the overflow."""
+    return " ".join(text.split())
 
 
 def _card_lines(
@@ -97,8 +96,7 @@ class QueueRow(ListItem):
     def _line(q: Question, active: bool) -> str:
         marker = "▸" if active else " "
         indent = "  " * q.depth
-        kind = q.kind if q.kind != "choice" else f"{len(q.choices)} choices"
-        return f"{marker} {indent}{q.key}  {_truncate(q.text, QUEUE_WIDTH)}  ({kind})"
+        return f"{marker} {indent}{q.key}  {_flatten(q.text)}"
 
     def compose(self) -> ComposeResult:
         yield self._text
@@ -138,9 +136,10 @@ class QAUIApp(App[int]):
     #card {
         border: round $accent;
         padding: 0 2;
-        height: auto;
-        max-height: 60%;
+        height: 1fr;
+        min-height: 8;
         margin: 0 1;
+        overflow-y: auto;
     }
     #answer-input {
         display: none;
@@ -151,11 +150,17 @@ class QAUIApp(App[int]):
         padding: 1 3 0 3;
     }
     #queue {
-        height: 1fr;
+        height: auto;
+        max-height: 30%;
         margin: 0 1;
     }
     #queue > ListItem {
         color: $text-muted;
+        height: 1;
+    }
+    #queue Static {
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     #queue > ListItem.active {
         color: $text;
@@ -368,7 +373,8 @@ class QAUIApp(App[int]):
         open_total = sum(r["open_count"] for r in rows)
         proj_total = len(rows)
         mode = "typing — esc to leave" if self.free_text_mode else "ready"
-        bar.update(f"{open_total} open / {proj_total} projects    {mode}")
+        noun = "project" if proj_total == 1 else "projects"
+        bar.update(f"{open_total} open / {proj_total} {noun}    {mode}")
 
     def _current_question(self) -> Question | None:
         for q in self.questions:
