@@ -70,3 +70,6 @@ scope.
   retargets `j`, `k`, `s`, `c` and the project brackets into the text field.
 - `clear` retires a question and keeps the transcript; only `clear --purge`
   deletes rows.
+- `reopen` is undo's store primitive: status back to `open`, answer row deleted.
+  It cannot recall an answer an agent already read — `wait_for_answer` returns
+  the moment the status leaves `open`.

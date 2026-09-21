@@ -13,6 +13,8 @@ Responsibilities:
 
 from __future__ import annotations
 
+from typing import Any
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -202,6 +204,7 @@ class QAUIApp(App[int]):
         Binding("n", "confirm_no", "No"),
         Binding("[", "prev_project", "PrevProj"),
         Binding("]", "next_project", "NextProj"),
+        Binding("u", "undo", "Undo"),
         Binding("r", "refresh_view", "Refresh"),
         Binding("q", "quit_app", "Quit"),
         Binding("1", "select_choice(1)", "1", show=True),
@@ -224,6 +227,7 @@ class QAUIApp(App[int]):
         self.focused_key: str | None = None
         self.multi_selected: set[str] = set()
         self.drafts: dict[str, str] = {}
+        self.undo_stack: list[dict[str, Any]] = []
         self.free_text_mode = False
         self.last_cursor: tuple[int, str] = (-1, "")
         self._rebuilding = False
@@ -371,7 +375,11 @@ class QAUIApp(App[int]):
         proj_total = len(rows)
         mode = "typing — esc to leave" if self.free_text_mode else "ready"
         noun = "project" if proj_total == 1 else "projects"
-        bar.update(f"{open_total} open / {proj_total} {noun}    {mode}")
+        undo = ""
+        if self.undo_stack:
+            last = self.undo_stack[-1]
+            undo = f"    {last['label']} {last['key']} · u undo"
+        bar.update(f"{open_total} open / {proj_total} {noun}    {mode}{undo}")
 
     def _current_question(self) -> Question | None:
         for q in self.questions:
@@ -608,6 +616,7 @@ class QAUIApp(App[int]):
         if q is None:
             return
         self.store.clear(keys=[q.key], all_projects=True)
+        self._push_undo(q.key, "cleared", [], self.pending_text or None)
         await self._advance_after(q.key)
 
     async def _submit_answer(
@@ -616,7 +625,8 @@ class QAUIApp(App[int]):
         try:
             self.store.answer(q.key, selected=selected, text=text, skipped=skipped)
         except KeyError:
-            pass
+            return
+        self._push_undo(q.key, "skipped" if skipped else "answered", selected, text)
         await self._advance_after(q.key)
 
     async def _advance_after(self, answered_key: str) -> None:
@@ -646,6 +656,38 @@ class QAUIApp(App[int]):
         self._rebuild_status_bar()
         self._synced_key = None
         self._sync_input_focus()
+
+    # ---- undo -----------------------------------------------------------
+
+    def _push_undo(
+        self, key: str, label: str, selected: list[str], text: str | None
+    ) -> None:
+        self.undo_stack.append(
+            {"key": key, "label": label, "selected": list(selected), "text": text or ""}
+        )
+
+    async def action_undo(self) -> None:
+        """Put the last resolved question back, with what was typed and picked."""
+        while self.undo_stack:
+            entry = self.undo_stack.pop()
+            try:
+                self.store.reopen(entry["key"])
+            except KeyError:
+                # Purged out from under us; the next entry down is still good.
+                continue
+            self.drafts[entry["key"]] = entry["text"]
+            if not entry["text"]:
+                self.drafts.pop(entry["key"], None)
+            self.focused_key = entry["key"]
+            self.multi_selected = set(entry["selected"])
+            self.free_text_mode = False
+            self._hide_input()
+            self.current_project = self.store.get(entry["key"]).project \
+                if self.scoped_project is None else self.current_project
+            await self._reload(force=True)
+            self._synced_key = self.focused_key
+            self.query_one("#rail-list", ListView).focus()
+            return
 
     # ---- misc -----------------------------------------------------------
 

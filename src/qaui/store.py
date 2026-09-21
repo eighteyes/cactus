@@ -288,6 +288,26 @@ class Store:
         cur = self.conn.execute(sql, [_now(), *params])
         return cur.rowcount
 
+    def reopen(self, key: str) -> Question:
+        """Return a question to `open` and discard its answer.
+
+        Undo for the human surfaces. It cannot recall an answer an agent has
+        already read — `--wait` returns the moment the status leaves `open` — so
+        the question simply becomes askable again.
+        """
+        q = self.get(key)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        now = _now()
+        self.conn.execute("DELETE FROM answers WHERE question_id = ?", (q.id,))
+        self.conn.execute(
+            "UPDATE questions SET status = 'open', updated_at = ? WHERE id = ?",
+            (now, q.id),
+        )
+        result = self.get(key)
+        assert result is not None
+        return result
+
     def purge(
         self,
         *,
