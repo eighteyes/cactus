@@ -76,12 +76,9 @@ def _emit_one(q: Question, *, as_json: bool) -> None:
 
 
 def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
-    choices: list[Choice] = []
-    for raw in args.choice or []:
-        for part in raw.split(","):
-            part = part.strip()
-            if part:
-                choices.append(Choice.parse(part))
+    # Each -c is exactly one choice, taken verbatim. Splitting on commas here
+    # would silently shred any description that contains one.
+    choices = [Choice.parse(raw.strip()) for raw in (args.choice or []) if raw.strip()]
 
     kind = args.kind
     if kind is None:
@@ -302,7 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask = verb("ask", help="add a question to the inbox")
     ask.add_argument("text", help="the question, or - to read stdin")
     ask.add_argument("-c", "--choice", action="append",
-                     help="a choice, repeatable or comma-separated; 'label: description'")
+                     help="one choice, taken verbatim; repeat for more. Format: 'label: description'")
     ask.add_argument("--multi", action="store_true", help="allow selecting several choices")
     ask.add_argument("--confirm", action="store_true", help="yes/no question")
     ask.add_argument("--kind", choices=["choice", "multi", "text", "confirm"],
