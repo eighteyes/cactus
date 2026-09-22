@@ -28,7 +28,7 @@ POLL_INTERVAL = 0.5
 HINTS = {
     "choice": "1-9 pick   i free text   s skip   c clear",
     "multi": "1-9 toggle   enter submit   i free text   s skip   c clear",
-    "confirm": "y yes   n no   i free text   s skip   c clear",
+    "confirm": "y/1 yes   n/2 no   i free text   s skip   c clear",
     "text": "enter to type   esc back to list   s skip   c clear",
 }
 
@@ -67,11 +67,12 @@ def _card_lines(
             desc = f"  — {choice.description}" if choice.description else ""
             lines.append(f"  {i})  {mark}{choice.label}{desc}")
     elif q.kind == "confirm":
-        yes = q.choices[0].label if q.choices else "yes"
-        no = q.choices[1].label if len(q.choices) > 1 else "no"
+        labels = [c.label for c in q.choices] or ["yes", "no"]
+        keys = ["y", "n"]
         lines.append("")
-        lines.append(f"  y)  {yes}")
-        lines.append(f"  n)  {no}")
+        for i, label in enumerate(labels, start=1):
+            accel = f"   ({keys[i - 1]})" if i <= len(keys) else ""
+            lines.append(f"  {i})  {label}{accel}")
 
     if pending:
         lines.append("")
@@ -558,7 +559,12 @@ class QAUIApp(App[int]):
 
     async def action_select_choice(self, n: int) -> None:
         q = self._current_question()
-        if q is None or q.kind not in ("choice", "multi"):
+        if q is None or q.kind not in ("choice", "multi", "confirm"):
+            return
+        if q.kind == "confirm":
+            # The digits pick a confirm the same way they pick a choice, so the
+            # hand never has to learn two schemes for the same shape of answer.
+            await self._confirm(n - 1)
             return
         if n < 1 or n > len(q.choices):
             return
@@ -602,7 +608,9 @@ class QAUIApp(App[int]):
         if q is None or q.kind != "confirm":
             return
         labels = [c.label for c in q.choices] or ["yes", "no"]
-        label = labels[index] if index < len(labels) else labels[-1]
+        if index < 0 or index >= len(labels):
+            return
+        label = labels[index]
         await self._submit_answer(q, selected=[label], text=self.pending_text or None)
 
     async def action_skip(self) -> None:
