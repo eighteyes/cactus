@@ -15,31 +15,53 @@ from __future__ import annotations
 
 from typing import Any
 
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from .scope import project_display, project_label
-from .store import ACTIONABLE, Question, Store
+from .scope import project_label
+from .store import ACTIONABLE, CONFIDENCE_GLYPH, Answer, Question, Store
 
 POLL_INTERVAL = 0.5
 
 # How many lines of command output the card shows; the rest spills to a file.
 RUN_TAIL = 12
 
+# `confirm` is built at render time from the row's own choice labels — see
+# `_confirm_hint` — because a review answers pass/fail and a run approve/deny,
+# and a fixed yes/no hint would lie about what the keys send.
 HINTS = {
-    "choice": "1-9 pick   i free text   s skip   c clear",
-    "multi": "1-9 toggle   enter submit   i free text   s skip   c clear",
-    "confirm": "y/1 yes   n/2 no   i free text   s skip   c clear",
-    "text": "enter to type   esc back to list   s skip   c clear",
+    "choice": "1-9 pick   i free text   s skip (answers)   c clear",
+    "multi": "1-9 toggle   enter submit   i free text   s skip (answers)   c clear",
+    "text": "enter to type   esc back to list   s skip (answers)   c clear",
 }
 
 
 def _flatten(text: str) -> str:
     """One-line form for a queue row; the row's own CSS ellipsizes the overflow."""
     return " ".join(text.split())
+
+
+def _confirm_hint(q: Question) -> str:
+    """Confirm-row hint built from the row's own labels, not a fixed yes/no."""
+    labels = [c.label for c in q.choices] or ["yes", "no"]
+    keys = ["y/1", "n/2"]
+    picks = [f"{key} {label}" for key, label in zip(keys, labels)]
+    return "   ".join([*picks, "i free text", "s skip (answers)", "c clear"])
+
+
+def _verdict_repr(a: Answer) -> str:
+    """One answer from the log, as a short label for the verdicts line."""
+    if a.selected:
+        return ", ".join(a.selected)
+    if a.text:
+        text = a.text.strip()
+        return text if len(text) <= 24 else text[:23] + "…"
+    if a.skipped:
+        return "skipped"
+    return "—"
 
 
 def _card_lines(
@@ -54,7 +76,7 @@ def _card_lines(
     """Full detail for the one question being answered."""
     meta = [q.key]
     if show_project:
-        meta.append(project_display(q.project))
+        meta.append(project_label(q.project))
     if q.thread:
         meta.append(f"thread {q.thread}")
     if q.asked_by:
@@ -67,6 +89,14 @@ def _card_lines(
     if q.context:
         lines.append("")
         lines.append(q.context)
+
+    if q.answers:
+        # A persistent row (review/plan) takes repeated verdicts, so the card
+        # has to show the current one — without this, "y" then "n" look
+        # identical on screen.
+        reprs = [_verdict_repr(a) for a in q.answers]
+        lines.append("")
+        lines.append(f"verdicts: {', '.join(reprs)}  (latest: {reprs[-1]})")
 
     if q.chosen:
         lines.append("")
@@ -104,15 +134,21 @@ def _card_lines(
             mark = "[x] " if q.kind == "multi" and choice.label in selected else (
                 "[ ] " if q.kind == "multi" else ""
             )
+            rec = f" ★{CONFIDENCE_GLYPH.get(q.confidence, '')}" if choice.label in q.recommend else ""
             desc = f"  — {choice.description}" if choice.description else ""
-            lines.append(f"  {i})  {mark}{choice.label}{desc}")
+            lines.append(f"  {i})  {mark}{choice.label}{rec}{desc}")
+        if q.recommend_why:
+            lines.append(f"  recommend: {', '.join(q.recommend)} — {q.recommend_why}")
     elif q.kind == "confirm":
         labels = [c.label for c in q.choices] or ["yes", "no"]
         keys = ["y", "n"]
         lines.append("")
         for i, label in enumerate(labels, start=1):
             accel = f"   ({keys[i - 1]})" if i <= len(keys) else ""
-            lines.append(f"  {i})  {label}{accel}")
+            rec = f" ★{CONFIDENCE_GLYPH.get(q.confidence, '')}" if label in q.recommend else ""
+            lines.append(f"  {i})  {label}{rec}{accel}")
+        if q.recommend_why:
+            lines.append(f"  recommend: {', '.join(q.recommend)} — {q.recommend_why}")
 
     if pending:
         lines.append("")
@@ -122,7 +158,7 @@ def _card_lines(
             lines.append("enter submits this text alone, or pick above to send both")
 
     lines.append("")
-    hint = HINTS.get(q.kind, "")
+    hint = _confirm_hint(q) if q.kind == "confirm" else HINTS.get(q.kind, "")
     extras = []
     if q.review is not None and q.review.run_cmd:
         extras.append("C copy   R run   p poke")
@@ -195,6 +231,9 @@ class QuestionBlock(ListItem):
 class CactusApp(App[int]):
     """Human answering surface for the cactus question inbox."""
 
+    TITLE = "cactus"
+    SUB_TITLE = "answering"
+
     CSS = """
     #body {
         height: 1fr;
@@ -263,7 +302,7 @@ class CactusApp(App[int]):
         # priority: the Input would otherwise swallow escape and strand focus
         # inside a text question, where j/k/[/] are unreachable.
         Binding("escape", "leave_input", "Back", show=False, priority=True),
-        Binding("s", "skip", "Skip"),
+        Binding("s", "skip", "Skip (answers)"),
         Binding("c", "clear_focused", "Clear"),
         Binding("i", "toggle_free_text", "FreeText"),
         Binding("y", "confirm_yes", "Yes"),
@@ -305,6 +344,9 @@ class CactusApp(App[int]):
         self.last_cursor: tuple[int, str, int] = (-1, "", -1)
         self._rebuilding = False
         self._synced_key: str | None = None
+        # Plan keys already seen fully done, so the "all done" flash fires
+        # once per completion rather than on every poll.
+        self._plan_all_done: set[str] = set()
 
     @property
     def pending_text(self) -> str:
@@ -348,6 +390,9 @@ class CactusApp(App[int]):
         await self._reload(force=True)
         self.query_one("#rail-list", ListView).focus()
         self._sync_input_focus()
+        # The footer's first read of check_action lands before the first row is
+        # focused; re-ask once the screen has settled.
+        self.call_after_refresh(self.refresh_bindings)
         self.set_interval(POLL_INTERVAL, self._poll)
 
     # ---- data loading ---------------------------------------------------
@@ -385,6 +430,7 @@ class CactusApp(App[int]):
             return
         self.last_cursor = cursor
         self._load_questions()
+        self._flash_plan_done()
         self._rebuild_project_head()
         await self._rebuild_rail()
         self._rebuild_card()
@@ -395,6 +441,23 @@ class CactusApp(App[int]):
 
     async def action_refresh_view(self) -> None:
         await self._reload(force=True)
+
+    def _flash_plan_done(self) -> None:
+        """Flash once when a tick — from this TUI or a CLI writer — finishes a plan.
+
+        Tracked per key so the message fires once per completion rather than
+        on every poll, and clears again the moment a step reopens.
+        """
+        for q in self.questions:
+            if q.act != "plan" or not q.steps:
+                continue
+            all_done = all(st.done for st in q.steps)
+            if all_done and q.key not in self._plan_all_done:
+                self._plan_all_done.add(q.key)
+                if q.key == self.focused_key:
+                    self.flash = "all done — enter to close"
+            elif not all_done:
+                self._plan_all_done.discard(q.key)
 
     # ---- rendering --------------------------------------------------------
 
@@ -408,13 +471,16 @@ class CactusApp(App[int]):
             head.update("no project")
             return
         rows = self.store.projects()
-        count = next(
-            (r["open_count"] for r in rows if r["project"] == self.current_project), 0
-        )
+        row = next((r for r in rows if r["project"] == self.current_project), None)
+        open_count = row["open_count"] if row else 0
+        live_count = row["live_count"] if row else 0
         label = project_label(self.current_project)
         others = len(self._live_projects())
-        switch = "" if self.scoped_project is not None or others < 2 else "  [ ]"
-        head.update(f"{label}  {count} open{switch}")
+        switch = "" if self.scoped_project is not None or others < 2 else "  [ ] switch"
+        counts = f"{open_count} open"
+        if live_count:
+            counts += f" · {live_count} live"
+        head.update(f"{label}  {counts}{switch}")
 
     async def _rebuild_rail(self) -> None:
         listview = self.query_one("#rail-list", ListView)
@@ -440,7 +506,7 @@ class CactusApp(App[int]):
             listview.index = target_index
             self.focused_key = self.questions[target_index].key
             if self.focused_key != prior_key:
-                self.multi_selected = set()
+                self.multi_selected = self._default_multi_selection(self.focused_key)
                 row = listview.children[target_index]
                 if isinstance(row, QuestionBlock):
                     active_q = self.questions[target_index]
@@ -453,6 +519,7 @@ class CactusApp(App[int]):
         q = self._current_question()
         if q is None:
             card.display = False
+            self.refresh_bindings()
             return
         card.display = True
         card.border_title = f"answering  {q.key}"
@@ -466,6 +533,11 @@ class CactusApp(App[int]):
                 run_state=self.run_state.get(q.key, ""),
             )
         )
+        # check_action is a pure function of the focused question and its
+        # state, but Textual only re-asks it here — without this call the
+        # footer keeps showing the previous row's keys after every navigation
+        # or answer.
+        self.refresh_bindings()
 
     # Transient one-line feedback for actions that touch the outside world, so a
     # poke that failed says so instead of looking like a dead key.
@@ -487,17 +559,24 @@ class CactusApp(App[int]):
         no command is a promise the row cannot keep, and finding that out by
         pressing it is worse than never seeing it.
         """
-        always = {
-            "focus_next", "focus_prev", "refresh_view", "quit_app",
-            "prev_project", "next_project", "clear_focused", "skip",
-            "submit", "leave_input",
-        }
-        if action in always:
+        if action in ("refresh_view", "quit_app"):
             return True
 
         q = self._current_question()
         if q is None:
+            # Nothing on the rail to act on: navigation between live projects
+            # and the two global keys are the only bindings that still mean
+            # something on an empty inbox.
+            if action in ("prev_project", "next_project"):
+                return len(self._live_projects()) > 1
             return False
+
+        always = {
+            "focus_next", "focus_prev", "prev_project", "next_project",
+            "clear_focused", "skip", "submit", "leave_input",
+        }
+        if action in always:
+            return True
 
         if action in ("copy_command", "run_command"):
             return bool(self._command_of(q))
@@ -510,14 +589,16 @@ class CactusApp(App[int]):
         if action == "undo":
             return bool(self.undo_stack)
         if action == "toggle_free_text":
-            return bool(q.allow_free) and q.act != "plan"
+            return bool(q.allow_free)
         if action in ("confirm_yes", "confirm_no"):
             return q.kind == "confirm"
         if action == "select_choice":
-            n = int(parameters[0]) if parameters else 1
+            # Enabled for the whole shape, not the exact digit: a digit past
+            # the count still reaches action_select_choice, which flashes
+            # rather than looking like a dead key.
             if q.act == "plan":
-                return n <= len(q.steps)
-            return n <= len(q.choices)
+                return bool(q.steps)
+            return q.kind in ("choice", "multi", "confirm")
         return True
 
     def action_copy_command(self) -> None:
@@ -613,7 +694,7 @@ class CactusApp(App[int]):
             self.flash = f"{q.key} is act={q.act}, not a dismissable notice"
             self._rebuild_status_bar()
             return
-        await self._submit_answer(q, selected=[], text=None, skipped=True)
+        await self._submit_answer(q, selected=[], text=None, skipped=True, label="dismissed")
 
     async def action_poke(self) -> None:
         """Nudge the agent that owns the focused row to re-read its feed.
@@ -642,21 +723,38 @@ class CactusApp(App[int]):
         bar = self.query_one("#status-bar", Static)
         rows = self.store.projects()
         open_total = sum(r["open_count"] for r in rows)
-        proj_total = sum(1 for r in rows if r["open_count"] > 0)
+        live_total = sum(r["live_count"] for r in rows)
+        proj_total = sum(1 for r in rows if r["open_count"] > 0 or r["live_count"] > 0)
         mode = "typing — esc to leave" if self.free_text_mode else "ready"
         noun = "project" if proj_total == 1 else "projects"
+        counts = f"{open_total} open"
+        if live_total:
+            counts += f" · {live_total} live"
         undo = ""
         if self.undo_stack:
             last = self.undo_stack[-1]
             undo = f"    {last['label']} {last['key']} · u undo"
         flash = f"    {self.flash}" if self.flash else ""
-        bar.update(f"{open_total} open / {proj_total} {noun}    {mode}{undo}{flash}")
+        bar.update(f"{counts} / {proj_total} {noun}    {mode}{undo}{flash}")
+        # The undo binding's availability depends on the stack, which only
+        # this method ever changes — refresh here so the footer's `u` tracks it.
+        self.refresh_bindings()
 
     def _current_question(self) -> Question | None:
         for q in self.questions:
             if q.key == self.focused_key:
                 return q
         return None
+
+    def _default_multi_selection(self, key: str | None) -> set[str]:
+        """The set a multi row starts with on arrival: the agent's recommendation, if any.
+
+        So enter alone submits it, and a tap still redirects to anything else.
+        """
+        q = next((x for x in self.questions if x.key == key), None)
+        if q is not None and q.kind == "multi" and q.recommend:
+            return set(q.recommend)
+        return set()
 
     def _redraw_active(self) -> None:
         self._rebuild_card()
@@ -684,7 +782,7 @@ class CactusApp(App[int]):
             return
         prior_key = self.focused_key
         self.focused_key = new_key
-        self.multi_selected = set()
+        self.multi_selected = self._default_multi_selection(new_key)
         self.free_text_mode = False
         self._hide_input()
         for key in (prior_key, new_key):
@@ -711,6 +809,20 @@ class CactusApp(App[int]):
         if self.flash:
             self.flash = ""
             self._rebuild_status_bar()
+
+    async def on_key(self, event: events.Key) -> None:
+        """Catch keys check_action disables, so a press still gets a one-line answer.
+
+        The footer hides `u` when the undo stack is empty — a key that cannot
+        do anything should not be advertised — but that same gate stops the
+        binding from firing, so the press would otherwise land in silence.
+        This runs after bindings, so an enabled `u` never reaches here.
+        """
+        if self.free_text_mode or event.key != "u" or self.undo_stack:
+            return
+        self.flash = "nothing to undo"
+        self._rebuild_status_bar()
+        event.stop()
 
     def action_focus_next(self) -> None:
         self._clear_flash()
@@ -821,7 +933,11 @@ class CactusApp(App[int]):
             return
         value = event.value.strip()
         if q.kind == "text":
-            await self._submit_answer(q, selected=[], text=value or None)
+            if not value:
+                self.flash = "empty — type an answer, or esc then s to skip"
+                self._rebuild_status_bar()
+                return
+            await self._submit_answer(q, selected=[], text=value)
             return
         # Free text on a question that also takes a pick: park it on the card so
         # the human can see what will be sent, then hand focus back to the queue.
@@ -853,9 +969,16 @@ class CactusApp(App[int]):
         if q.kind == "confirm":
             # The digits pick a confirm the same way they pick a choice, so the
             # hand never has to learn two schemes for the same shape of answer.
+            labels = [c.label for c in q.choices] or ["yes", "no"]
+            if n < 1 or n > len(labels):
+                self.flash = f"{q.key} has no choice {n}"
+                self._rebuild_status_bar()
+                return
             await self._confirm(n - 1)
             return
         if n < 1 or n > len(q.choices):
+            self.flash = f"{q.key} has no choice {n}"
+            self._rebuild_status_bar()
             return
         label = q.choices[n - 1].label
         if q.kind == "choice":
@@ -871,7 +994,14 @@ class CactusApp(App[int]):
         q = self._current_question()
         if q is None:
             return
+        if q.act == "plan":
+            await self._submit_plan(q)
+            return
         if q.kind == "multi":
+            if not self.multi_selected and not self.pending_text:
+                self.flash = "pick at least one, or s to skip"
+                self._rebuild_status_bar()
+                return
             await self._submit_answer(
                 q, selected=sorted(self.multi_selected), text=self.pending_text or None
             )
@@ -885,6 +1015,39 @@ class CactusApp(App[int]):
             # Choice and confirm normally need a pick, but typed text is a
             # complete answer on its own when the question allows free entry.
             await self._submit_answer(q, selected=[], text=self.pending_text)
+        elif q.recommend:
+            # No pick and no typed text: enter submits the agent's own
+            # recommendation. It is advisory, not a `chosen` that already
+            # proceeded — this tap is what confirms it.
+            await self._submit_answer(q, selected=list(q.recommend), text=None)
+        elif q.kind in ("choice", "confirm"):
+            self.flash = self._pick_hint(q)
+            self._rebuild_status_bar()
+
+    async def _submit_plan(self, q: Question) -> None:
+        """Enter on a plan row closes it once every step is done, and otherwise flashes.
+
+        Free text never opens from here — `i` still reaches it — because a
+        plan collects no answer of its own, and enter's job on this row is to
+        retire it once nothing is left open.
+        """
+        open_count = sum(1 for st in q.steps if not st.done)
+        if q.steps and open_count == 0:
+            self.store.clear(keys=[q.key], all_projects=True)
+            self._push_undo(q.key, "cleared", [], self.pending_text or None)
+            self._plan_all_done.discard(q.key)
+            await self._advance_after(q.key)
+            return
+        self.flash = f"{open_count} steps open — i for free text"
+        self._rebuild_status_bar()
+
+    def _pick_hint(self, q: Question) -> str:
+        """What enter means with no draft on a choice/confirm row, in its own keys."""
+        if q.kind == "confirm":
+            n = len(q.choices) or 2
+            return f"pick with y/n or 1-{n}"
+        n = len(q.choices)
+        return f"pick with 1-{n}" if n > 1 else "pick with 1"
 
     async def action_confirm_yes(self) -> None:
         await self._confirm(0)
@@ -917,13 +1080,19 @@ class CactusApp(App[int]):
         await self._advance_after(q.key)
 
     async def _submit_answer(
-        self, q: Question, *, selected: list[str], text: str | None, skipped: bool = False
+        self,
+        q: Question,
+        *,
+        selected: list[str],
+        text: str | None,
+        skipped: bool = False,
+        label: str | None = None,
     ) -> None:
         try:
             self.store.answer(q.key, selected=selected, text=text, skipped=skipped)
         except KeyError:
             return
-        self._push_undo(q.key, "skipped" if skipped else "answered", selected, text)
+        self._push_undo(q.key, label or ("skipped" if skipped else "answered"), selected, text)
         await self._advance_after(q.key)
 
     async def _advance_after(self, answered_key: str) -> None:
@@ -941,6 +1110,7 @@ class CactusApp(App[int]):
         if self.questions:
             next_index = min(old_index, len(self.questions) - 1)
             self.focused_key = self.questions[next_index].key
+            self.multi_selected = self._default_multi_selection(self.focused_key)
         else:
             self.focused_key = None
         self._rebuild_project_head()
