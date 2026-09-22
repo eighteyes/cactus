@@ -152,6 +152,21 @@ ACTS
 
   --agent ID tags a row with the pane that owns it, defaulting to
   $HERDR_PANE_ID. It filters, it does not scope: the project is still the key.
+  `--agent ""` disowns a row explicitly; omitting the flag inherits the pane.
+
+POKE
+
+  cactus poke KEY            nudge the agent that owns this row
+  cactus poke --agent ID     nudge a pane directly
+
+  A poke carries no instruction. It says the inbox moved and lets the agent
+  decide what that means. The human presses `p` in the TUI; the agent re-reads
+  `cactus feed --json --agent $HERDR_PANE_ID` and acts on what changed.
+
+  The transport is `herdr agent prompt` unless CACTUS_POKE overrides it, with
+  {agent} and {message} substituted per argument and never through a shell.
+  It really does prompt a live agent, so set CACTUS_POKE to something inert
+  before exercising it.
 
 FEED
 
@@ -291,7 +306,11 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             cwd=cwd,
             kind=kind,
             act=act,
-            agent=args.agent or os.environ.get("HERDR_PANE_ID"),
+            # `--agent ""` is an explicit disowning; only an omitted flag
+            # inherits the pane. Treating empty as absent would silently
+            # address the row to whoever ran the command.
+            agent=(os.environ.get("HERDR_PANE_ID") if args.agent is None
+                   else (args.agent or None)),
             choices=choices,
             allow_free=not args.no_free,
             thread=args.thread,
@@ -428,7 +447,7 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         return EXIT_ERROR
     if q is None:
         print(f"cactus: no such question: {args.key}", file=sys.stderr)
-        return EXIT_NOMATCH
+        return EXIT_EMPTY
     if args.json:
         _emit_one(q, as_json=True)
     else:
@@ -491,6 +510,35 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     json.dump(doc, sys.stdout, indent=2 if args.pretty else None)
     sys.stdout.write("\n")
     return EXIT_OK if questions else EXIT_EMPTY
+
+
+def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Nudge the agent that owns a row, so it re-reads the feed."""
+    from .poke import poke, PokeError
+
+    agent = args.agent
+    if agent is None:
+        if not args.key:
+            print("cactus: poke needs a key or --agent", file=sys.stderr)
+            return EXIT_ERROR
+        q = store.get(args.key)
+        if q is None:
+            print(f"cactus: no such question: {args.key}", file=sys.stderr)
+            return EXIT_EMPTY
+        agent = q.agent
+
+    try:
+        ran = poke(agent, message=args.message)
+    except PokeError as exc:
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.json:
+        json.dump({"agent": agent, "ran": ran}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print(f"poked {agent}")
+    return EXIT_OK
 
 
 def cmd_threads(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
@@ -643,6 +691,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="this project only (default: every project)")
     fd.add_argument("--pretty", action="store_true", help="indent the document")
     fd.set_defaults(fn=cmd_feed)
+
+    pk = verb("poke", parents=[common], help="nudge the agent that owns a row")
+    pk.add_argument("key", nargs="?", help="row whose owning agent to poke")
+    pk.add_argument("--agent", help="poke this agent/pane directly instead")
+    pk.add_argument("-m", "--message", help="override the nudge text")
+    pk.set_defaults(fn=cmd_poke)
 
     rv = verb("review", parents=[common], help="attach a verify block to a review row")
     rv.add_argument("key")

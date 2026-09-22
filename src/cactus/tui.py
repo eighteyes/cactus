@@ -206,6 +206,7 @@ class CactusApp(App[int]):
         Binding("[", "prev_project", "PrevProj"),
         Binding("]", "next_project", "NextProj"),
         Binding("u", "undo", "Undo"),
+        Binding("p", "poke", "Poke"),
         Binding("r", "refresh_view", "Refresh"),
         Binding("q", "quit_app", "Quit"),
         Binding("1", "select_choice(1)", "1", show=True),
@@ -388,6 +389,33 @@ class CactusApp(App[int]):
             )
         )
 
+    # Transient one-line feedback for actions that touch the outside world, so a
+    # poke that failed says so instead of looking like a dead key.
+    flash: str = ""
+
+    async def action_poke(self) -> None:
+        """Nudge the agent that owns the focused row to re-read its feed.
+
+        The nudge carries no instruction. It says the inbox moved and leaves the
+        agent to decide what that means, which keeps a human from having to
+        compose a prompt and keeps cactus out of driving agents.
+        """
+        from .poke import poke, PokeError
+
+        q = self._current_question()
+        if q is None:
+            return
+        if not q.agent:
+            self.flash = f"{q.key} has no agent to poke"
+        else:
+            try:
+                poke(q.agent, timeout=5.0)
+            except PokeError as exc:
+                self.flash = f"poke failed: {exc}"
+            else:
+                self.flash = f"poked {q.agent}"
+        self._rebuild_status_bar()
+
     def _rebuild_status_bar(self) -> None:
         bar = self.query_one("#status-bar", Static)
         rows = self.store.projects()
@@ -399,7 +427,8 @@ class CactusApp(App[int]):
         if self.undo_stack:
             last = self.undo_stack[-1]
             undo = f"    {last['label']} {last['key']} · u undo"
-        bar.update(f"{open_total} open / {proj_total} {noun}    {mode}{undo}")
+        flash = f"    {self.flash}" if self.flash else ""
+        bar.update(f"{open_total} open / {proj_total} {noun}    {mode}{undo}{flash}")
 
     def _current_question(self) -> Question | None:
         for q in self.questions:
@@ -456,12 +485,19 @@ class CactusApp(App[int]):
             return
         await self.action_submit()
 
+    def _clear_flash(self) -> None:
+        if self.flash:
+            self.flash = ""
+            self._rebuild_status_bar()
+
     def action_focus_next(self) -> None:
+        self._clear_flash()
         listview = self.query_one("#rail-list", ListView)
         listview.focus()
         listview.action_cursor_down()
 
     def action_focus_prev(self) -> None:
+        self._clear_flash()
         listview = self.query_one("#rail-list", ListView)
         listview.focus()
         listview.action_cursor_up()

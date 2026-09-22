@@ -14,7 +14,14 @@ There is no test suite and no linter. Verification is throwaway scripts in
 way; they are gitignored and not part of the package.
 
 Always point `CACTUS_DB` at a scratch file when testing. The default database is the
-user's live inbox at `~/.local/share/cactus/cactus.db`.
+user's live inbox at `~/.local/share/cactus/cactus.db`. An empty `CACTUS_DB`
+raises rather than falling through, so a failed `mktemp` cannot silently target
+it.
+
+Always set `CACTUS_POKE` to something inert when testing. The default transport
+is `herdr agent prompt`, which prompts a live agent, and `ask --agent` defaults
+to `$HERDR_PANE_ID` — so a row created inside a session is addressed to that
+session and poking it interrupts whoever is running the test.
 
 ## Architecture
 

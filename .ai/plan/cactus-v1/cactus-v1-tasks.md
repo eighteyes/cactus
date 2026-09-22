@@ -84,7 +84,16 @@
 - [x] Existing `.ai/tmp/` scripts pass after the rename
 - [ ] Manual: review row runs a command with `r` and takes a fail verdict
 
-## 9. Handoff
+## 9. Poke
+
+- [x] `poke.py` — pluggable transport, default `herdr agent prompt`
+- [x] `cactus poke KEY` / `--agent ID` / `-m TEXT`
+- [x] TUI `p` nudges the focused row's agent, reporting through the status bar
+- [x] `--agent ""` disowns explicitly; an omitted flag inherits the pane
+- [x] `.ai/tmp/test_poke.py` and CLI cases in `test_cli_acts.sh`
+- [ ] Confirm the herdr transport against a real pane the user nominates
+
+## 10. Handoff
 
 - [ ] `.ai/REVIEW.md`: the `cactus answer` command shape c100 calls
 - [ ] Confirm exit-code contract for a doubly-answered non-persistent row
