@@ -55,9 +55,9 @@
 
 ## 6. Monitor
 
-- [ ] Emit `verdict` events on answers to `live` rows
-- [ ] Include `act` on every event line
-- [ ] Sidecar changes surface as `step` / `review` events
+- [x] Emit `verdict` events on answers to `live` rows
+- [x] Include `act` on every event line
+- [x] Sidecar changes surface as `step` / `review` events
 
 ## 7. Surfaces
 

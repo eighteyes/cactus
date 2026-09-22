@@ -123,16 +123,23 @@ CREATE INDEX IF NOT EXISTS idx_q_updated        ON questions(updated_at);
 """
 
 
-_legacy_notice_shown = False
+def _data_root() -> Path:
+    base = os.environ.get("XDG_DATA_HOME")
+    return Path(base).expanduser() if base else Path.home() / ".local" / "share"
+
+
+def legacy_db_path() -> Path:
+    """Where a qaui-era inbox sits, if one does."""
+    return _data_root() / "qaui" / "qaui.db"
 
 
 def default_db_path() -> Path:
     """Database location, overridable with CACTUS_DB for tests and alternate inboxes.
 
-    When the cactus database is absent and a qaui-era one exists, that older file
-    is used and a move instruction is printed once. The old file is never
-    written to a new location automatically; relocating it stays the user's
-    decision.
+    Pure: it resolves a path and prints nothing. Announcing a fallback belongs
+    with opening the database, not with computing its name — `build_parser`
+    calls this for one line of help text, and a notice here ended up in front
+    of every `--agent-help`.
     """
     env = os.environ.get("CACTUS_DB")
     if env is not None and not env.strip():
@@ -142,25 +149,11 @@ def default_db_path() -> Path:
         raise ValueError("CACTUS_DB is set but empty; unset it or give it a path")
     if env:
         return Path(env).expanduser()
-    base = os.environ.get("XDG_DATA_HOME")
-    root = Path(base).expanduser() if base else Path.home() / ".local" / "share"
-    new_path = root / "cactus" / "cactus.db"
+    new_path = _data_root() / "cactus" / "cactus.db"
     if new_path.exists():
         return new_path
-    legacy = root / "qaui" / "qaui.db"
-    if legacy.exists():
-        global _legacy_notice_shown
-        if _legacy_notice_shown:
-            return legacy
-        _legacy_notice_shown = True
-        print(
-            f"cactus: using the qaui inbox at {legacy}\n"
-            f"cactus: adopt it with  mkdir -p {new_path.parent} && "
-            f"sqlite3 {legacy} \"VACUUM INTO '{new_path}'\"",
-            file=sys.stderr,
-        )
-        return legacy
-    return new_path
+    legacy = legacy_db_path()
+    return legacy if legacy.exists() else new_path
 
 
 def _now() -> str:
@@ -309,6 +302,7 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA busy_timeout=10000")
+        self._announce_legacy()
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.executescript(INDEXES)
@@ -379,6 +373,29 @@ class Store:
             raise
         finally:
             self.conn.execute("PRAGMA foreign_keys=ON")
+
+    _legacy_announced = False
+
+    def _announce_legacy(self) -> None:
+        """Say once, on stderr, that a qaui-era inbox is being read in place.
+
+        The old file is never relocated automatically: copying it silently
+        would leave two inboxes diverging under a tool whose whole contract is
+        that agents and humans see the same rows.
+        """
+        if Store._legacy_announced or os.environ.get("CACTUS_DB"):
+            return
+        legacy = legacy_db_path()
+        if self.path != legacy:
+            return
+        Store._legacy_announced = True
+        target = _data_root() / "cactus" / "cactus.db"
+        print(
+            f"cactus: using the qaui inbox at {legacy}\n"
+            f"cactus: adopt it with  mkdir -p {target.parent} && "
+            f"sqlite3 {legacy} \"VACUUM INTO '{target}'\"",
+            file=sys.stderr,
+        )
 
     def close(self) -> None:
         self.conn.close()

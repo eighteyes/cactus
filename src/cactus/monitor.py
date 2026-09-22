@@ -3,8 +3,8 @@ monitor.py — plain-stdout event stream of a cactus inbox, for agents.
 
 Responsibilities:
 - Poll the store's change cursor and diff the inbox against the previous tick.
-- Emit one line per transition: asked, answered, skipped, cleared, reopened,
-  changed, gone.
+- Emit one line per transition: asked, verdict, answered, skipped, cleared,
+  reopened, stepped, changed, gone.
 - Render each event as a fixed-column line or as one JSON object per line.
 - Flush every line immediately so a line-oriented watcher sees events as they land.
 """
@@ -24,8 +24,17 @@ DEFAULT_INTERVAL = 1.0
 
 def _answer_signature(q: Question) -> tuple[Any, ...]:
     if q.answer is None:
-        return ()
-    return (tuple(q.answer.selected), q.answer.text, q.answer.skipped)
+        return (0,)
+    # The verdict count is part of the signature: a persistent row can be
+    # answered the same way twice, and a watcher that only saw the latest
+    # values would hear nothing the second time.
+    return (len(q.answers), tuple(q.answer.selected), q.answer.text, q.answer.skipped)
+
+
+def _sidecar_signature(q: Question) -> tuple[Any, ...]:
+    review = () if q.review is None else tuple(sorted(q.review.as_dict().items()))
+    steps = tuple((st.idx, st.text, st.done) for st in q.steps)
+    return (review, steps)
 
 
 def _signature(q: Question) -> tuple[Any, ...]:
@@ -34,14 +43,18 @@ def _signature(q: Question) -> tuple[Any, ...]:
         q.status,
         q.text,
         q.kind,
+        q.act,
+        q.blocked,
+        q.chosen,
         tuple(c.label for c in q.choices),
         q.context,
         _answer_signature(q),
+        _sidecar_signature(q),
     )
 
 
 def _arrival_event(q: Question) -> str:
-    if q.status == "open":
+    if q.status in ("open", "live"):
         return "asked"
     if q.status == "cleared":
         return "cleared"
@@ -49,16 +62,36 @@ def _arrival_event(q: Question) -> str:
 
 
 def _transition_event(before: tuple[Any, ...], q: Question) -> str:
-    """Name the move from a previous signature to the current question."""
-    if before[0] != q.status:
-        if q.status == "open":
+    """Name the move from a previous signature to the current question.
+
+    A persistent row never changes status, so its verdicts would all read as
+    `changed` without the answer-count check below — and a verdict on a live
+    row is the single event an agent watching this stream is waiting for.
+    """
+    was_status, *_ = before
+    before_answers = before[-2]
+    if before_answers != _answer_signature_of(q):
+        if q.persistent:
+            return "verdict"
+        return _arrival_event(q)
+    if before[-1] != _sidecar_signature(q):
+        return "stepped" if q.steps else "changed"
+    if was_status != q.status:
+        if q.status in ("open", "live"):
             return "reopened"
         return _arrival_event(q)
     return "changed"
 
 
+def _answer_signature_of(q: Question) -> tuple[Any, ...]:
+    return _answer_signature(q)
+
+
 def _detail(q: Question, event: str) -> str:
-    if event in ("answered", "skipped") and q.answer is not None:
+    if event == "stepped":
+        done = sum(1 for st in q.steps if st.done)
+        return f"{done}/{len(q.steps)} steps  {q.text}"
+    if event in ("verdict", "answered", "skipped") and q.answer is not None:
         picks = f"[{', '.join(q.answer.selected)}] " if q.answer.selected else ""
         return f"{picks}{q.answer.text or ''}".strip() or "(no answer given)"
     if event == "asked":
@@ -66,13 +99,20 @@ def _detail(q: Question, event: str) -> str:
                  "multi": f"{len(q.choices)} choices, multi",
                  "confirm": "yes / no",
                  "text": "text"}
-        return f"{q.text}  ({kinds.get(q.kind, q.kind)})"
+        note = kinds.get(q.kind, q.kind)
+        if not q.blocked:
+            note += ", not blocking"
+        if q.chosen:
+            note += f", doing {q.chosen}"
+        return f"{q.text}  ({note})"
     return q.text
 
 
 def _line(q: Question, event: str, *, show_project: bool) -> str:
     project = f"{project_label(q.project)}  " if show_project else ""
-    return f"{q.key}  {event:<9}{project}{_detail(q, event)}"
+    # The act is on every line: a watcher filtering for its own review rows
+    # should not have to fetch each key to learn what kind of row it is.
+    return f"{q.key}  {event:<9}{q.act:<7}{project}{_detail(q, event)}"
 
 
 def _record(q: Question, event: str) -> dict[str, Any]:
