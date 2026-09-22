@@ -2,37 +2,38 @@
 
 ## 1. Rename
 
-- [ ] `src/qaui/` -> `src/cactus/`; update intra-package imports
-- [ ] `pyproject.toml`: package name, console script `cactus`, alias `cac`
-- [ ] `QAUI_DB` -> `CACTUS_DB` in store.py, CLAUDE.md, `.ai/tmp/` scripts
-- [ ] `default_db_path`: `~/.local/share/cactus/cactus.db`, falling back to the
+- [x] `src/qaui/` -> `src/cactus/`; update intra-package imports
+- [x] `pyproject.toml`: package name, console script `cactus`, alias `cac`
+- [x] `QAUI_DB` -> `CACTUS_DB` in store.py, CLAUDE.md, `.ai/tmp/` scripts
+- [x] `default_db_path`: `~/.local/share/cactus/cactus.db`, falling back to the
       qaui path when the new one is absent, with a printed move instruction
-- [ ] README.md and CLAUDE.md prose
-- [ ] Reinstall: `uv tool install --editable .`
-- [ ] Repository directory rename, last
+- [x] README.md and CLAUDE.md prose
+- [x] Reinstall: `uv tool install --editable .`
+- [ ] Repository directory rename, last (user-run; renaming the session's
+      own working directory from inside it is left to the human)
 
 ## 2. Schema
 
-- [ ] `ACTS = ("ask", "steer", "run", "seen", "review", "plan")`
-- [ ] `PERSISTENT_ACTS = ("review", "plan")`
-- [ ] `STATUSES` gains `live`
-- [ ] `ALTER TABLE questions ADD COLUMN act TEXT NOT NULL DEFAULT 'ask'`
-- [ ] `ALTER TABLE questions ADD COLUMN agent TEXT`
-- [ ] `reviews` table, 1:1, cascade on delete
-- [ ] `steps` table, 1:N, `UNIQUE(question_id, idx)`, cascade on delete
-- [ ] Rebuild `answers` without `UNIQUE(question_id)`, in one transaction
-- [ ] Idempotent migration guard for existing databases
-- [ ] `idx_q_agent` on `(agent, status)`
-- [ ] `Question` dataclass carries `act`, `agent`, `review`, `steps`, `answers`
+- [x] `ACTS = ("ask", "steer", "run", "seen", "review", "plan")`
+- [x] `PERSISTENT_ACTS = ("review", "plan")`
+- [x] `STATUSES` gains `live`
+- [x] `ALTER TABLE questions ADD COLUMN act TEXT NOT NULL DEFAULT 'ask'`
+- [x] `ALTER TABLE questions ADD COLUMN agent TEXT`
+- [x] `reviews` table, 1:1, cascade on delete
+- [x] `steps` table, 1:N, `UNIQUE(question_id, idx)`, cascade on delete
+- [x] Rebuild `answers` without `UNIQUE(question_id)`, in one transaction
+- [x] Idempotent migration guard for existing databases
+- [x] `idx_q_agent` on `(agent, status)`
+- [x] `Question` dataclass carries `act`, `agent`, `review`, `steps`, `answers`
 
 ## 3. Store semantics
 
-- [ ] Persistent acts insert with status `live`, never auto-transition
-- [ ] `wait_for_answer` ignores `live` rows; called on one, exits 1
-- [ ] `answer()` appends rather than replaces; current answer is latest
-- [ ] `reopen()` deletes the latest answer row only
-- [ ] Sidecar writes bump the parent `updated_at`
-- [ ] `cursor()` still reflects sidecar-only changes
+- [x] Persistent acts insert with status `live`, never auto-transition
+- [x] `wait_for_answer` ignores `live` rows; called on one, exits 1
+- [x] `answer()` appends rather than replaces; current answer is latest
+- [x] `reopen()` deletes the latest answer row only
+- [x] Sidecar writes bump the parent `updated_at`
+- [x] `cursor()` still reflects sidecar-only changes
 
 ## 4. Acts in the CLI
 
@@ -73,14 +74,14 @@
 
 ## 8. Verify
 
-- [ ] `.ai/tmp/test_acts.py` — every act round-trips ask, list, answer
-- [ ] `.ai/tmp/test_persistent.py` — a `live` row takes two verdicts; the log
+- [x] `.ai/tmp/test_acts.py` — every act round-trips ask, list, answer
+- [x] `.ai/tmp/test_persistent.py` — a `live` row takes two verdicts; the log
       holds both; `wait_for_answer` does not block on it
 - [ ] `.ai/tmp/test_feed.py` — cursor stability, filters, exit 3
-- [ ] `.ai/tmp/test_migrate.py` — a qaui-era database opens, reads as `ask`, and
+- [x] `.ai/tmp/test_migrate.py` — a qaui-era database opens, reads as `ask`, and
       its single answers survive the constraint rebuild
-- [ ] `.ai/tmp/test_sidecar_cursor.py` — a step toggle moves the cursor
-- [ ] Existing `.ai/tmp/` scripts pass after the rename
+- [x] `.ai/tmp/test_sidecar_cursor.py` — a step toggle moves the cursor
+- [x] Existing `.ai/tmp/` scripts pass after the rename
 - [ ] Manual: review row runs a command with `r` and takes a fail verdict
 
 ## 9. Handoff

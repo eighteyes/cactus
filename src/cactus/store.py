@@ -21,7 +21,29 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 KINDS = ("choice", "multi", "text", "confirm")
-STATUSES = ("open", "answered", "cleared")
+STATUSES = ("open", "live", "answered", "cleared")
+
+# What the agent is asking for. Orthogonal to KINDS, which is how the answer is
+# collected: a `run` act uses a `confirm` shape, a `steer` act may use either
+# `choice` or `text`.
+ACTS = ("ask", "steer", "run", "seen", "review", "plan")
+
+# Acts whose rows stay answerable. They are created `live`, never transition on
+# their own, and `wait_for_answer` refuses them.
+PERSISTENT_ACTS = ("review", "plan")
+
+# Acts an agent may block on.
+BLOCKING_ACTS = ("ask", "steer", "run")
+
+# Shapes each act accepts. `seen` and `plan` collect no answer of their own.
+ACT_SHAPES: dict[str, tuple[str, ...]] = {
+    "ask":    ("choice", "multi", "text", "confirm"),
+    "steer":  ("choice", "text"),
+    "run":    ("confirm",),
+    "seen":   ("text",),
+    "review": ("confirm",),
+    "plan":   ("text",),
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS questions (
@@ -33,6 +55,8 @@ CREATE TABLE IF NOT EXISTS questions (
     parent_id    INTEGER REFERENCES questions(id) ON DELETE CASCADE,
     text         TEXT    NOT NULL,
     kind         TEXT    NOT NULL,
+    act          TEXT    NOT NULL DEFAULT 'ask',
+    agent        TEXT,
     choices      TEXT    NOT NULL DEFAULT '[]',
     allow_free   INTEGER NOT NULL DEFAULT 1,
     context      TEXT,
@@ -42,16 +66,44 @@ CREATE TABLE IF NOT EXISTS questions (
     updated_at   TEXT    NOT NULL
 );
 
+-- Append-only. A persistent row is verdicted repeatedly, so the current answer
+-- is the latest by (created_at, id), not the only row.
 CREATE TABLE IF NOT EXISTS answers (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    question_id  INTEGER NOT NULL UNIQUE REFERENCES questions(id) ON DELETE CASCADE,
+    question_id  INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
     selected     TEXT    NOT NULL DEFAULT '[]',
     text         TEXT,
     skipped      INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT    NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS reviews (
+    question_id  INTEGER NOT NULL UNIQUE REFERENCES questions(id) ON DELETE CASCADE,
+    look_at      TEXT,
+    run_cmd      TEXT,
+    pass_when    TEXT,
+    fail_when    TEXT,
+    then_do      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS steps (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id  INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+    idx          INTEGER NOT NULL,
+    text         TEXT    NOT NULL,
+    done         INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(question_id, idx)
+);
+
+"""
+
+# Indexes run after _migrate(), because idx_q_agent names a column that a
+# qaui-era database does not have until the migration adds it.
+INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_q_project_status ON questions(project, status);
+CREATE INDEX IF NOT EXISTS idx_q_agent          ON questions(agent, status);
+CREATE INDEX IF NOT EXISTS idx_answers_q        ON answers(question_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_steps_q          ON steps(question_id, idx);
 CREATE INDEX IF NOT EXISTS idx_q_parent         ON questions(parent_id);
 CREATE INDEX IF NOT EXISTS idx_q_updated        ON questions(updated_at);
 """
@@ -138,6 +190,35 @@ class Answer:
 
 
 @dataclass
+class Review:
+    """The rearmatter verify block, persisted: look at, run, pass, fail, then."""
+    look_at: str | None = None
+    run_cmd: str | None = None
+    pass_when: str | None = None
+    fail_when: str | None = None
+    then_do: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "look_at": self.look_at,
+            "run_cmd": self.run_cmd,
+            "pass_when": self.pass_when,
+            "fail_when": self.fail_when,
+            "then_do": self.then_do,
+        }
+
+
+@dataclass
+class Step:
+    idx: int
+    text: str
+    done: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"idx": self.idx, "text": self.text, "done": self.done}
+
+
+@dataclass
 class Question:
     id: int
     key: str
@@ -148,6 +229,8 @@ class Question:
     parent_key: str | None
     text: str
     kind: str
+    act: str
+    agent: str | None
     choices: list[Choice]
     allow_free: bool
     context: str | None
@@ -156,7 +239,14 @@ class Question:
     created_at: str
     updated_at: str
     answer: Answer | None = None
+    answers: list[Answer] = field(default_factory=list)
+    review: Review | None = None
+    steps: list[Step] = field(default_factory=list)
     depth: int = 0
+
+    @property
+    def persistent(self) -> bool:
+        return self.act in PERSISTENT_ACTS
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -167,6 +257,8 @@ class Question:
             "parent": self.parent_key,
             "text": self.text,
             "kind": self.kind,
+            "act": self.act,
+            "agent": self.agent,
             "choices": [c.as_dict() for c in self.choices],
             "allow_free": self.allow_free,
             "context": self.context,
@@ -175,6 +267,9 @@ class Question:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "answer": self.answer.as_dict() if self.answer else None,
+            "answers": [a.as_dict() for a in self.answers],
+            "review": self.review.as_dict() if self.review else None,
+            "steps": [st.as_dict() for st in self.steps],
         }
 
 
@@ -190,6 +285,67 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA busy_timeout=10000")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+        self.conn.executescript(INDEXES)
+
+    def _migrate(self) -> None:
+        """Bring a qaui-era database up to the current schema.
+
+        Idempotent: every step checks the live schema first, so opening an
+        already-current database costs three cheap pragmas and nothing else.
+        """
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(questions)")}
+        if "act" not in cols:
+            self.conn.execute(
+                "ALTER TABLE questions ADD COLUMN act TEXT NOT NULL DEFAULT 'ask'"
+            )
+        if "agent" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN agent TEXT")
+
+        self._drop_answer_uniqueness()
+
+    def _drop_answer_uniqueness(self) -> None:
+        """Rebuild `answers` without UNIQUE(question_id), once.
+
+        A persistent row takes a verdict more than once, so answers became an
+        append-only log. SQLite cannot drop a constraint in place, and the
+        rebuild has to outlive a crash mid-way, so it runs inside one explicit
+        transaction with foreign keys off — dropping the old table with them on
+        would cascade the questions' answers away.
+        """
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='answers'"
+        ).fetchone()
+        if not row or "UNIQUE" not in (row["sql"] or ""):
+            return
+
+        self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            # Individual execute() calls, not executescript(): executescript
+            # issues an implicit COMMIT before it runs, which would discard the
+            # transaction guarding this rebuild.
+            self.conn.execute("BEGIN IMMEDIATE")
+            for stmt in (
+                """CREATE TABLE answers_new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question_id  INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+                    selected     TEXT    NOT NULL DEFAULT '[]',
+                    text         TEXT,
+                    skipped      INTEGER NOT NULL DEFAULT 0,
+                    created_at   TEXT    NOT NULL
+                )""",
+                """INSERT INTO answers_new (id, question_id, selected, text, skipped, created_at)
+                   SELECT id, question_id, selected, text, skipped, created_at FROM answers""",
+                "DROP TABLE answers",
+                "ALTER TABLE answers_new RENAME TO answers",
+            ):
+                self.conn.execute(stmt)
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        finally:
+            self.conn.execute("PRAGMA foreign_keys=ON")
 
     def close(self) -> None:
         self.conn.close()
@@ -209,6 +365,8 @@ class Store:
         project: str,
         cwd: str,
         kind: str = "text",
+        act: str = "ask",
+        agent: str | None = None,
         choices: Sequence[Choice] | None = None,
         allow_free: bool = True,
         thread: str | None = None,
@@ -219,6 +377,12 @@ class Store:
         """Insert one question and return it, with its assigned key."""
         if kind not in KINDS:
             raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
+        if act not in ACTS:
+            raise ValueError(f"act must be one of {ACTS}, got {act!r}")
+        if kind not in ACT_SHAPES[act]:
+            raise ValueError(
+                f"act={act!r} accepts kind {ACT_SHAPES[act]}, got {kind!r}"
+            )
         choices = list(choices or [])
         if kind in ("choice", "multi") and not choices:
             raise ValueError(f"kind={kind!r} requires at least one choice")
@@ -236,17 +400,21 @@ class Store:
                 thread = parent.thread
 
         now = _now()
+        # A persistent row is born `live`: it is answerable straight away and
+        # stays answerable, so it never occupies `open` and never blocks a
+        # waiting agent.
+        status = "live" if act in PERSISTENT_ACTS else "open"
         cur = self.conn.execute(
             """
             INSERT INTO questions
-                (key, project, cwd, thread, parent_id, text, kind, choices,
-                 allow_free, context, asked_by, status, created_at, updated_at)
-            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+                (key, project, cwd, thread, parent_id, text, kind, act, agent,
+                 choices, allow_free, context, asked_by, status, created_at, updated_at)
+            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                project, cwd, thread, parent_id, text, kind,
+                project, cwd, thread, parent_id, text, kind, act, agent,
                 json.dumps([c.as_dict() for c in choices]),
-                1 if allow_free else 0, context, asked_by, now, now,
+                1 if allow_free else 0, context, asked_by, status, now, now,
             ),
         )
         rowid = int(cur.lastrowid)
@@ -264,7 +432,13 @@ class Store:
         text: str | None = None,
         skipped: bool = False,
     ) -> Question:
-        """Record an answer and flip the question to `answered`."""
+        """Append an answer.
+
+        A one-shot question flips to `answered`. A persistent one stays `live`
+        and keeps its earlier verdicts: the append-only log is what lets a
+        review row be passed today and failed tomorrow, and what makes the
+        monitor stream an event feed rather than a status poll.
+        """
         q = self.get(key)
         if q is None:
             raise KeyError(f"no such question: {key}")
@@ -273,17 +447,13 @@ class Store:
             """
             INSERT INTO answers (question_id, selected, text, skipped, created_at)
             VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(question_id) DO UPDATE SET
-                selected = excluded.selected,
-                text     = excluded.text,
-                skipped  = excluded.skipped,
-                created_at = excluded.created_at
             """,
             (q.id, json.dumps(list(selected or [])), text, 1 if skipped else 0, now),
         )
+        status = "live" if q.persistent else "answered"
         self.conn.execute(
-            "UPDATE questions SET status = 'answered', updated_at = ? WHERE id = ?",
-            (now, q.id),
+            "UPDATE questions SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, q.id),
         )
         result = self.get(key)
         assert result is not None
@@ -315,7 +485,7 @@ class Store:
         return cur.rowcount
 
     def reopen(self, key: str) -> Question:
-        """Return a question to `open` and discard its answer.
+        """Withdraw the latest answer.
 
         Undo for the human surfaces. It cannot recall an answer an agent has
         already read — `--wait` returns the moment the status leaves `open` — so
@@ -325,10 +495,24 @@ class Store:
         if q is None:
             raise KeyError(f"no such question: {key}")
         now = _now()
-        self.conn.execute("DELETE FROM answers WHERE question_id = ?", (q.id,))
+        # Only the latest verdict is withdrawn. On a persistent row that
+        # uncovers the previous one rather than returning the row to unanswered.
         self.conn.execute(
-            "UPDATE questions SET status = 'open', updated_at = ? WHERE id = ?",
-            (now, q.id),
+            "DELETE FROM answers WHERE id = ("
+            " SELECT id FROM answers WHERE question_id = ?"
+            " ORDER BY created_at DESC, id DESC LIMIT 1)",
+            (q.id,),
+        )
+        remaining = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM answers WHERE question_id = ?", (q.id,)
+        ).fetchone()["n"]
+        if q.persistent:
+            status = "live"
+        else:
+            status = "answered" if remaining else "open"
+        self.conn.execute(
+            "UPDATE questions SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, q.id),
         )
         result = self.get(key)
         assert result is not None
@@ -349,6 +533,79 @@ class Store:
         sql = "DELETE FROM questions WHERE " + " AND ".join(where)
         cur = self.conn.execute(sql, params)
         return cur.rowcount
+
+    def set_review(
+        self,
+        key: str,
+        *,
+        look_at: str | None = None,
+        run_cmd: str | None = None,
+        pass_when: str | None = None,
+        fail_when: str | None = None,
+        then_do: str | None = None,
+    ) -> Question:
+        """Attach or replace the verify block on a `review` row."""
+        q = self.get(key)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        if q.act != "review":
+            raise ValueError(f"{key} is act={q.act!r}, not 'review'")
+        self.conn.execute(
+            """
+            INSERT INTO reviews (question_id, look_at, run_cmd, pass_when, fail_when, then_do)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(question_id) DO UPDATE SET
+                look_at   = excluded.look_at,
+                run_cmd   = excluded.run_cmd,
+                pass_when = excluded.pass_when,
+                fail_when = excluded.fail_when,
+                then_do   = excluded.then_do
+            """,
+            (q.id, look_at, run_cmd, pass_when, fail_when, then_do),
+        )
+        return self._touch(q.id, key)
+
+    def set_steps(self, key: str, steps: Sequence[str]) -> Question:
+        """Replace the step list on a `plan` row, preserving done state by index."""
+        q = self.get(key)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        if q.act != "plan":
+            raise ValueError(f"{key} is act={q.act!r}, not 'plan'")
+        done = {st.idx for st in q.steps if st.done}
+        self.conn.execute("DELETE FROM steps WHERE question_id = ?", (q.id,))
+        self.conn.executemany(
+            "INSERT INTO steps (question_id, idx, text, done) VALUES (?, ?, ?, ?)",
+            [(q.id, i, t, 1 if i in done else 0) for i, t in enumerate(steps)],
+        )
+        return self._touch(q.id, key)
+
+    def set_step_done(self, key: str, idx: int, done: bool = True) -> Question:
+        """Tick or untick one step.
+
+        Both the human surfaces and the agent write this, which is why steps are
+        rows rather than a JSON blob on the question: a blob would make every
+        toggle a read-modify-write race between the two writers.
+        """
+        q = self.get(key)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        cur = self.conn.execute(
+            "UPDATE steps SET done = ? WHERE question_id = ? AND idx = ?",
+            (1 if done else 0, q.id, idx),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"{key} has no step {idx}")
+        return self._touch(q.id, key)
+
+    def _touch(self, qid: int, key: str) -> Question:
+        """Bump `updated_at` so a sidecar-only write still moves the cursor."""
+        self.conn.execute(
+            "UPDATE questions SET updated_at = ? WHERE id = ?", (_now(), qid)
+        )
+        result = self.get(key)
+        assert result is not None
+        return result
 
     # ---- reads ------------------------------------------------------------
 
@@ -469,6 +726,14 @@ class Store:
         A cleared question returns too — the agent asked, the human declined to
         answer, and that is an outcome rather than a hang.
         """
+        first = self.get(key)
+        if first is None:
+            raise KeyError(f"no such question: {key}")
+        if first.persistent:
+            raise ValueError(
+                f"{key} is act={first.act!r}, which never blocks — watch the "
+                f"monitor stream for its verdicts instead"
+            )
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             q = self.get(key)
@@ -513,17 +778,47 @@ class Store:
             ).fetchone()
             parent_key = prow["key"] if prow else None
 
-        arow = self.conn.execute(
-            "SELECT * FROM answers WHERE question_id = ?", (row["id"],)
-        ).fetchone()
-        answer = None
-        if arow:
-            answer = Answer(
-                selected=json.loads(arow["selected"] or "[]"),
-                text=arow["text"],
-                skipped=bool(arow["skipped"]),
-                created_at=arow["created_at"],
+        # Oldest first; `answer` is the latest, which is what every existing
+        # caller means by "the answer".
+        arows = self.conn.execute(
+            "SELECT * FROM answers WHERE question_id = ? "
+            "ORDER BY created_at ASC, id ASC",
+            (row["id"],),
+        ).fetchall()
+        answers = [
+            Answer(
+                selected=json.loads(a["selected"] or "[]"),
+                text=a["text"],
+                skipped=bool(a["skipped"]),
+                created_at=a["created_at"],
             )
+            for a in arows
+        ]
+        answer = answers[-1] if answers else None
+
+        review = None
+        if row["act"] == "review":
+            rrow = self.conn.execute(
+                "SELECT * FROM reviews WHERE question_id = ?", (row["id"],)
+            ).fetchone()
+            if rrow:
+                review = Review(
+                    look_at=rrow["look_at"],
+                    run_cmd=rrow["run_cmd"],
+                    pass_when=rrow["pass_when"],
+                    fail_when=rrow["fail_when"],
+                    then_do=rrow["then_do"],
+                )
+
+        steps: list[Step] = []
+        if row["act"] == "plan":
+            steps = [
+                Step(idx=int(st["idx"]), text=st["text"], done=bool(st["done"]))
+                for st in self.conn.execute(
+                    "SELECT * FROM steps WHERE question_id = ? ORDER BY idx ASC",
+                    (row["id"],),
+                )
+            ]
 
         return Question(
             id=int(row["id"]),
@@ -535,6 +830,8 @@ class Store:
             parent_key=parent_key,
             text=row["text"],
             kind=row["kind"],
+            act=row["act"],
+            agent=row["agent"],
             choices=[Choice.parse(c) for c in json.loads(row["choices"] or "[]")],
             allow_free=bool(row["allow_free"]),
             context=row["context"],
@@ -543,4 +840,7 @@ class Store:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             answer=answer,
+            answers=answers,
+            review=review,
+            steps=steps,
         )
