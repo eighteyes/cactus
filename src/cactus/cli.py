@@ -164,7 +164,8 @@ ACTS
   cactus ask "Release steps" --act plan -t ship
   q9
   cactus plan q9 --step "build" --step "test" --step "tag"
-  cactus plan q9 --done 1        # tick a step; the human can tick it too
+  cactus plan q9 --done 1        # steps are 1-based: this ticks "build";
+                                  # the human can tick it too
 
   --agent ID names the agent that owns a row. There is NO default, on purpose.
   A bare pane id is not an identity: herdr treats `session:pane_id` as its
@@ -521,15 +522,30 @@ def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     return EXIT_OK
 
 
+def _plan_index(n: int, count: int) -> int:
+    """Convert a 1-based CLI step number to the store's 0-based idx."""
+    if n < 1 or n > count:
+        valid = f"1-{count}" if count else "none — the plan has no steps"
+        raise ValueError(f"step {n} out of range: valid steps are {valid}")
+    return n - 1
+
+
 def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
-    """Set a plan row's steps, or tick and untick them."""
+    """Set a plan row's steps, or tick and untick them.
+
+    Steps are numbered from 1 here, matching what a human reads off the card
+    and the rail; the store keeps them 0-based internally.
+    """
     try:
         if args.step:
             store.set_steps(args.key, args.step)
-        for idx in args.done or []:
-            store.set_step_done(args.key, idx, True)
-        for idx in args.undone or []:
-            store.set_step_done(args.key, idx, False)
+        q = store.get(args.key)
+        if q is None:
+            raise KeyError(f"no such question: {args.key}")
+        for n in args.done or []:
+            store.set_step_done(args.key, _plan_index(n, len(q.steps)), True)
+        for n in args.undone or []:
+            store.set_step_done(args.key, _plan_index(n, len(q.steps)), False)
         q = store.get(args.key)
     except (KeyError, ValueError) as exc:
         print(f"cactus: {exc}", file=sys.stderr)
@@ -541,7 +557,7 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         _emit_one(q, as_json=True)
     else:
         for st in q.steps:
-            print(f"  [{'x' if st.done else ' '}] {st.idx}  {st.text}")
+            print(f"  [{'x' if st.done else ' '}] {st.idx + 1}  {st.text}")
     return EXIT_OK
 
 

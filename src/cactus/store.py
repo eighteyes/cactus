@@ -239,7 +239,9 @@ class Step:
     done: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {"idx": self.idx, "text": self.text, "done": self.done}
+        # `idx` stays the store's 0-based position; `n` is the 1-based number
+        # the CLI and human surfaces show, so a consumer never has to +1 itself.
+        return {"idx": self.idx, "n": self.idx + 1, "text": self.text, "done": self.done}
 
 
 @dataclass
