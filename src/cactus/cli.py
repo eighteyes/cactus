@@ -18,7 +18,8 @@ import sys
 from typing import Any, Sequence
 
 from .scope import project_display, resolve_project
-from .store import (ACTS, ACT_SHAPES, DEFAULT_BLOCKED, AlreadyAnswered, Choice,
+from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
+                    DEFAULT_BLOCKED, AlreadyAnswered, Choice,
                     Question, Store, default_db_path)
 
 EXIT_OK = 0
@@ -181,6 +182,22 @@ ACTS
   question text: a surface with a narrow cell shows `text`, and `context`
   below it.
 
+RECOMMEND
+
+  An agent can recommend an option on any row that has choices:
+
+  cactus ask "Which auth backend?" -c "oidc: existing IdP" -c "local: bcrypt table" \\
+    --recommend oidc --confidence high --why "staging tenant is provisioned"
+
+  --confidence is required with --recommend, one of low / med / high, shown as
+  ○ / ◐ / ●. --why is optional supporting detail for the pick. The TUI marks
+  the recommended option and preselects it, so enter alone submits it — a tap
+  still redirects to anything else.
+
+  A recommend is advisory and still waits for the human. A steer's `--chosen`
+  is not: the agent proceeds with it and a tap redirects afterwards. Use
+  `--chosen` when you are not stopping; use `--recommend` when you are.
+
 POKE
 
   cactus poke KEY            nudge the agent that owns this row
@@ -306,6 +323,10 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         if q.choices and q.status == "open":
             labels = " | ".join(c.label for c in q.choices)
             print(f"\t\t{indent}  choices: {labels}")
+        if q.recommend:
+            glyph = CONFIDENCE_GLYPH.get(q.confidence, "")
+            why = f" — {q.recommend_why}" if q.recommend_why else ""
+            print(f"\t\t{indent}  recommend: {', '.join(q.recommend)} {glyph} {q.confidence}{why}")
         ans = _fmt_answer(q)
         if ans:
             print(f"\t\t{indent}  -> {ans}")
@@ -373,6 +394,9 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             blocked=args.blocked,
             choices=choices,
             allow_free=not args.no_free,
+            recommend=args.recommend,
+            confidence=args.confidence,
+            recommend_why=args.why,
             thread=args.thread,
             parent_key=args.parent,
             context=context,
@@ -740,6 +764,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="short label a projector derives its key from")
     ask.add_argument("--chosen",
                      help="the option that happens anyway unless a tap redirects")
+    ask.add_argument("--recommend", action="append",
+                     help="an option to recommend, taken verbatim; repeat for --multi rows")
+    ask.add_argument("--confidence", choices=list(CONFIDENCE),
+                     help="how sure the recommendation is; required with --recommend")
+    ask.add_argument("--why", help="why this is recommended")
     blk = ask.add_mutually_exclusive_group()
     blk.add_argument("--blocked", dest="blocked", action="store_true", default=None,
                      help="this row parks the agent until it is answered")

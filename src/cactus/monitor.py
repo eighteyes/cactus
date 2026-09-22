@@ -17,7 +17,7 @@ import time
 from typing import Any, Iterable
 
 from .scope import project_label
-from .store import Question, Store
+from .store import CONFIDENCE_GLYPH, Question, Store
 
 DEFAULT_INTERVAL = 1.0
 
@@ -48,6 +48,11 @@ def _signature(q: Question) -> tuple[Any, ...]:
         q.chosen,
         tuple(c.label for c in q.choices),
         q.context,
+        # Kept ahead of the last two slots: `_transition_event` reads
+        # before[-2] and before[-1] as the answer and sidecar signatures.
+        tuple(q.recommend),
+        q.confidence,
+        q.recommend_why,
         _answer_signature(q),
         _sidecar_signature(q),
     )
@@ -104,6 +109,9 @@ def _detail(q: Question, event: str) -> str:
             note += ", not blocking"
         if q.chosen:
             note += f", doing {q.chosen}"
+        if q.recommend:
+            glyph = CONFIDENCE_GLYPH.get(q.confidence, "")
+            note += f", rec {', '.join(q.recommend)} {glyph}".rstrip()
         return f"{q.text}  ({note})"
     return q.text
 

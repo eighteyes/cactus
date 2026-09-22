@@ -23,6 +23,11 @@ from typing import Any, Iterable, Sequence
 KINDS = ("choice", "multi", "text", "confirm")
 STATUSES = ("open", "live", "answered", "cleared")
 
+# How sure an agent's recommendation is. Advisory only — a recommend still
+# waits for the human, unlike a steer's `chosen`, which proceeds.
+CONFIDENCE = ("low", "med", "high")
+CONFIDENCE_GLYPH = {"low": "○", "med": "◐", "high": "●"}
+
 # What a human surface shows: a fork still waiting, and a persistent row that
 # stays answerable. Both are work in front of the reader.
 ACTIONABLE = ("open", "live")
@@ -77,6 +82,9 @@ CREATE TABLE IF NOT EXISTS questions (
     blocked      INTEGER NOT NULL DEFAULT 1,
     choices      TEXT    NOT NULL DEFAULT '[]',
     allow_free   INTEGER NOT NULL DEFAULT 1,
+    recommend    TEXT,
+    confidence   TEXT,
+    recommend_why TEXT,
     context      TEXT,
     asked_by     TEXT,
     status       TEXT    NOT NULL DEFAULT 'open',
@@ -257,6 +265,9 @@ class Question:
     status: str
     created_at: str
     updated_at: str
+    recommend: list[str] = field(default_factory=list)
+    confidence: str | None = None
+    recommend_why: str | None = None
     answer: Answer | None = None
     answers: list[Answer] = field(default_factory=list)
     review: Review | None = None
@@ -283,6 +294,9 @@ class Question:
             "blocked": self.blocked,
             "choices": [c.as_dict() for c in self.choices],
             "allow_free": self.allow_free,
+            "recommend": self.recommend or None,
+            "confidence": self.confidence,
+            "recommend_why": self.recommend_why,
             "context": self.context,
             "asked_by": self.asked_by,
             "status": self.status,
@@ -342,6 +356,12 @@ class Store:
             self.conn.execute(
                 "ALTER TABLE questions ADD COLUMN blocked INTEGER NOT NULL DEFAULT 1"
             )
+        if "recommend" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN recommend TEXT")
+        if "confidence" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN confidence TEXT")
+        if "recommend_why" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN recommend_why TEXT")
 
         # NOT called here. Rebuilding `answers` is destructive-shaped and
         # changes the schema under any process that already imported the old
@@ -447,6 +467,9 @@ class Store:
         blocked: bool | None = None,
         choices: Sequence[Choice] | None = None,
         allow_free: bool = True,
+        recommend: Sequence[str] | None = None,
+        confidence: str | None = None,
+        recommend_why: str | None = None,
         thread: str | None = None,
         parent_key: str | None = None,
         context: str | None = None,
@@ -479,6 +502,28 @@ class Store:
                 "act='steer' needs a chosen option: a steer states what "
                 "happens anyway, and one that states nothing is an ask"
             )
+        recommend = list(recommend or [])
+        if recommend:
+            # A recommendation is advisory and still waits for the human,
+            # unlike `chosen`, which proceeds — so it only makes sense on a
+            # row that offers something to pick, filled in with the confirm
+            # defaults above so review/run/confirm rows can recommend too.
+            if not choices:
+                raise ValueError("recommend requires choices")
+            labels = [c.label for c in choices]
+            bad = [r for r in recommend if r not in labels]
+            if bad:
+                raise ValueError(f"recommend must name options from {labels}, got {bad!r}")
+            if len(recommend) > 1 and kind != "multi":
+                raise ValueError(
+                    "recommend names more than one option only when kind='multi'"
+                )
+            if confidence is None:
+                raise ValueError(f"recommend needs --confidence, one of {CONFIDENCE}")
+            if confidence not in CONFIDENCE:
+                raise ValueError(f"confidence must be one of {CONFIDENCE}, got {confidence!r}")
+        elif confidence is not None or recommend_why is not None:
+            raise ValueError("confidence or recommend_why given without recommend")
         if blocked is None:
             blocked = DEFAULT_BLOCKED[act]
         if blocked and act in PERSISTENT_ACTS:
@@ -506,15 +551,19 @@ class Store:
             """
             INSERT INTO questions
                 (key, project, cwd, thread, parent_id, text, kind, act, agent,
-                 word, chosen, blocked, choices, allow_free, context, asked_by,
+                 word, chosen, blocked, choices, allow_free, recommend,
+                 confidence, recommend_why, context, asked_by,
                  status, created_at, updated_at)
-            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project, cwd, thread, parent_id, text, kind, act, agent, word,
                 chosen, 1 if blocked else 0,
                 json.dumps([c.as_dict() for c in choices]),
-                1 if allow_free else 0, context, asked_by, status, now, now,
+                1 if allow_free else 0,
+                json.dumps(recommend) if recommend else None,
+                confidence, recommend_why,
+                context, asked_by, status, now, now,
             ),
         )
         rowid = int(cur.lastrowid)
@@ -967,6 +1016,9 @@ class Store:
             blocked=bool(row["blocked"]),
             choices=[Choice.parse(c) for c in json.loads(row["choices"] or "[]")],
             allow_free=bool(row["allow_free"]),
+            recommend=json.loads(row["recommend"]) if row["recommend"] else [],
+            confidence=row["confidence"],
+            recommend_why=row["recommend_why"],
             context=row["context"],
             asked_by=row["asked_by"],
             status=row["status"],

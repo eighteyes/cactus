@@ -18,7 +18,7 @@ from textual.containers import Vertical
 from textual.widgets import Footer, Header, RichLog, Static
 
 from .scope import project_display, project_label
-from .store import Question, Store
+from .store import CONFIDENCE_GLYPH, Question, Store
 
 POLL_INTERVAL = 0.5
 
@@ -167,6 +167,10 @@ class WatchApp(App[None]):
         choices = _fmt_choices(q)
         if choices:
             log.write(f"{indent}    choices: {choices}")
+        if q.recommend:
+            glyph = CONFIDENCE_GLYPH.get(q.confidence, "")
+            why = f" — {q.recommend_why}" if q.recommend_why else ""
+            log.write(f"{indent}    recommend: {', '.join(q.recommend)} {glyph}{why}")
 
     def _emit_answer(self, q: Question) -> None:
         if not self._show_answered:
