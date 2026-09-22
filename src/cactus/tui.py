@@ -479,6 +479,47 @@ class CactusApp(App[int]):
     def _command_of(self, q: Question) -> str | None:
         return q.review.run_cmd if q.review is not None else None
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Show and enable a binding only where it means something.
+
+        Textual asks this for every binding on every refresh, so the footer and
+        the keyboard stay the same surface: a `Run` key offered on a row with
+        no command is a promise the row cannot keep, and finding that out by
+        pressing it is worse than never seeing it.
+        """
+        always = {
+            "focus_next", "focus_prev", "refresh_view", "quit_app",
+            "prev_project", "next_project", "clear_focused", "skip",
+            "submit", "leave_input",
+        }
+        if action in always:
+            return True
+
+        q = self._current_question()
+        if q is None:
+            return False
+
+        if action in ("copy_command", "run_command"):
+            return bool(self._command_of(q))
+        if action == "open_output":
+            return bool(self.run_output.get(q.key))
+        if action == "dismiss":
+            return q.act == "seen"
+        if action == "poke":
+            return bool(q.agent)
+        if action == "undo":
+            return bool(self.undo_stack)
+        if action == "toggle_free_text":
+            return bool(q.allow_free) and q.act != "plan"
+        if action in ("confirm_yes", "confirm_no"):
+            return q.kind == "confirm"
+        if action == "select_choice":
+            n = int(parameters[0]) if parameters else 1
+            if q.act == "plan":
+                return n <= len(q.steps)
+            return n <= len(q.choices)
+        return True
+
     def action_copy_command(self) -> None:
         """Put the focused row's command on the clipboard."""
         from .shell import copy, ShellError

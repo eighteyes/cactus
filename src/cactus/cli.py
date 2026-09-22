@@ -18,8 +18,8 @@ import sys
 from typing import Any, Sequence
 
 from .scope import project_display, resolve_project
-from .store import (ACTS, ACT_SHAPES, DEFAULT_BLOCKED, Choice, Question, Store,
-                    default_db_path)
+from .store import (ACTS, ACT_SHAPES, DEFAULT_BLOCKED, AlreadyAnswered, Choice,
+                    Question, Store, default_db_path)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -467,6 +467,11 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             text=text,
             skipped=args.skip or args.dismiss,
         )
+    except AlreadyAnswered as exc:
+        # Exit 3, not 1: a projector renders this as a stale cell rather than
+        # an error, because nothing went wrong — it was simply beaten to it.
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_EMPTY
     except (KeyError, ValueError) as exc:
         print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_ERROR
@@ -647,6 +652,30 @@ def cmd_projects(args: argparse.Namespace, store: Store, project: str, cwd: str)
     return EXIT_OK
 
 
+def cmd_migrate(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Run the one schema change that is not safe to do on open.
+
+    Rebuilding `answers` to drop UNIQUE(question_id) changes the schema under
+    every process that already imported an older cactus, so it is a deliberate
+    act rather than a side effect of the next command that touches the file.
+    """
+    if not store.needs_rebuild():
+        print(f"cactus: {store.path} is already current")
+        return EXIT_OK
+    if not args.yes:
+        print(
+            f"cactus: {store.path} needs the answers table rebuilt.\n"
+            f"cactus: back it up first:  sqlite-backup {store.path}\n"
+            f"cactus: then re-run with --yes. Restart anything holding an "
+            f"older cactus module afterwards.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    store._drop_answer_uniqueness()
+    print(f"cactus: rebuilt answers in {store.path}")
+    return EXIT_OK
+
+
 def cmd_where(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     info = {"db": str(store.path), "project": project, "cwd": cwd}
     if args.json:
@@ -781,6 +810,10 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("--agent", help="poke this agent/pane directly instead")
     pk.add_argument("-m", "--message", help="override the nudge text")
     pk.set_defaults(fn=cmd_poke)
+
+    mg = verb("migrate", parents=[common], help="apply the answers-table rebuild")
+    mg.add_argument("--yes", action="store_true", help="actually do it")
+    mg.set_defaults(fn=cmd_migrate)
 
     rv = verb("review", parents=[common],
               help="attach a verify block to a review or run row")

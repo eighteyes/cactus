@@ -295,6 +295,16 @@ class Question:
         }
 
 
+class AlreadyAnswered(RuntimeError):
+    """A one-shot row that another surface answered first.
+
+    Two surfaces answer the same inbox, so a human can tap a row the board
+    already resolved. Silently overwriting would let the second tap decide,
+    which is the opposite of what the reader saw. The row is left alone and the
+    caller renders a stale cell.
+    """
+
+
 class Store:
     """Thin SQLite gateway. One instance per process; safe across processes via WAL."""
 
@@ -333,7 +343,21 @@ class Store:
                 "ALTER TABLE questions ADD COLUMN blocked INTEGER NOT NULL DEFAULT 1"
             )
 
-        self._drop_answer_uniqueness()
+        # NOT called here. Rebuilding `answers` is destructive-shaped and
+        # changes the schema under any process that already imported the old
+        # module — which is exactly what happened to a long-running agent when
+        # `cactus where` migrated the live inbox out from under it. Additive
+        # column adds are safe to do on open; a table rebuild is not, so it
+        # needs `cactus migrate` or CACTUS_MIGRATE=1.
+        if os.environ.get("CACTUS_MIGRATE") == "1":
+            self._drop_answer_uniqueness()
+
+    def needs_rebuild(self) -> bool:
+        """Whether `answers` still carries the constraint an append log cannot."""
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='answers'"
+        ).fetchone()
+        return bool(row and "UNIQUE" in (row["sql"] or ""))
 
     def _drop_answer_uniqueness(self) -> None:
         """Rebuild `answers` without UNIQUE(question_id), once.
@@ -344,10 +368,7 @@ class Store:
         transaction with foreign keys off — dropping the old table with them on
         would cascade the questions' answers away.
         """
-        row = self.conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='answers'"
-        ).fetchone()
-        if not row or "UNIQUE" not in (row["sql"] or ""):
+        if not self.needs_rebuild():
             return
 
         self.conn.execute("PRAGMA foreign_keys=OFF")
@@ -521,6 +542,18 @@ class Store:
         q = self.get(key)
         if q is None:
             raise KeyError(f"no such question: {key}")
+        if self.needs_rebuild():
+            raise RuntimeError(
+                "this database still has UNIQUE(question_id) on answers, which "
+                "an append-only log cannot use — run `cactus migrate` once, "
+                "and restart anything holding an older cactus module"
+            )
+        if not q.persistent and q.status == "answered":
+            raise AlreadyAnswered(
+                f"{key} was already answered "
+                f"{'with ' + ', '.join(q.answer.selected) if q.answer and q.answer.selected else ''}"
+                f" — undo it first if that verdict should change".replace("  ", " ")
+            )
         now = _now()
         self.conn.execute(
             """

@@ -93,6 +93,17 @@ scope.
   or answered question never shifts the others under the reader's eye.
 - Typing in the TUI is an explicit mode. Auto-focusing the answer input silently
   retargets `j`, `k`, `s`, `c` and the project brackets into the text field.
+- Opening the store applies additive column adds only. The `answers` table
+  rebuild that drops `UNIQUE(question_id)` is destructive-shaped — it changes
+  the schema under any process holding an older module — so it lives behind
+  `cactus migrate --yes`. `answer()` refuses on an un-rebuilt database with an
+  instruction rather than a SQL error.
+- Re-answering a one-shot row that is already `answered` raises
+  `AlreadyAnswered` and exits 3. Two surfaces share one inbox, so the second
+  tap must not silently overwrite what the first reader saw.
+- TUI bindings are gated by `check_action`, so the footer and the keyboard
+  agree: no `Run` key on a row with no command, no `d` on a row that is not a
+  notice.
 - `clear` retires a question and keeps the transcript; only `clear --purge`
   deletes rows.
 - `reopen` is undo's store primitive: status back to `open`, answer row deleted.
