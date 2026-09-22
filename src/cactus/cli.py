@@ -153,6 +153,30 @@ ACTS
   --agent ID tags a row with the pane that owns it, defaulting to
   $HERDR_PANE_ID. It filters, it does not scope: the project is still the key.
 
+FEED
+
+  A projector — a board, a web face, anything that is not this CLI — reads the
+  whole actionable inbox in one document:
+
+  cactus feed --json
+  {"cursor": {"max_id": 41, "max_updated": "...", "count": 12},
+   "questions": [{"key": "q7", "act": "review", "agent": "herdr:pane-3",
+                  "review": {...}, "steps": [], "answers": [...], ...}]}
+
+  Rows embed their review block, their steps and their full answer log, so a
+  projector never needs a second call. Default scope is every project, since a
+  board renders whatever the human can reach; --here narrows it.
+
+  Poll it by cursor: compare the block against your last value and only re-read
+  rows when it moves. A sidecar write bumps it too, so a ticked step is visible
+  without a separate check.
+
+  Filters: --act NAME (repeatable), --agent ID, -t THREAD, -s STATUS, --here.
+  Exit 3 when nothing matches.
+
+  Answer back through this same CLI — `cactus answer KEY -s LABEL` — rather
+  than writing the database directly. One writer keeps the cursor honest.
+
 SCOPE
 
   Questions record the project they were asked from: the git toplevel, else
@@ -436,6 +460,39 @@ def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
     return EXIT_OK
 
 
+def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Emit the actionable inbox as one document, for a projector to render.
+
+    Scope defaults to every project, matching the human surfaces rather than the
+    agent verbs: a board renders whatever the human can reach, and narrows with
+    --here or --agent.
+
+    The cursor block is the store's existing change token. A projector compares
+    it against its last value and only re-reads rows when it moves, so a poll
+    that finds nothing new costs one query.
+    """
+    status: Any = None if args.status == "any" else args.status
+    if isinstance(status, str) and "," in status:
+        status = [x.strip() for x in status.split(",") if x.strip()]
+
+    questions = store.list(
+        project=project,
+        thread=args.thread,
+        status=status,
+        all_projects=not args.here,
+        acts=args.act,
+        agent=args.agent,
+    )
+    mid, mts, count = store.cursor()
+    doc = {
+        "cursor": {"max_id": mid, "max_updated": mts, "count": count},
+        "questions": [q.as_dict() for q in questions],
+    }
+    json.dump(doc, sys.stdout, indent=2 if args.pretty else None)
+    sys.stdout.write("\n")
+    return EXIT_OK if questions else EXIT_EMPTY
+
+
 def cmd_threads(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     rows = store.threads(project=project, all_projects=args.all)
     if args.json:
@@ -574,6 +631,18 @@ def build_parser() -> argparse.ArgumentParser:
     clr.add_argument("--all", action="store_true", help="every project")
     clr.add_argument("--purge", action="store_true", help="delete rather than mark cleared")
     clr.set_defaults(fn=cmd_clear)
+
+    fd = verb("feed", help="the actionable inbox as one JSON document, for a projector")
+    fd.add_argument("--act", action="append", choices=list(ACTS),
+                    help="only this act, repeatable")
+    fd.add_argument("--agent", help="only rows owned by this agent/pane")
+    fd.add_argument("-t", "--thread")
+    fd.add_argument("-s", "--status", default="open,live",
+                    help="statuses to include, comma-separated, or 'any'")
+    fd.add_argument("--here", action="store_true",
+                    help="this project only (default: every project)")
+    fd.add_argument("--pretty", action="store_true", help="indent the document")
+    fd.set_defaults(fn=cmd_feed)
 
     rv = verb("review", parents=[common], help="attach a verify block to a review row")
     rv.add_argument("key")

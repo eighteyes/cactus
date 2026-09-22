@@ -48,10 +48,10 @@
 
 ## 5. Feed
 
-- [ ] `cactus feed --json` emitting `{cursor, questions}`
-- [ ] Rows embed `review`, `steps`, and the `answers` log
-- [ ] `--agent`, `--act`, `--here` filters
-- [ ] Exit 3 when filters match nothing
+- [x] `cactus feed --json` emitting `{cursor, questions}`
+- [x] Rows embed `review`, `steps`, and the `answers` log
+- [x] `--agent`, `--act`, `--here` filters
+- [x] Exit 3 when filters match nothing
 
 ## 6. Monitor
 
@@ -77,7 +77,7 @@
 - [x] `.ai/tmp/test_acts.py` — every act round-trips ask, list, answer
 - [x] `.ai/tmp/test_persistent.py` — a `live` row takes two verdicts; the log
       holds both; `wait_for_answer` does not block on it
-- [ ] `.ai/tmp/test_feed.py` — cursor stability, filters, exit 3
+- [x] `.ai/tmp/test_feed.sh` — cursor stability, filters, exit 3
 - [x] `.ai/tmp/test_migrate.py` — a qaui-era database opens, reads as `ask`, and
       its single answers survive the constraint rebuild
 - [x] `.ai/tmp/test_sidecar_cursor.py` — a step toggle moves the cursor
