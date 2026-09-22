@@ -269,9 +269,9 @@ class QAUIApp(App[int]):
 
     async def on_mount(self) -> None:
         if self.scoped_project is None:
-            rows = self.store.projects()
-            if self.current_project is None and rows:
-                self.current_project = rows[0]["project"]
+            live = self._live_projects()
+            if self.current_project is None and live:
+                self.current_project = live[0]
         self.query_one("#card", Static).border_title = "answering"
         await self._reload(force=True)
         self.query_one("#rail-list", ListView).focus()
@@ -280,16 +280,34 @@ class QAUIApp(App[int]):
 
     # ---- data loading ---------------------------------------------------
 
-    async def _reload(self, *, force: bool = False) -> None:
-        cursor = self.store.cursor()
-        if not force and cursor == self.last_cursor:
-            return
-        self.last_cursor = cursor
+    def _live_projects(self) -> list[str]:
+        """Projects with something left to answer.
+
+        A drained project is not a place to be: switching into one lands on an
+        empty rail with nothing to do, so it leaves the rotation until an agent
+        asks there again.
+        """
+        return [r["project"] for r in self.store.projects() if r["open_count"] > 0]
+
+    def _load_questions(self) -> None:
         self.questions = self.store.tree(
             project=self.current_project,
             status="open",
             all_projects=self.current_project is None,
         )
+        if self.questions or self.scoped_project is not None:
+            return
+        live = self._live_projects()
+        if live and self.current_project not in live:
+            self.current_project = live[0]
+            self.questions = self.store.tree(project=self.current_project, status="open")
+
+    async def _reload(self, *, force: bool = False) -> None:
+        cursor = self.store.cursor()
+        if not force and cursor == self.last_cursor:
+            return
+        self.last_cursor = cursor
+        self._load_questions()
         self._rebuild_project_head()
         await self._rebuild_rail()
         self._rebuild_card()
@@ -317,7 +335,8 @@ class QAUIApp(App[int]):
             (r["open_count"] for r in rows if r["project"] == self.current_project), 0
         )
         label = project_label(self.current_project)
-        switch = "" if self.scoped_project is not None or len(rows) < 2 else "  [ ]"
+        others = len(self._live_projects())
+        switch = "" if self.scoped_project is not None or others < 2 else "  [ ]"
         head.update(f"{label}  {count} open{switch}")
 
     async def _rebuild_rail(self) -> None:
@@ -373,7 +392,7 @@ class QAUIApp(App[int]):
         bar = self.query_one("#status-bar", Static)
         rows = self.store.projects()
         open_total = sum(r["open_count"] for r in rows)
-        proj_total = len(rows)
+        proj_total = sum(1 for r in rows if r["open_count"] > 0)
         mode = "typing — esc to leave" if self.free_text_mode else "ready"
         noun = "project" if proj_total == 1 else "projects"
         undo = ""
@@ -456,14 +475,14 @@ class QAUIApp(App[int]):
     async def _switch_project(self, step: int) -> None:
         if self.scoped_project is not None:
             return
-        rows = self.store.projects()
-        if not rows:
+        names = self._live_projects()
+        if not names:
             return
-        names = [r["project"] for r in rows]
         try:
             idx = names.index(self.current_project)
         except ValueError:
-            idx = 0
+            # Current project drained out of the rotation; step from its edge.
+            idx = -1 if step > 0 else 0
         self.current_project = names[(idx + step) % len(names)]
         self.focused_key = None
         self.multi_selected = set()
@@ -647,11 +666,7 @@ class QAUIApp(App[int]):
         self.drafts.pop(answered_key, None)
         self.free_text_mode = False
         self._hide_input()
-        self.questions = self.store.tree(
-            project=self.current_project,
-            status="open",
-            all_projects=self.current_project is None,
-        )
+        self._load_questions()
         self.last_cursor = self.store.cursor()
         if self.questions:
             next_index = min(old_index, len(self.questions) - 1)

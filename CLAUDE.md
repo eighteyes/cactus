@@ -72,6 +72,8 @@ scope.
   match.
 - `ListView` consumes `enter` before an App binding can see it, so the TUI
   triggers submit from `on_list_view_selected`, not from the `enter` binding.
+- The TUI rotates over projects with open questions only; `store.projects()`
+  still reports drained ones, which the CLI needs for history.
 - Rail blocks are a fixed 4 rows and the project header a fixed 1, so an arriving
   or answered question never shifts the others under the reader's eye.
 - Typing in the TUI is an explicit mode. Auto-focusing the answer input silently
