@@ -93,9 +93,18 @@
 - [x] TUI `p` nudges the focused row's agent, reporting through the status bar
 - [x] `--agent ""` disowns explicitly; an omitted flag inherits the pane
 - [x] `.ai/tmp/test_poke.py` and CLI cases in `test_cli_acts.sh`
-- [ ] Confirm the herdr transport against a real pane the user nominates
+- [x] Confirm the herdr transport against a real pane the user nominates
+      (poked w3B:p1 live; the prompt arrived and the agent re-read the feed)
 
 ## 10. Handoff
 
-- [ ] `.ai/REVIEW.md`: the `cactus answer` command shape c100 calls
-- [ ] Confirm exit-code contract for a doubly-answered non-persistent row
+- [x] `.ai/REVIEW.md`: human review steps, including the c100 contract
+- [x] Confirm exit-code contract for a doubly-answered non-persistent row
+      (raises AlreadyAnswered, exits 3, first verdict survives)
+
+## 11. Migration safety
+
+- [x] `answers` rebuild moved out of `Store.__init__` behind `cactus migrate --yes`
+- [x] `answer()` refuses an un-rebuilt database with an instruction, not a SQL error
+- [x] `check_action` gates every TUI binding to rows it applies to
+- [x] `.ai/tmp/test_migrate_gate.sh`
