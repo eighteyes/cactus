@@ -18,8 +18,8 @@ import sys
 from typing import Any, Sequence
 
 from .scope import project_display, resolve_project
-from .store import (ACTS, ACT_SHAPES, BLOCKING_ACTS, Choice, Question, Store,
-                     default_db_path)
+from .store import (ACTS, ACT_SHAPES, DEFAULT_BLOCKED, Choice, Question, Store,
+                    default_db_path)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -125,16 +125,31 @@ ACTS
   An act says what you are asking for. It is orthogonal to the answer shape:
   the shape is how a reply is collected, the act is what the reply is for.
 
-    act      blocks   shape                       what it is for
-    ask      yes      choice/multi/text/confirm   a decision you need
-    steer    yes      choice, text                approve a direction or redirect
-    run      yes      confirm                     approve a command before it runs
-    seen     no       text                        an FYI; the human dismisses it
-    review   no       confirm (pass/fail)         a verify block, re-run over time
-    plan     no       text                        an ordered checklist
+    act      blocks by default   shape                       what it is for
+    ask      yes                 choice/multi/text/confirm   a decision you need
+    run      yes                 confirm                     approve a command
+    steer    no                  choice, text                what you will do anyway
+    seen     no                  text                        an FYI; human dismisses
+    review   no                  confirm (pass/fail)         a verify block
+    plan     no                  text                        an ordered checklist
 
-  Only ask, steer and run block. `--wait` on any of the others is an error,
-  because nothing will ever arrive: watch `cactus --monitor` instead.
+  WHETHER A ROW BLOCKS IS YOUR CALL, not the act's. The table is only the
+  default you get by saying nothing; `--blocked` and `--no-block` override it
+  on any row. The act says what you are asking for, the flag says whether you
+  are stopping for it.
+
+  Over-claiming is the failure mode: parking a human on a question you could
+  have answered yourself. It is measured, not policed — your blocked rate is
+  visible in `cursor.blocked`.
+
+  `--wait` on a row you posted with blocked=false is an error, because nothing
+  will ever arrive: watch `cactus --monitor` instead. A persistent act cannot
+  block at all, since it is answered again every time the work is re-checked.
+
+  A steer states what happens anyway. `--chosen LABEL` is required on one and
+  must name a real option: the agent proceeds with it, and a tap redirects.
+  "I am going to use the staging tenant" is a steer. "Which tenant?" is an
+  ask.
 
   review and plan are persistent. They are born `live`, take a verdict as
   often as the work is re-checked, and stay live until cleared. Their answer
@@ -358,6 +373,8 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             # the row stays unowned.
             agent=args.agent or None,
             word=args.word,
+            chosen=args.chosen,
+            blocked=args.blocked,
             choices=choices,
             allow_free=not args.no_free,
             thread=args.thread,
@@ -369,10 +386,10 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_ERROR
 
-    if args.wait and act not in BLOCKING_ACTS:
+    if args.wait and not q.blocked:
         print(
-            f"cactus: act={act!r} never blocks; {q.key} created, watch "
-            f"`cactus --monitor` for its disposition",
+            f"cactus: {q.key} was posted with blocked=false; it is created, "
+            f"watch `cactus --monitor` for its disposition",
             file=sys.stderr,
         )
         return EXIT_ERROR
@@ -555,7 +572,7 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     # one boolean.
     blocked: dict[str, int] = {}
     for q in questions:
-        if q.agent and q.act in BLOCKING_ACTS and q.status == "open":
+        if q.agent and q.blocked and q.status == "open":
             blocked[q.agent] = blocked.get(q.agent, 0) + 1
     doc = {
         "cursor": {
@@ -696,6 +713,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="owning agent, as a RESOLVED identity — not a bare pane id")
     ask.add_argument("--word",
                      help="short label a projector derives its key from")
+    ask.add_argument("--chosen",
+                     help="the option that happens anyway unless a tap redirects")
+    blk = ask.add_mutually_exclusive_group()
+    blk.add_argument("--blocked", dest="blocked", action="store_true", default=None,
+                     help="this row parks the agent until it is answered")
+    blk.add_argument("--no-block", dest="blocked", action="store_false",
+                     help="the agent proceeds; the answer redirects it later")
     ask.add_argument("--kind", choices=["choice", "multi", "text", "confirm"],
                      help="override the inferred kind")
     ask.add_argument("--no-free", action="store_true",

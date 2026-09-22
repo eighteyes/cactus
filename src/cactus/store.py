@@ -32,8 +32,19 @@ ACTS = ("ask", "steer", "run", "seen", "review", "plan")
 # their own, and `wait_for_answer` refuses them.
 PERSISTENT_ACTS = ("review", "plan")
 
-# Acts an agent may block on.
-BLOCKING_ACTS = ("ask", "steer", "run")
+# Whether a row blocks is the AGENT's call, stored per row in `blocked`, not a
+# property of its act. The act only supplies the default the agent gets when it
+# says nothing, and the agent overrides it freely. Over-claiming — parking a
+# human on a question the agent could have answered — is the failure mode, and
+# it is measurable as a blocked rate rather than legislated here.
+DEFAULT_BLOCKED = {
+    "ask": True,
+    "run": True,
+    "steer": False,
+    "seen": False,
+    "review": False,
+    "plan": False,
+}
 
 # Shapes each act accepts. `seen` and `plan` collect no answer of their own.
 ACT_SHAPES: dict[str, tuple[str, ...]] = {
@@ -58,6 +69,8 @@ CREATE TABLE IF NOT EXISTS questions (
     act          TEXT    NOT NULL DEFAULT 'ask',
     agent        TEXT,
     word         TEXT,
+    chosen       TEXT,
+    blocked      INTEGER NOT NULL DEFAULT 1,
     choices      TEXT    NOT NULL DEFAULT '[]',
     allow_free   INTEGER NOT NULL DEFAULT 1,
     context      TEXT,
@@ -238,6 +251,8 @@ class Question:
     act: str
     agent: str | None
     word: str | None
+    chosen: str | None
+    blocked: bool
     choices: list[Choice]
     allow_free: bool
     context: str | None
@@ -267,6 +282,8 @@ class Question:
             "act": self.act,
             "agent": self.agent,
             "word": self.word,
+            "chosen": self.chosen,
+            "blocked": self.blocked,
             "choices": [c.as_dict() for c in self.choices],
             "allow_free": self.allow_free,
             "context": self.context,
@@ -311,6 +328,12 @@ class Store:
             self.conn.execute("ALTER TABLE questions ADD COLUMN agent TEXT")
         if "word" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN word TEXT")
+        if "chosen" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN chosen TEXT")
+        if "blocked" not in cols:
+            self.conn.execute(
+                "ALTER TABLE questions ADD COLUMN blocked INTEGER NOT NULL DEFAULT 1"
+            )
 
         self._drop_answer_uniqueness()
 
@@ -378,6 +401,8 @@ class Store:
         act: str = "ask",
         agent: str | None = None,
         word: str | None = None,
+        chosen: str | None = None,
+        blocked: bool | None = None,
         choices: Sequence[Choice] | None = None,
         allow_free: bool = True,
         thread: str | None = None,
@@ -399,6 +424,22 @@ class Store:
             raise ValueError(f"kind={kind!r} requires at least one choice")
         if kind == "confirm" and not choices:
             choices = [Choice("yes"), Choice("no")]
+        if chosen is not None and choices:
+            labels = [c.label for c in choices]
+            if chosen not in labels:
+                raise ValueError(f"chosen must be one of {labels}, got {chosen!r}")
+        if act == "steer" and chosen is None:
+            raise ValueError(
+                "act='steer' needs a chosen option: a steer states what "
+                "happens anyway, and one that states nothing is an ask"
+            )
+        if blocked is None:
+            blocked = DEFAULT_BLOCKED[act]
+        if blocked and act in PERSISTENT_ACTS:
+            raise ValueError(
+                f"act={act!r} is persistent and cannot block: it is answered "
+                f"again whenever the work is re-checked"
+            )
 
         parent_id = None
         if parent_key:
@@ -419,12 +460,13 @@ class Store:
             """
             INSERT INTO questions
                 (key, project, cwd, thread, parent_id, text, kind, act, agent,
-                 word, choices, allow_free, context, asked_by, status,
-                 created_at, updated_at)
-            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 word, chosen, blocked, choices, allow_free, context, asked_by,
+                 status, created_at, updated_at)
+            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project, cwd, thread, parent_id, text, kind, act, agent, word,
+                chosen, 1 if blocked else 0,
                 json.dumps([c.as_dict() for c in choices]),
                 1 if allow_free else 0, context, asked_by, status, now, now,
             ),
@@ -754,12 +796,11 @@ class Store:
         first = self.get(key)
         if first is None:
             raise KeyError(f"no such question: {key}")
-        # Blocking is a property of the act, not of persistence: `seen` is
-        # one-shot yet still has nothing for an agent to wait on.
-        if first.act not in BLOCKING_ACTS:
+        # The row's own flag decides, because the agent that wrote it decided.
+        if not first.blocked:
             raise ValueError(
-                f"{key} is act={first.act!r}, which never blocks — watch the "
-                f"monitor stream for its disposition instead"
+                f"{key} was posted with blocked=false — watch the monitor "
+                f"stream for its disposition instead of waiting on it"
             )
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -860,6 +901,8 @@ class Store:
             act=row["act"],
             agent=row["agent"],
             word=row["word"],
+            chosen=row["chosen"],
+            blocked=bool(row["blocked"]),
             choices=[Choice.parse(c) for c in json.loads(row["choices"] or "[]")],
             allow_free=bool(row["allow_free"]),
             context=row["context"],
