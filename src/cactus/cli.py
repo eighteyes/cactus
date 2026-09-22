@@ -341,10 +341,6 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         # An act with one legal shape picks it, so `--act run` alone is enough.
         if kind not in ACT_SHAPES[act] and len(ACT_SHAPES[act]) == 1:
             kind = ACT_SHAPES[act][0]
-    if act == "run" and kind == "confirm" and not choices:
-        choices = [Choice("approve"), Choice("deny")]
-    if act == "review" and kind == "confirm" and not choices:
-        choices = [Choice("pass"), Choice("fail")]
 
     text = args.text
     if text == "-":
@@ -786,7 +782,8 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("-m", "--message", help="override the nudge text")
     pk.set_defaults(fn=cmd_poke)
 
-    rv = verb("review", parents=[common], help="attach a verify block to a review row")
+    rv = verb("review", parents=[common],
+              help="attach a verify block to a review or run row")
     rv.add_argument("key")
     rv.add_argument("--look-at", help="what a human should look at")
     rv.add_argument("--run", help="the verbatim command to run")

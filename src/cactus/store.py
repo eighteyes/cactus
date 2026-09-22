@@ -23,6 +23,10 @@ from typing import Any, Iterable, Sequence
 KINDS = ("choice", "multi", "text", "confirm")
 STATUSES = ("open", "live", "answered", "cleared")
 
+# What a human surface shows: a fork still waiting, and a persistent row that
+# stays answerable. Both are work in front of the reader.
+ACTIONABLE = ("open", "live")
+
 # What the agent is asking for. Orthogonal to KINDS, which is how the answer is
 # collected: a `run` act uses a `confirm` shape, a `steer` act may use either
 # `choice` or `text`.
@@ -440,7 +444,11 @@ class Store:
         if kind in ("choice", "multi") and not choices:
             raise ValueError(f"kind={kind!r} requires at least one choice")
         if kind == "confirm" and not choices:
-            choices = [Choice("yes"), Choice("no")]
+            # The act names the verdict: a review passes or fails, a command is
+            # approved or denied, and neither reads as yes/no on a board key.
+            defaults = {"review": ("pass", "fail"), "run": ("approve", "deny")}
+            a, b = defaults.get(act, ("yes", "no"))
+            choices = [Choice(a), Choice(b)]
         if chosen is not None and choices:
             labels = [c.label for c in choices]
             if chosen not in labels:
@@ -619,8 +627,11 @@ class Store:
         q = self.get(key)
         if q is None:
             raise KeyError(f"no such question: {key}")
-        if q.act != "review":
-            raise ValueError(f"{key} is act={q.act!r}, not 'review'")
+        # `run` rows carry a command too, and it belongs in the same place as a
+        # review's: both are rows where something is going to be executed and
+        # the human decides whether it should be.
+        if q.act not in ("review", "run"):
+            raise ValueError(f"{key} is act={q.act!r}, not 'review' or 'run'")
         self.conn.execute(
             """
             INSERT INTO reviews (question_id, look_at, run_cmd, pass_when, fail_when, then_do)
@@ -729,13 +740,14 @@ class Store:
             """
             SELECT project,
                    SUM(CASE WHEN status = 'open'     THEN 1 ELSE 0 END) AS open_count,
+                   SUM(CASE WHEN status = 'live'     THEN 1 ELSE 0 END) AS live_count,
                    SUM(CASE WHEN status = 'answered' THEN 1 ELSE 0 END) AS answered_count,
                    COUNT(*) AS total,
                    MAX(updated_at) AS last_activity
             FROM questions
             WHERE status != 'cleared'
             GROUP BY project
-            ORDER BY open_count DESC, last_activity DESC
+            ORDER BY open_count DESC, live_count DESC, last_activity DESC
             """
         ).fetchall()
         return [dict(r) for r in rows]
@@ -882,7 +894,7 @@ class Store:
         answer = answers[-1] if answers else None
 
         review = None
-        if row["act"] == "review":
+        if row["act"] in ("review", "run"):
             rrow = self.conn.execute(
                 "SELECT * FROM reviews WHERE question_id = ?", (row["id"],)
             ).fetchone()

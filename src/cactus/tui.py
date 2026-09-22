@@ -15,15 +15,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
 from .scope import project_display, project_label
-from .store import Question, Store
+from .store import ACTIONABLE, Question, Store
 
 POLL_INTERVAL = 0.5
+
+# How many lines of command output the card shows; the rest spills to a file.
+RUN_TAIL = 12
 
 HINTS = {
     "choice": "1-9 pick   i free text   s skip   c clear",
@@ -39,7 +43,13 @@ def _flatten(text: str) -> str:
 
 
 def _card_lines(
-    q: Question, *, selected: set[str], pending: str, show_project: bool
+    q: Question,
+    *,
+    selected: set[str],
+    pending: str,
+    show_project: bool,
+    run_output: list[str] | None = None,
+    run_state: str = "",
 ) -> str:
     """Full detail for the one question being answered."""
     meta = [q.key]
@@ -57,6 +67,36 @@ def _card_lines(
     if q.context:
         lines.append("")
         lines.append(q.context)
+
+    if q.chosen:
+        lines.append("")
+        lines.append(f"doing anyway: {q.chosen}   — pick below to redirect")
+
+    if q.review is not None:
+        block = [
+            ("look at", q.review.look_at),
+            ("run", q.review.run_cmd),
+            ("pass", q.review.pass_when),
+            ("fail", q.review.fail_when),
+            ("then", q.review.then_do),
+        ]
+        rows = [(label, value) for label, value in block if value]
+        if rows:
+            lines.append("")
+            for label, value in rows:
+                lines.append(f"  {label:<8}{value}")
+
+    if q.act == "plan" and q.steps:
+        lines.append("")
+        for st in q.steps:
+            mark = "x" if st.done else " "
+            lines.append(f"  {st.idx + 1})  [{mark}] {st.text}")
+
+    if run_output:
+        lines.append("")
+        lines.append(f"  output ({run_state})")
+        for row in run_output[-RUN_TAIL:]:
+            lines.append(f"  | {row}")
 
     if q.kind in ("choice", "multi"):
         lines.append("")
@@ -82,7 +122,19 @@ def _card_lines(
             lines.append("enter submits this text alone, or pick above to send both")
 
     lines.append("")
-    lines.append(HINTS.get(q.kind, ""))
+    hint = HINTS.get(q.kind, "")
+    extras = []
+    if q.review is not None and q.review.run_cmd:
+        extras.append("C copy   R run   p poke")
+    elif q.agent:
+        extras.append("p poke")
+    if q.act == "plan" and q.steps:
+        extras.append("1-9 toggle step")
+    if q.act == "seen":
+        extras.append("d dismiss")
+    if run_output:
+        extras.append("O open full output")
+    lines.append("   ".join([hint, *extras]).strip())
     return "\n".join(lines)
 
 
@@ -99,15 +151,28 @@ class QuestionBlock(ListItem):
 
     @staticmethod
     def _kind_line(q: Question, draft: bool) -> str:
-        if q.kind == "choice":
-            kind = f"{len(q.choices)} choices"
+        if q.act == "plan":
+            done = sum(1 for st in q.steps if st.done)
+            shape = f"{done}/{len(q.steps)} steps"
+        elif q.kind == "choice":
+            shape = f"{len(q.choices)} choices"
         elif q.kind == "multi":
-            kind = f"{len(q.choices)} choices · multi"
+            shape = f"{len(q.choices)} choices · multi"
         elif q.kind == "confirm":
-            kind = "yes / no"
+            shape = "yes / no"
         else:
-            kind = "text"
-        return f"{kind} · draft" if draft else kind
+            shape = "text"
+        # The act leads, because it says what is being asked of the reader; a
+        # live row is marked so a re-answerable one is never mistaken for a
+        # fork that is still holding an agent.
+        parts = [q.act, shape]
+        if q.status == "live":
+            parts.append("live")
+        if not q.blocked and q.status == "open":
+            parts.append("not blocking")
+        if draft:
+            parts.append("draft")
+        return " · ".join(parts)
 
     @classmethod
     def _block(cls, q: Question, active: bool, draft: bool) -> str:
@@ -207,6 +272,10 @@ class CactusApp(App[int]):
         Binding("]", "next_project", "NextProj"),
         Binding("u", "undo", "Undo"),
         Binding("p", "poke", "Poke"),
+        Binding("C", "copy_command", "Copy"),
+        Binding("R", "run_command", "Run"),
+        Binding("O", "open_output", "Output"),
+        Binding("d", "dismiss", "Dismiss"),
         Binding("r", "refresh_view", "Refresh"),
         Binding("q", "quit_app", "Quit"),
         Binding("1", "select_choice(1)", "1", show=True),
@@ -230,6 +299,8 @@ class CactusApp(App[int]):
         self.multi_selected: set[str] = set()
         self.drafts: dict[str, str] = {}
         self.undo_stack: list[dict[str, Any]] = []
+        self.run_output = {}
+        self.run_state = {}
         self.free_text_mode = False
         self.last_cursor: tuple[int, str, int] = (-1, "", -1)
         self._rebuilding = False
@@ -288,12 +359,15 @@ class CactusApp(App[int]):
         empty rail with nothing to do, so it leaves the rotation until an agent
         asks there again.
         """
-        return [r["project"] for r in self.store.projects() if r["open_count"] > 0]
+        return [
+            r["project"] for r in self.store.projects()
+            if r["open_count"] > 0 or r["live_count"] > 0
+        ]
 
     def _load_questions(self) -> None:
         self.questions = self.store.tree(
             project=self.current_project,
-            status="open",
+            status=list(ACTIONABLE),
             all_projects=self.current_project is None,
         )
         if self.questions or self.scoped_project is not None:
@@ -301,7 +375,9 @@ class CactusApp(App[int]):
         live = self._live_projects()
         if live and self.current_project not in live:
             self.current_project = live[0]
-            self.questions = self.store.tree(project=self.current_project, status="open")
+            self.questions = self.store.tree(
+                project=self.current_project, status=list(ACTIONABLE)
+            )
 
     async def _reload(self, *, force: bool = False) -> None:
         cursor = self.store.cursor()
@@ -386,12 +462,117 @@ class CactusApp(App[int]):
                 selected=self.multi_selected,
                 pending=self.pending_text,
                 show_project=self._show_project,
+                run_output=self.run_output.get(q.key),
+                run_state=self.run_state.get(q.key, ""),
             )
         )
 
     # Transient one-line feedback for actions that touch the outside world, so a
     # poke that failed says so instead of looking like a dead key.
     flash: str = ""
+
+    # Command output, per row. Kept whole; the card shows a tail and `O` spills
+    # the rest to a file, because a run worth doing is often longer than a card.
+    run_output: dict[str, list[str]]
+    run_state: dict[str, str]
+
+    def _command_of(self, q: Question) -> str | None:
+        return q.review.run_cmd if q.review is not None else None
+
+    def action_copy_command(self) -> None:
+        """Put the focused row's command on the clipboard."""
+        from .shell import copy, ShellError
+
+        q = self._current_question()
+        if q is None:
+            return
+        command = self._command_of(q)
+        if not command:
+            self.flash = f"{q.key} carries no command"
+        else:
+            try:
+                tool = copy(command)
+            except ShellError as exc:
+                self.flash = f"copy failed: {exc}"
+            else:
+                self.flash = f"copied to clipboard via {tool}"
+        self._rebuild_status_bar()
+
+    def action_run_command(self) -> None:
+        """Run the focused row's command in the row's own directory.
+
+        Never on arrival, only on this key: the command is agent-written text
+        and the keypress is the authorisation. It runs where the row was
+        recorded, not where the reader happens to be looking.
+        """
+        q = self._current_question()
+        if q is None:
+            return
+        command = self._command_of(q)
+        if not command:
+            self.flash = f"{q.key} carries no command"
+            self._rebuild_status_bar()
+            return
+        if self.run_state.get(q.key) == "running":
+            self.flash = f"{q.key} is already running"
+            self._rebuild_status_bar()
+            return
+        self.run_output[q.key] = []
+        self.run_state[q.key] = "running"
+        self.flash = f"running in {q.cwd}"
+        self._rebuild_status_bar()
+        self._redraw_active()
+        self._stream_command(q.key, command, q.cwd)
+
+    @work(thread=True)
+    def _stream_command(self, key: str, command: str, cwd: str) -> None:
+        from .shell import run, ShellError
+
+        try:
+            for line in run(command, cwd=cwd):
+                self.call_from_thread(self._append_output, key, line)
+        except ShellError as exc:
+            self.call_from_thread(self._append_output, key, f"— {exc} —")
+        self.call_from_thread(self._finish_output, key)
+
+    def _append_output(self, key: str, line: str) -> None:
+        self.run_output.setdefault(key, []).append(line)
+        if self.focused_key == key:
+            self._rebuild_card()
+
+    def _finish_output(self, key: str) -> None:
+        tail = self.run_output.get(key) or []
+        last = tail[-1] if tail else ""
+        self.run_state[key] = last.strip("— ") if last.startswith("—") else "done"
+        if self.focused_key == key:
+            self._rebuild_card()
+            self.flash = f"{key}: {self.run_state[key]}"
+            self._rebuild_status_bar()
+
+    def action_open_output(self) -> None:
+        """Spill the focused row's full capture to a file and name it."""
+        from .shell import spill
+
+        q = self._current_question()
+        if q is None:
+            return
+        lines = self.run_output.get(q.key)
+        if not lines:
+            self.flash = f"{q.key} has no captured output"
+        else:
+            self.flash = f"full output: {spill(lines, key=q.key)}"
+        self._rebuild_status_bar()
+
+    async def action_dismiss(self) -> None:
+        """Dismiss a seen row — it wanted acknowledgement, not an answer."""
+        q = self._current_question()
+        if q is None:
+            return
+        if q.act != "seen":
+            self.flash = f"{q.key} is act={q.act}, not a dismissable notice"
+            self._rebuild_status_bar()
+            return
+        await self._submit_answer(q, selected=[], text=None, skipped=True)
 
     async def action_poke(self) -> None:
         """Nudge the agent that owns the focused row to re-read its feed.
@@ -613,6 +794,18 @@ class CactusApp(App[int]):
     # ---- answering ----------------------------------------------------
 
     async def action_select_choice(self, n: int) -> None:
+        plan = self._current_question()
+        if plan is not None and plan.act == "plan" and plan.steps:
+            idx = n - 1
+            step = next((st for st in plan.steps if st.idx == idx), None)
+            if step is None:
+                self.flash = f"{plan.key} has no step {n}"
+            else:
+                self.store.set_step_done(plan.key, idx, not step.done)
+                self.flash = f"step {n} {'done' if not step.done else 'reopened'}"
+            await self.action_refresh_view()
+            self._rebuild_status_bar()
+            return
         q = self._current_question()
         if q is None or q.kind not in ("choice", "multi", "confirm"):
             return

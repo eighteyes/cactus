@@ -61,16 +61,17 @@
 
 ## 7. Surfaces
 
-- [ ] TUI renders `act` as a rail badge and `live` distinctly from `open`
-- [ ] TUI ignores `agent`
-- [ ] Review card shows look-at / run / pass / fail / then
-- [ ] Keys `c` copy, `r` run in the row's cwd, `p` push to prompt
-- [ ] `r` streams stdout and stderr live into the card, never auto-runs
-- [ ] A key opens the full captured output of the last `r` run
-- [ ] Plan card lists steps; a key toggles done
-- [ ] `cactus step --done <idx>` lets an agent toggle the same state
-- [ ] `seen` dismisses on a single key
-- [ ] Rail blocks stay a fixed 4 rows
+- [x] TUI renders `act` as a rail badge and `live` distinctly from `open`
+- [x] TUI ignores `agent`
+- [x] Review card shows look-at / run / pass / fail / then
+- [x] Keys `C` copy, `R` run in the row's cwd, `p` poke the owner
+      (lowercase c and r were already clear and refresh)
+- [x] `r` streams stdout and stderr live into the card, never auto-runs
+- [x] A key opens the full captured output of the last `r` run
+- [x] Plan card lists steps; a key toggles done
+- [x] `cactus step --done <idx>` lets an agent toggle the same state
+- [x] `seen` dismisses on a single key
+- [x] Rail blocks stay a fixed 4 rows
 
 ## 8. Verify
 
@@ -82,7 +83,8 @@
       its single answers survive the constraint rebuild
 - [x] `.ai/tmp/test_sidecar_cursor.py` — a step toggle moves the cursor
 - [x] Existing `.ai/tmp/` scripts pass after the rename
-- [ ] Manual: review row runs a command with `r` and takes a fail verdict
+- [x] `.ai/tmp/test_tui_acts.py` — rail badges, review card, R/O/d, step digits
+- [ ] Manual: review row runs a command with `R` and takes a fail verdict
 
 ## 9. Poke
 
