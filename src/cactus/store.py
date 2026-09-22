@@ -1,5 +1,5 @@
 """
-store.py — SQLite persistence for the qaui question/answer inbox.
+store.py — SQLite persistence for the cactus question/answer inbox.
 
 Responsibilities:
 - Own the database location, schema, and migrations.
@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -56,14 +57,39 @@ CREATE INDEX IF NOT EXISTS idx_q_updated        ON questions(updated_at);
 """
 
 
+_legacy_notice_shown = False
+
+
 def default_db_path() -> Path:
-    """Database location, overridable with QAUI_DB for tests and alternate inboxes."""
-    env = os.environ.get("QAUI_DB")
+    """Database location, overridable with CACTUS_DB for tests and alternate inboxes.
+
+    When the cactus database is absent and a qaui-era one exists, that older file
+    is used and a move instruction is printed once. The old file is never
+    written to a new location automatically; relocating it stays the user's
+    decision.
+    """
+    env = os.environ.get("CACTUS_DB")
     if env:
         return Path(env).expanduser()
     base = os.environ.get("XDG_DATA_HOME")
     root = Path(base).expanduser() if base else Path.home() / ".local" / "share"
-    return root / "qaui" / "qaui.db"
+    new_path = root / "cactus" / "cactus.db"
+    if new_path.exists():
+        return new_path
+    legacy = root / "qaui" / "qaui.db"
+    if legacy.exists():
+        global _legacy_notice_shown
+        if _legacy_notice_shown:
+            return legacy
+        _legacy_notice_shown = True
+        print(
+            f"cactus: using the qaui inbox at {legacy}\n"
+            f"cactus: adopt it with  mkdir -p {new_path.parent} && "
+            f"sqlite3 {legacy} \"VACUUM INTO '{new_path}'\"",
+            file=sys.stderr,
+        )
+        return legacy
+    return new_path
 
 
 def _now() -> str:

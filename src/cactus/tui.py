@@ -1,5 +1,5 @@
 """
-tui.py — interactive Textual application for answering questions in the qaui inbox.
+tui.py — interactive Textual application for answering questions in the cactus inbox.
 
 Responsibilities:
 - Render the active question as a full-width detail card, with the rest of the
@@ -127,8 +127,8 @@ class QuestionBlock(ListItem):
         self.set_class(active, "active")
 
 
-class QAUIApp(App[int]):
-    """Human answering surface for the qaui question inbox."""
+class CactusApp(App[int]):
+    """Human answering surface for the cactus question inbox."""
 
     CSS = """
     #body {
@@ -720,6 +720,6 @@ class QAUIApp(App[int]):
 
 def run_tui(store: Store, project: str | None = None) -> int:
     """Run the interactive Textual answering app. Returns a process exit code."""
-    app = QAUIApp(store, project=project)
+    app = CactusApp(store, project=project)
     result = app.run()
     return int(result) if isinstance(result, int) else 0

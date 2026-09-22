@@ -1,5 +1,5 @@
 """
-__main__.py — `python -m qaui` entry point.
+__main__.py — `python -m cactus` entry point.
 
 Responsibilities:
 - Hand argv to the CLI and propagate its exit code.

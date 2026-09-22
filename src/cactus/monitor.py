@@ -1,5 +1,5 @@
 """
-monitor.py — plain-stdout event stream of a qaui inbox, for agents.
+monitor.py — plain-stdout event stream of a cactus inbox, for agents.
 
 Responsibilities:
 - Poll the store's change cursor and diff the inbox against the previous tick.

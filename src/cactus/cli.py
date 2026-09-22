@@ -1,5 +1,5 @@
 """
-cli.py — command-line surface for qaui, covering both the agent and human modes.
+cli.py — command-line surface for cactus, covering both the agent and human modes.
 
 Responsibilities:
 - Parse the agent-facing verbs (ask, get, list, answer, clear, purge, threads, projects).
@@ -26,7 +26,7 @@ EXIT_TIMEOUT = 2
 EXIT_EMPTY = 3
 
 AGENT_HELP = """\
-qaui — ask a human a question without stopping work.
+cactus — ask a human a question without stopping work.
 
 THE ARC
 
@@ -40,11 +40,11 @@ THE ARC
 
 ASK
 
-  qaui ask "Which auth backend?" \\
+  cactus ask "Which auth backend?" \\
     -c "oidc: existing IdP" \\
     -c "local: bcrypt table" \\
     --context "Staging tenant is provisioned. Local means owning password reset." \\
-    -t auth --by "$QAUI_AGENT"
+    -t auth --by "$CACTUS_AGENT"
   q7
 
   Exactly one question per ask. Choices are taken verbatim, one -c each.
@@ -69,7 +69,7 @@ CONTEXT CARRIES THE DECISION
 
 BLOCK ONLY WHEN BLOCKED
 
-  qaui ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
+  cactus ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
 
   --wait returns the moment the status leaves open, including a clear, which
   means the human declined. Always pair it with --timeout and handle exit 2
@@ -78,7 +78,7 @@ BLOCK ONLY WHEN BLOCKED
 
 MONITOR
 
-  qaui --monitor
+  cactus --monitor
 
   One line per change, flushed as it happens, until interrupted. Point a
   line-oriented watcher at it and keep working; the frontier moves in both
@@ -104,9 +104,9 @@ MONITOR
 
 COLLECT
 
-  qaui get q7 --json
-  qaui list -s answered -t auth --json
-  qaui list -s open
+  cactus get q7 --json
+  cactus list -s answered -t auth --json
+  cactus list -s open
 
   A question in an answered state carries selected[], text, and skipped.
   A skipped answer means the human saw it and chose not to decide.
@@ -125,8 +125,8 @@ SCOPE
   the working directory. Agent verbs see only the current project. The human
   surfaces span every project at once.
 
-  qaui where       the resolved project and database path
-  qaui projects    projects with live questions
+  cactus where       the resolved project and database path
+  cactus projects    projects with live questions
 
 EXIT CODES
 
@@ -211,7 +211,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     if text == "-":
         text = sys.stdin.read().strip()
     if not text:
-        print("qaui: refusing to ask an empty question", file=sys.stderr)
+        print("cactus: refusing to ask an empty question", file=sys.stderr)
         return EXIT_ERROR
 
     context = args.context
@@ -229,10 +229,10 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             thread=args.thread,
             parent_key=args.parent,
             context=context,
-            asked_by=args.by or os.environ.get("QAUI_AGENT"),
+            asked_by=args.by or os.environ.get("CACTUS_AGENT"),
         )
     except (KeyError, ValueError) as exc:
-        print(f"qaui: {exc}", file=sys.stderr)
+        print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_ERROR
 
     if not args.wait:
@@ -248,7 +248,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             json.dump({"key": q.key, "status": "timeout"}, sys.stdout, indent=2)
             sys.stdout.write("\n")
         else:
-            print(f"qaui: timed out waiting for {q.key}", file=sys.stderr)
+            print(f"cactus: timed out waiting for {q.key}", file=sys.stderr)
         return EXIT_TIMEOUT
     _emit_one(answered, as_json=args.json)
     return EXIT_OK
@@ -259,18 +259,18 @@ def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         pending = list(args.keys)
         for key in pending:
             if store.get(key) is None:
-                print(f"qaui: no such question: {key}", file=sys.stderr)
+                print(f"cactus: no such question: {key}", file=sys.stderr)
                 return EXIT_ERROR
             if store.wait_for_answer(key, timeout=args.timeout) is None:
                 if not args.json:
-                    print(f"qaui: timed out waiting for {key}", file=sys.stderr)
+                    print(f"cactus: timed out waiting for {key}", file=sys.stderr)
                 return EXIT_TIMEOUT
 
     found: list[Question] = []
     for key in args.keys:
         q = store.get(key)
         if q is None:
-            print(f"qaui: no such question: {key}", file=sys.stderr)
+            print(f"cactus: no such question: {key}", file=sys.stderr)
             return EXIT_ERROR
         found.append(q)
 
@@ -311,7 +311,7 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             skipped=args.skip,
         )
     except KeyError as exc:
-        print(f"qaui: {exc}", file=sys.stderr)
+        print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_ERROR
     _emit_one(q, as_json=args.json)
     return EXIT_OK
@@ -320,7 +320,7 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
 def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     if not (args.keys or args.thread or args.all or args.here):
         print(
-            "qaui: clear needs keys, --thread, --here, or --all — refusing to guess",
+            "cactus: clear needs keys, --thread, --here, or --all — refusing to guess",
             file=sys.stderr,
         )
         return EXIT_ERROR
@@ -388,7 +388,7 @@ def cmd_where(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="qaui",
+        prog="cactus",
         description="Transitory question/answer interface between agents and a human.",
     )
     p.add_argument("--db", help=f"database path (default: {default_db_path()})")
@@ -406,7 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --tui/--watch, scope to the current project only")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--agent-help", action="store_true",
-                   help="how an agent should use qaui, end to end")
+                   help="how an agent should use cactus, end to end")
 
     # --json is accepted both before and after the verb; argparse needs it declared
     # on every parser for the trailing form to work.
@@ -435,7 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("-t", "--thread", help="group under a named thread")
     ask.add_argument("-p", "--parent", help="attach as a follow-up to this question key")
     ask.add_argument("--context", help="supporting detail shown under the question, or -")
-    ask.add_argument("--by", help="who is asking (default: $QAUI_AGENT)")
+    ask.add_argument("--by", help="who is asking (default: $CACTUS_AGENT)")
     ask.add_argument("-w", "--wait", action="store_true", help="block until answered")
     ask.add_argument("--timeout", type=float, help="seconds to wait before giving up")
     ask.set_defaults(fn=cmd_ask)

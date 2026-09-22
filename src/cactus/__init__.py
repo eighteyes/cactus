@@ -1,5 +1,5 @@
 """
-__init__.py — package entry point for qaui.
+__init__.py — package entry point for cactus.
 
 Responsibilities:
 - Expose the package version.

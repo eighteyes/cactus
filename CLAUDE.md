@@ -4,17 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-    PYTHONPATH=src python3 -m qaui --help      # run from the checkout
-    uv tool install --editable .               # install the `qaui` console script
-    QAUI_DB=/tmp/scratch.db PYTHONPATH=src python3 .ai/tmp/test_tui.py
+    PYTHONPATH=src python3 -m cactus --help      # run from the checkout
+    uv tool install --editable .               # install the `cactus` console script
+    CACTUS_DB=/tmp/scratch.db PYTHONPATH=src python3 .ai/tmp/test_tui.py
 
 There is no test suite and no linter. Verification is throwaway scripts in
 `.ai/tmp/` that drive the real code against a scratch database — Textual apps via
 `App.run_test()` and a `Pilot`, the CLI via subprocesses. Write new ones the same
 way; they are gitignored and not part of the package.
 
-Always point `QAUI_DB` at a scratch file when testing. The default database is the
-user's live inbox at `~/.local/share/qaui/qaui.db`.
+Always point `CACTUS_DB` at a scratch file when testing. The default database is the
+user's live inbox at `~/.local/share/cactus/cactus.db`.
 
 ## Architecture
 

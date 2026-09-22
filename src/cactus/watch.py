@@ -1,5 +1,5 @@
 """
-watch.py — read-only live feed of the qaui inbox.
+watch.py — read-only live feed of the cactus inbox.
 
 Responsibilities:
 - Render the current backlog of open questions on start.
@@ -95,7 +95,7 @@ class WatchApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = "qaui watch"
+        self.title = "cactus watch"
         db = str(self.store.path)
         scope = project_display(self.project) if self.project else "all projects"
         self.sub_title = f"{db} — {scope}"

@@ -1,4 +1,4 @@
-# qaui
+# cactus
 
 A transitory question/answer interface between coding agents and a human.
 
@@ -12,48 +12,48 @@ only its own mail while the human sees every project at once.
 
 ## Install
 
-    uv tool install --editable ~/projects/qaui
+    uv tool install --editable ~/projects/cactus
 
 Or run it from a checkout:
 
-    PYTHONPATH=src python3 -m qaui --help
+    PYTHONPATH=src python3 -m cactus --help
 
 ## Agent side
 
 Ask, and get a key back immediately:
 
-    qaui ask "Which auth backend?" -c "oidc: existing IdP" -c "local: bcrypt table"
+    cactus ask "Which auth backend?" -c "oidc: existing IdP" -c "local: bcrypt table"
     q7
 
 Read it later, from any session:
 
-    qaui get q7 --json
+    cactus get q7 --json
 
 Block until it is answered, with a deadline:
 
-    qaui ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
+    cactus ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
 
 Attach a follow-up to an existing question:
 
-    qaui ask "Which IdP?" --parent q7
+    cactus ask "Which IdP?" --parent q7
 
 Other verbs:
 
-    qaui list [-s open|answered|cleared|any] [-t thread] [--all]
-    qaui answer q7 -s oidc "use the staging tenant first"
-    qaui clear q7 | qaui clear --thread auth | qaui clear --here
-    qaui threads | qaui projects | qaui where
+    cactus list [-s open|answered|cleared|any] [-t thread] [--all]
+    cactus answer q7 -s oidc "use the staging tenant first"
+    cactus clear q7 | cactus clear --thread auth | cactus clear --here
+    cactus threads | cactus projects | cactus where
 
 `--json` works before or after the verb.
 
-    qaui --agent-help
+    cactus --agent-help
 
 prints the whole agent-side roadmap: the ask/work/collect arc, what belongs in
 `--context`, when `--wait` is worth the block, and the exit codes.
 
 Stream every change as plain lines, for a watcher in an agent loop:
 
-    qaui --monitor
+    cactus --monitor
 
     q7  asked     Which auth backend?  (2 choices)
     q7  answered  [oidc] staging first
@@ -66,8 +66,8 @@ Events are `asked`, `answered`, `skipped`, `cleared`, `reopened`, `changed`, and
 
 ## Human side
 
-    qaui --tui      answer the inbox
-    qaui --watch    live read-only feed of questions and answers
+    cactus --tui      answer the inbox
+    cactus --watch    live read-only feed of questions and answers
 
 Both span every project by default. `--here` scopes them to the current one.
 
@@ -90,7 +90,7 @@ question can take a pick, a typed answer, or both.
 
 ## Storage
 
-SQLite at `~/.local/share/qaui/qaui.db`, overridable with `QAUI_DB`. WAL mode, so
+SQLite at `~/.local/share/cactus/cactus.db`, overridable with `CACTUS_DB`. WAL mode, so
 the TUI reads while agents write.
 
 `clear` marks a question retired and keeps the transcript. `clear --purge`
