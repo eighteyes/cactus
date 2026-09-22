@@ -69,7 +69,15 @@ scope.
 - Choice strings split on the *first* colon into label and description; `-c`
   values are taken verbatim and never split on commas.
 - Exit codes are part of the contract: 0 ok, 1 error, 2 `--wait` timeout, 3 no
-  match.
+  match. `--wait` on an act that never blocks is an error, not a hang.
+- `CACTUS_DB` set but empty raises rather than falling through to the default.
+  A failed `mktemp` in a test harness would otherwise point the run at the
+  user's live inbox, which is the one thing the variable exists to prevent.
+- An act is what is being asked for; `kind` stays the shape the answer is
+  collected in. `ACT_SHAPES` pairs them and `ask()` refuses the rest.
+- `review` and `plan` are persistent: born `live`, never auto-transitioning,
+  answerable repeatedly. Their verdicts append, so `answer` is the latest of
+  `answers` and undo withdraws only the newest row.
 - `ListView` consumes `enter` before an App binding can see it, so the TUI
   triggers submit from `on_list_view_selected`, not from the `enter` binding.
 - The TUI rotates over projects with open questions only; `store.projects()`

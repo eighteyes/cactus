@@ -121,6 +121,11 @@ def default_db_path() -> Path:
     decision.
     """
     env = os.environ.get("CACTUS_DB")
+    if env is not None and not env.strip():
+        # An empty value is a scripting accident — a failed mktemp, an unset
+        # variable in a test harness. Falling through would silently target the
+        # live inbox, which is exactly what the variable exists to avoid.
+        raise ValueError("CACTUS_DB is set but empty; unset it or give it a path")
     if env:
         return Path(env).expanduser()
     base = os.environ.get("XDG_DATA_HOME")
@@ -623,11 +628,19 @@ class Store:
         status: str | Sequence[str] | None = "open",
         all_projects: bool = False,
         keys: Sequence[str] | None = None,
+        acts: Sequence[str] | None = None,
+        agent: str | None = None,
         limit: int | None = None,
     ) -> list[Question]:
         where, params = self._scope_where(
             keys=keys, project=project, thread=thread, all_projects=all_projects
         )
+        if acts:
+            where.append("act IN (%s)" % ",".join("?" * len(acts)))
+            params.extend(acts)
+        if agent is not None:
+            where.append("agent = ?")
+            params.append(agent)
         if status:
             statuses = [status] if isinstance(status, str) else list(status)
             where.append("status IN (%s)" % ",".join("?" * len(statuses)))
@@ -679,6 +692,8 @@ class Store:
         thread: str | None = None,
         status: str | Sequence[str] | None = None,
         all_projects: bool = False,
+        acts: Sequence[str] | None = None,
+        agent: str | None = None,
     ) -> list[Question]:
         """Questions in parent-before-child order, each carrying its `depth`.
 
@@ -686,7 +701,8 @@ class Store:
         is out of scope is promoted to depth 0 rather than being dropped.
         """
         items = self.list(
-            project=project, thread=thread, status=status, all_projects=all_projects
+            project=project, thread=thread, status=status,
+            all_projects=all_projects, acts=acts, agent=agent,
         )
         by_id = {q.id: q for q in items}
         children: dict[int | None, list[Question]] = {}
@@ -729,10 +745,12 @@ class Store:
         first = self.get(key)
         if first is None:
             raise KeyError(f"no such question: {key}")
-        if first.persistent:
+        # Blocking is a property of the act, not of persistence: `seen` is
+        # one-shot yet still has nothing for an agent to wait on.
+        if first.act not in BLOCKING_ACTS:
             raise ValueError(
                 f"{key} is act={first.act!r}, which never blocks — watch the "
-                f"monitor stream for its verdicts instead"
+                f"monitor stream for its disposition instead"
             )
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:

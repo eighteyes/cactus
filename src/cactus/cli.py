@@ -18,7 +18,8 @@ import sys
 from typing import Any, Sequence
 
 from .scope import project_display, resolve_project
-from .store import Choice, Question, Store, default_db_path
+from .store import (ACTS, ACT_SHAPES, BLOCKING_ACTS, Choice, Question, Store,
+                     default_db_path)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -119,6 +120,39 @@ THREADS AND FOLLOW-UPS
   Ask the whole batch up front under one thread. The human answers them as a
   set, which is faster for them than a drip of separate interrupts.
 
+ACTS
+
+  An act says what you are asking for. It is orthogonal to the answer shape:
+  the shape is how a reply is collected, the act is what the reply is for.
+
+    act      blocks   shape                       what it is for
+    ask      yes      choice/multi/text/confirm   a decision you need
+    steer    yes      choice, text                approve a direction or redirect
+    run      yes      confirm                     approve a command before it runs
+    seen     no       text                        an FYI; the human dismisses it
+    review   no       confirm (pass/fail)         a verify block, re-run over time
+    plan     no       text                        an ordered checklist
+
+  Only ask, steer and run block. `--wait` on any of the others is an error,
+  because nothing will ever arrive: watch `cactus --monitor` instead.
+
+  review and plan are persistent. They are born `live`, take a verdict as
+  often as the work is re-checked, and stay live until cleared. Their answer
+  log keeps every verdict, so `answer` is the latest rather than the only one.
+
+  cactus ask "Does the build verify?" --act review -t ship
+  q8
+  cactus review q8 --look-at "the diff" --run "pytest -q" \
+    --pass "0 failures" --fail "any failure" --then "tag the release"
+
+  cactus ask "Release steps" --act plan -t ship
+  q9
+  cactus plan q9 --step "build" --step "test" --step "tag"
+  cactus plan q9 --done 1        # tick a step; the human can tick it too
+
+  --agent ID tags a row with the pane that owns it, defaulting to
+  $HERDR_PANE_ID. It filters, it does not scope: the project is still the key.
+
 SCOPE
 
   Questions record the project they were asked from: the git toplevel, else
@@ -131,7 +165,7 @@ SCOPE
 EXIT CODES
 
   0  success
-  1  error
+  1  error, including --wait on an act that never blocks
   2  --wait timed out
   3  nothing matched
 
@@ -196,6 +230,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     # would silently shred any description that contains one.
     choices = [Choice.parse(raw.strip()) for raw in (args.choice or []) if raw.strip()]
 
+    act = args.act
     kind = args.kind
     if kind is None:
         if args.confirm:
@@ -206,6 +241,13 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             kind = "choice"
         else:
             kind = "text"
+        # An act with one legal shape picks it, so `--act run` alone is enough.
+        if kind not in ACT_SHAPES[act] and len(ACT_SHAPES[act]) == 1:
+            kind = ACT_SHAPES[act][0]
+    if act == "run" and kind == "confirm" and not choices:
+        choices = [Choice("approve"), Choice("deny")]
+    if act == "review" and kind == "confirm" and not choices:
+        choices = [Choice("pass"), Choice("fail")]
 
     text = args.text
     if text == "-":
@@ -224,6 +266,8 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             project=project,
             cwd=cwd,
             kind=kind,
+            act=act,
+            agent=args.agent or os.environ.get("HERDR_PANE_ID"),
             choices=choices,
             allow_free=not args.no_free,
             thread=args.thread,
@@ -233,6 +277,14 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         )
     except (KeyError, ValueError) as exc:
         print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.wait and act not in BLOCKING_ACTS:
+        print(
+            f"cactus: act={act!r} never blocks; {q.key} created, watch "
+            f"`cactus --monitor` for its disposition",
+            file=sys.stderr,
+        )
         return EXIT_ERROR
 
     if not args.wait:
@@ -290,6 +342,8 @@ def cmd_list(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         thread=args.thread,
         status=status,
         all_projects=args.all,
+        acts=args.act,
+        agent=args.agent,
     )
     if not questions:
         if args.json:
@@ -308,12 +362,54 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             args.key,
             selected=args.select or [],
             text=text,
-            skipped=args.skip,
+            skipped=args.skip or args.dismiss,
         )
-    except KeyError as exc:
+    except (KeyError, ValueError) as exc:
         print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_ERROR
     _emit_one(q, as_json=args.json)
+    return EXIT_OK
+
+
+def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Attach or replace the verify block on a review row."""
+    try:
+        q = store.set_review(
+            args.key,
+            look_at=args.look_at,
+            run_cmd=args.run,
+            pass_when=getattr(args, "pass"),
+            fail_when=args.fail,
+            then_do=args.then,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    _emit_one(q, as_json=args.json)
+    return EXIT_OK
+
+
+def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Set a plan row's steps, or tick and untick them."""
+    try:
+        if args.step:
+            store.set_steps(args.key, args.step)
+        for idx in args.done or []:
+            store.set_step_done(args.key, idx, True)
+        for idx in args.undone or []:
+            store.set_step_done(args.key, idx, False)
+        q = store.get(args.key)
+    except (KeyError, ValueError) as exc:
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    if q is None:
+        print(f"cactus: no such question: {args.key}", file=sys.stderr)
+        return EXIT_NOMATCH
+    if args.json:
+        _emit_one(q, as_json=True)
+    else:
+        for st in q.steps:
+            print(f"  [{'x' if st.done else ' '}] {st.idx}  {st.text}")
     return EXIT_OK
 
 
@@ -428,6 +524,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="one choice, taken verbatim; repeat for more. Format: 'label: description'")
     ask.add_argument("--multi", action="store_true", help="allow selecting several choices")
     ask.add_argument("--confirm", action="store_true", help="yes/no question")
+    ask.add_argument("--act", choices=list(ACTS), default="ask",
+                     help="what is being asked for (default: ask)")
+    ask.add_argument("--agent", help="owning agent/pane (default: $HERDR_PANE_ID)")
     ask.add_argument("--kind", choices=["choice", "multi", "text", "confirm"],
                      help="override the inferred kind")
     ask.add_argument("--no-free", action="store_true",
@@ -451,6 +550,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = verb("list", aliases=["ls"], help="list questions in this project")
     ls.add_argument("-t", "--thread")
+    ls.add_argument("--act", action="append", choices=list(ACTS),
+                    help="only this act, repeatable")
+    ls.add_argument("--agent", help="only rows owned by this agent/pane")
     ls.add_argument("-s", "--status", default="open",
                     choices=["open", "answered", "cleared", "any"])
     ls.add_argument("--all", action="store_true", help="every project, not just this one")
@@ -461,6 +563,8 @@ def build_parser() -> argparse.ArgumentParser:
     ans.add_argument("-s", "--select", action="append", help="a chosen label, repeatable")
     ans.add_argument("text", nargs="?", help="free-text answer, or -")
     ans.add_argument("--skip", action="store_true", help="record a deliberate non-answer")
+    ans.add_argument("--dismiss", action="store_true",
+                     help="dismiss a seen row without choosing (alias of --skip)")
     ans.set_defaults(fn=cmd_answer)
 
     clr = verb("clear", help="retire questions from the inbox")
@@ -470,6 +574,22 @@ def build_parser() -> argparse.ArgumentParser:
     clr.add_argument("--all", action="store_true", help="every project")
     clr.add_argument("--purge", action="store_true", help="delete rather than mark cleared")
     clr.set_defaults(fn=cmd_clear)
+
+    rv = verb("review", parents=[common], help="attach a verify block to a review row")
+    rv.add_argument("key")
+    rv.add_argument("--look-at", help="what a human should look at")
+    rv.add_argument("--run", help="the verbatim command to run")
+    rv.add_argument("--pass", help="what a good result looks like")
+    rv.add_argument("--fail", help="what disqualifies it")
+    rv.add_argument("--then", help="what to set up next")
+    rv.set_defaults(fn=cmd_review)
+
+    pl = verb("plan", parents=[common], help="set or tick the steps on a plan row")
+    pl.add_argument("key")
+    pl.add_argument("--step", action="append", help="one step, repeatable; replaces the list")
+    pl.add_argument("--done", action="append", type=int, help="tick this step index")
+    pl.add_argument("--undone", action="append", type=int, help="untick this step index")
+    pl.set_defaults(fn=cmd_plan)
 
     th = verb("threads", help="list threads")
     th.add_argument("--all", action="store_true")
@@ -485,7 +605,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
+    try:
+        # build_parser resolves the default database path for its help text, so
+        # a misconfigured CACTUS_DB surfaces here rather than as a traceback.
+        parser = build_parser()
+    except ValueError as exc:
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_ERROR
     args = parser.parse_args(argv)
 
     if args.agent_help:

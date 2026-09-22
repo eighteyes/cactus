@@ -37,14 +37,14 @@
 
 ## 4. Acts in the CLI
 
-- [ ] `ask --act <name>`, defaulting to `ask`
-- [ ] `--agent <id>`, defaulting to `HERDR_PANE_ID` when set
-- [ ] Reject illegal act/shape pairs at parse time, exit 1
-- [ ] `review` verb: `--look-at --run --pass --fail --then`
-- [ ] `plan` verb: repeatable `--step`, `--done <idx>`, `--undone <idx>`
-- [ ] `answer --dismiss` for `seen`
-- [ ] `list --act <name>`, repeatable; `list -s live`
-- [ ] AGENT_HELP documents acts, the shape pairing table, and persistence
+- [x] `ask --act <name>`, defaulting to `ask`
+- [x] `--agent <id>`, defaulting to `HERDR_PANE_ID` when set
+- [x] Reject illegal act/shape pairs at parse time, exit 1
+- [x] `review` verb: `--look-at --run --pass --fail --then`
+- [x] `plan` verb: repeatable `--step`, `--done <idx>`, `--undone <idx>`
+- [x] `answer --dismiss` for `seen`
+- [x] `list --act <name>`, repeatable; `list -s live`
+- [x] AGENT_HELP documents acts, the shape pairing table, and persistence
 
 ## 5. Feed
 
