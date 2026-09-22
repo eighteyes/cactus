@@ -150,9 +150,21 @@ ACTS
   cactus plan q9 --step "build" --step "test" --step "tag"
   cactus plan q9 --done 1        # tick a step; the human can tick it too
 
-  --agent ID tags a row with the pane that owns it, defaulting to
-  $HERDR_PANE_ID. It filters, it does not scope: the project is still the key.
-  `--agent ""` disowns a row explicitly; omitting the flag inherits the pane.
+  --agent ID names the agent that owns a row. There is NO default, on purpose.
+  A bare pane id is not an identity: herdr treats `session:pane_id` as its
+  last-resort fallback precisely because it never changes, so it outlives the
+  conversation it named and a resumed session inherits rows it never asked for.
+  Pass a RESOLVED identity — the declared session token, not the pane — or
+  leave it unset and the row is simply unowned. It filters, it does not scope:
+  the project is still the key.
+
+  --word SHORT gives a projector the label it derives a board key from. Without
+  it, a board deriving a letter from the question text collides on every row
+  that starts with "check" or "should".
+
+  Long supporting prose goes in --context, which is a separate field from the
+  question text: a surface with a narrow cell shows `text`, and `context`
+  below it.
 
 POKE
 
@@ -306,11 +318,15 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             cwd=cwd,
             kind=kind,
             act=act,
-            # `--agent ""` is an explicit disowning; only an omitted flag
-            # inherits the pane. Treating empty as absent would silently
-            # address the row to whoever ran the command.
-            agent=(os.environ.get("HERDR_PANE_ID") if args.agent is None
-                   else (args.agent or None)),
+            # No default. A pane id is not an identity: herdr's own resolver
+            # treats `session:pane_id` as the last-resort fallback precisely
+            # because it never changes, so it outlives the conversation it
+            # named. Defaulting to $HERDR_PANE_ID would address a row to
+            # whatever conversation later occupies that pane. The writer is
+            # inside the pane and knows its resolved id; it passes --agent or
+            # the row stays unowned.
+            agent=args.agent or None,
+            word=args.word,
             choices=choices,
             allow_free=not args.no_free,
             thread=args.thread,
@@ -503,8 +519,22 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         agent=args.agent,
     )
     mid, mts, count = store.cursor()
+    # Per-agent rollup of rows still waiting on a human. A board paints a cell
+    # by whether its agent is blocked; without this it walks every row to learn
+    # one boolean.
+    blocked: dict[str, int] = {}
+    for q in questions:
+        if q.agent and q.act in BLOCKING_ACTS and q.status == "open":
+            blocked[q.agent] = blocked.get(q.agent, 0) + 1
     doc = {
-        "cursor": {"max_id": mid, "max_updated": mts, "count": count},
+        "cursor": {
+            "max_id": mid,
+            "max_updated": mts,
+            "count": count,
+            "blocked": blocked,
+        },
+        # Ordered by rowid. A projector may assign board letters from this
+        # order and rely on it not shifting between polls.
         "questions": [q.as_dict() for q in questions],
     }
     json.dump(doc, sys.stdout, indent=2 if args.pretty else None)
@@ -631,7 +661,10 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--confirm", action="store_true", help="yes/no question")
     ask.add_argument("--act", choices=list(ACTS), default="ask",
                      help="what is being asked for (default: ask)")
-    ask.add_argument("--agent", help="owning agent/pane (default: $HERDR_PANE_ID)")
+    ask.add_argument("--agent",
+                     help="owning agent, as a RESOLVED identity — not a bare pane id")
+    ask.add_argument("--word",
+                     help="short label a projector derives its key from")
     ask.add_argument("--kind", choices=["choice", "multi", "text", "confirm"],
                      help="override the inferred kind")
     ask.add_argument("--no-free", action="store_true",

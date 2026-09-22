@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS questions (
     kind         TEXT    NOT NULL,
     act          TEXT    NOT NULL DEFAULT 'ask',
     agent        TEXT,
+    word         TEXT,
     choices      TEXT    NOT NULL DEFAULT '[]',
     allow_free   INTEGER NOT NULL DEFAULT 1,
     context      TEXT,
@@ -236,6 +237,7 @@ class Question:
     kind: str
     act: str
     agent: str | None
+    word: str | None
     choices: list[Choice]
     allow_free: bool
     context: str | None
@@ -264,6 +266,7 @@ class Question:
             "kind": self.kind,
             "act": self.act,
             "agent": self.agent,
+            "word": self.word,
             "choices": [c.as_dict() for c in self.choices],
             "allow_free": self.allow_free,
             "context": self.context,
@@ -306,6 +309,8 @@ class Store:
             )
         if "agent" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN agent TEXT")
+        if "word" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN word TEXT")
 
         self._drop_answer_uniqueness()
 
@@ -372,6 +377,7 @@ class Store:
         kind: str = "text",
         act: str = "ask",
         agent: str | None = None,
+        word: str | None = None,
         choices: Sequence[Choice] | None = None,
         allow_free: bool = True,
         thread: str | None = None,
@@ -413,11 +419,12 @@ class Store:
             """
             INSERT INTO questions
                 (key, project, cwd, thread, parent_id, text, kind, act, agent,
-                 choices, allow_free, context, asked_by, status, created_at, updated_at)
-            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 word, choices, allow_free, context, asked_by, status,
+                 created_at, updated_at)
+            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                project, cwd, thread, parent_id, text, kind, act, agent,
+                project, cwd, thread, parent_id, text, kind, act, agent, word,
                 json.dumps([c.as_dict() for c in choices]),
                 1 if allow_free else 0, context, asked_by, status, now, now,
             ),
@@ -645,6 +652,8 @@ class Store:
             statuses = [status] if isinstance(status, str) else list(status)
             where.append("status IN (%s)" % ",".join("?" * len(statuses)))
             params.extend(statuses)
+        # Ordered by rowid, always. A projector assigns board letters from feed
+        # order, so an unstable order re-letters a menu under a hand holding it.
         sql = "SELECT * FROM questions WHERE " + " AND ".join(where) + " ORDER BY id ASC"
         if limit:
             sql += f" LIMIT {int(limit)}"
@@ -850,6 +859,7 @@ class Store:
             kind=row["kind"],
             act=row["act"],
             agent=row["agent"],
+            word=row["word"],
             choices=[Choice.parse(c) for c in json.loads(row["choices"] or "[]")],
             allow_free=bool(row["allow_free"]),
             context=row["context"],
