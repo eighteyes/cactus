@@ -110,9 +110,25 @@ scope.
   tap must not silently overwrite what the first reader saw.
 - TUI bindings are gated by `check_action`, so the footer and the keyboard
   agree: no `Run` key on a row with no command, no `d` on a row that is not a
-  notice.
+  notice. Textual only re-asks `check_action` when something calls
+  `refresh_bindings()` — the footer is stale until `_rebuild_card` or
+  `_rebuild_status_bar` calls it, not on every focus change by itself.
 - `clear` retires a question and keeps the transcript; only `clear --purge`
   deletes rows.
 - `reopen` is undo's store primitive: status back to `open`, answer row deleted.
   It cannot recall an answer an agent already read — `wait_for_answer` returns
   the moment the status leaves `open`.
+- `recommend` is advisory, not `chosen`: a chosen option is already being
+  acted on, a recommended one still waits for the human. It requires choices,
+  every label must be real, more than one only when `kind == "multi"`, and
+  `confidence` is required with it and refused without it. The TUI preselects
+  it — the recommended set on a multi row, the recommended label on a
+  choice/confirm row when nothing else is picked or typed.
+- `cactus plan --done`/`--undone` take a 1-based step number at the CLI; the
+  store's `idx` stays 0-based underneath, and `Step.as_dict` carries both
+  (`idx` and `n = idx + 1`) so a consumer never has to offset it itself.
+- Enter on a plan row closes it once every step is done, using the same
+  `clear` path as `c`, and otherwise only flashes — it never opens free text
+  on a plan row, unlike every other kind. `i` still does.
+- An empty multi submit — nothing toggled, nothing typed — is refused with a
+  flash rather than stored, so a stray enter cannot record an answer nobody chose.
