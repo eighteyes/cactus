@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
     PYTHONPATH=src python3 -m cactus --help      # run from the checkout
     uv tool install --editable .               # install the `cactus` console script
-    CACTUS_DB=/tmp/scratch.db PYTHONPATH=src python3 .ai/tmp/test_tui.py
+    CACTUS_DB=/tmp/scratch.db CACTUS_POKE=true PYTHONPATH=src python3 .ai/tmp/test_tui.py
+    bash .ai/tmp/test_feed.sh                  # CLI-side scripts are shell
 
 There is no test suite and no linter. Verification is throwaway scripts in
 `.ai/tmp/` that drive the real code against a scratch database — Textual apps via
@@ -19,9 +20,10 @@ raises rather than falling through, so a failed `mktemp` cannot silently target
 it.
 
 Always set `CACTUS_POKE` to something inert when testing. The default transport
-is `herdr agent prompt`, which prompts a live agent, and `ask --agent` defaults
-to `$HERDR_PANE_ID` — so a row created inside a session is addressed to that
-session and poking it interrupts whoever is running the test.
+is `herdr agent prompt`, which prompts a live agent — so poking any row that
+names a real pane with `--agent` interrupts whoever is running there. `ask
+--agent` deliberately has no default: a bare pane id outlives the session it
+named, so rows without one are unowned.
 
 ## Architecture
 
@@ -34,6 +36,11 @@ Four layers, one direction of dependency:
     tui.py       Textual answering surface (human): question rail + detail card
     watch.py     Textual read-only feed (human)
     monitor.py   plain-stdout event stream (agent): one line per transition
+    poke.py      contentless nudge to a row's owning agent via $CACTUS_POKE
+    shell.py     clipboard copy, command run, and output spill for the TUI
+
+`poke` and `shell` are side leaves, imported lazily at the call site by `cli`
+and `tui`; they never touch the store.
 
 `cli.main` resolves scope once, constructs one `Store`, dispatches to a `cmd_*`
 function or to `run_tui`/`run_watch`, and closes the store in a `finally`. The
@@ -96,7 +103,7 @@ scope.
 - Opening the store applies additive column adds only. The `answers` table
   rebuild that drops `UNIQUE(question_id)` is destructive-shaped — it changes
   the schema under any process holding an older module — so it lives behind
-  `cactus migrate --yes`. `answer()` refuses on an un-rebuilt database with an
+  `cactus migrate --yes` (or `CACTUS_MIGRATE=1` at open). `answer()` refuses on an un-rebuilt database with an
   instruction rather than a SQL error.
 - Re-answering a one-shot row that is already `answered` raises
   `AlreadyAnswered` and exits 3. Two surfaces share one inbox, so the second
