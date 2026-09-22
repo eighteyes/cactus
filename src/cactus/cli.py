@@ -180,6 +180,37 @@ POKE
   It really does prompt a live agent, so set CACTUS_POKE to something inert
   before exercising it.
 
+AUTHORING A QUESTION
+
+  The options say what can be chosen. The context says why it is being asked.
+  They are never merged and never restate each other. An option that has to
+  explain itself has not been cut down far enough.
+
+  Options are mile posts, not a menu. Two or three, mutually exclusive, each
+  one a thing that actually happens. "Other" is never an option: if the set
+  does not cover the space, the question is wrong.
+
+  Pruning the option tree is the design work, not a cost to skip. A tap is
+  cheap on purpose, so that asking more is affordable. A wall of prose per
+  question is why agents under-ask.
+
+  Context carries the facts the human cannot see and would otherwise have to
+  go and get:
+
+    what you already tried, and what it cost
+    the measurement, with numbers
+    what breaks under each option
+    what you will do if nobody answers
+
+  Never a summary of the options. Never reassurance. Never an apology for
+  asking.
+
+  ask or steer? If proceeding under any assumption would be unsafe or would
+  waste the work, it is an ask. If you can proceed sensibly without an answer,
+  it is a steer — say what you are going to do and let a tap redirect you.
+  Parking a human on a question you could have answered yourself is the
+  failure mode worth watching, and it is measurable: your blocked rate.
+
 FEED
 
   A projector — a board, a web face, anything that is not this CLI — reads the
