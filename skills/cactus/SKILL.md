@@ -167,6 +167,17 @@ read is stale; `gone` means the row was purged.
 An answered row carries `selected[]`, `text`, and `skipped`. `skipped` means the
 human saw it and chose not to decide; act on your stated default.
 
+## Decision records
+
+Every answer, undo, verdict and clear rewrites one file per row in the
+project, so the decision travels with the code. Commit it with the change it
+governed.
+
+    .ai/cactus/qN-SLUG.md    decision record, rewritten on each answer, undo, verdict, clear; commit it
+
+Set `CACTUS_RECORDS=0` in a test harness that runs from a real repository, or
+the scratch rows write records into it.
+
 ## Retire
 
     cactus clear q7                                retire, keep the transcript
