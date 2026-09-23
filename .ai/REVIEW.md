@@ -155,3 +155,46 @@ cell rather than an error.
 Poll `cactus feed --json --agent <resolved-id>` by the cursor block, answer
 through `cactus answer KEY -s LABEL`, and treat exit 3 as a stale cell. Letter
 assignment and placement stay theirs; `word` is what they assign from.
+
+## 9. The plugin: skill, courier, hook, marketplace
+
+Manifests parse and the plugin layout matches proto-buddy and txlit:
+
+    jq -e . .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json
+    ls skills/cactus/SKILL.md agents/cactus-courier.md hooks/session-start.sh
+
+PASS: three `jq` exits of 0, three files present.
+
+The SessionStart hook is silent without cactus and lists open rows with it:
+
+    PATH=/usr/bin:/bin bash hooks/session-start.sh; echo "rc=$?"
+    cactus ask "hook sees me?" --confirm >/dev/null; bash hooks/session-start.sh
+
+PASS: first run prints nothing and exits 0; second prints the nudge line and the open row.
+FAIL: a traceback, or a nonzero exit, from either.
+
+Every command in the skill is a real verb with the flags it names:
+
+    K=$(cactus ask "Run it?" --act run -t ship)
+    cactus review "$K" --run "echo hi" --pass hi
+    cactus get "$K" --json | jq -c '.[0] | {kind, choices, run:.review.run_cmd}'
+    cactus get "$K" --wait --timeout 1; echo "rc=$?"
+
+PASS: kind `confirm`, labels `approve`/`deny`, run_cmd `echo hi`, then rc=2.
+
+The courier pipeline wakes on an answer and dies on the deadline:
+
+    K=$(cactus ask "pick" -c "a: x" -c "b: y" -t auth)
+    ( sleep 1; cactus answer "$K" -s a ) &
+    perl -e 'alarm shift; exec @ARGV' 5 cactus --monitor --json \
+      | jq -c --unbuffered 'select(.thread=="auth" and .event=="answered") | .key' | head -1
+    perl -e 'alarm shift; exec @ARGV' 1 cactus --monitor --json; echo "rc=$?"
+
+PASS: the key prints within a second; the second command exits 142 after one second.
+
+Install it as a plugin and confirm the skill and agent register:
+
+    claude plugin marketplace add /Users/god/projects/cactus
+    claude plugin install cactus@cactus
+
+PASS: a fresh session's Skill listing shows `cactus` and the Agent types show `cactus-courier`.
