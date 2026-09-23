@@ -341,8 +341,16 @@ class Store:
     """Thin SQLite gateway. One instance per process; safe across processes via WAL."""
 
     def __init__(self, path: Path | str | None = None) -> None:
+        if path is not None and not str(path).strip():
+            # --db "" is a scripting accident, exactly like an empty CACTUS_DB —
+            # falling through to the default would silently target the live
+            # inbox, which is the one thing this is meant to prevent.
+            raise ValueError("--db is set but empty; drop it or give it a path")
         self.path = Path(path) if path else default_db_path()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(f"cannot create {self.path.parent}: {exc}") from exc
         self.conn = sqlite3.connect(str(self.path), timeout=10.0, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")

@@ -94,6 +94,17 @@ scope.
   valid labels), an empty answer (no selection, no text, no `--skip`), free
   text on a row posted with `--no-free`, and answering a `cleared` row
   (names `cactus reopen KEY --agent ID`). All raise `ValueError`, exit 1.
+- Every verb that takes a key (`get`, `answer`, `clear`, `reopen`, `poke`,
+  `review`, `plan`) exits 3 on a missing key, one stderr line — a miss, not
+  a malformed call.
+- `cactus ask --act A -c ...` refuses when `ACT_SHAPES[A] == ("text",)`
+  (`seen`, `plan`): those acts collect text only, and forcing `kind="text"`
+  while keeping the `-c` choices would strand them unread on the row.
+- `Store(path)` raises `ValueError` — never lets an exception escape as a
+  traceback — for `path=""` (same rule as an empty `CACTUS_DB`) and for a
+  parent directory `mkdir` cannot create; `main()` turns both into exit 1.
+- `--tui`, `--watch`, `--monitor` are mutually exclusive; `--tui`/`--watch`
+  refuse a non-tty stdout. Checked in `main()` before `Store` is opened.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.

@@ -164,6 +164,11 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     choices = [Choice.parse(raw.strip()) for raw in (args.choice or []) if raw.strip()]
 
     act = args.act
+    if choices and ACT_SHAPES[act] == ("text",):
+        # seen and plan collect text only; silently forcing kind="text" below
+        # would strand the -c choices on a row that never reads them.
+        print(f"cactus: --act {act} takes no choices; it collects text only", file=sys.stderr)
+        return EXIT_ERROR
     kind = args.kind
     if kind is None:
         if args.confirm:
@@ -277,23 +282,31 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
 
 
 def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    for key in args.keys:
+        if store.get(key) is None:
+            print(f"cactus: no such question: {key}", file=sys.stderr)
+            return EXIT_EMPTY
+
     if args.wait:
-        pending = list(args.keys)
-        for key in pending:
-            if store.get(key) is None:
-                print(f"cactus: no such question: {key}", file=sys.stderr)
-                return EXIT_ERROR
+        timed_out_key = None
+        for key in args.keys:
             if store.wait_for_answer(key, timeout=args.timeout) is None:
-                if not args.json:
-                    print(f"cactus: timed out waiting for {key}", file=sys.stderr)
-                return EXIT_TIMEOUT
+                timed_out_key = key
+                break
+        if timed_out_key is not None:
+            # Print whatever already resolved before the miss, so a caller
+            # waiting on several keys is not left with nothing at all.
+            settled = [q for q in (store.get(k) for k in args.keys) if q is not None and q.status != "open"]
+            if settled:
+                _print_questions(settled, as_json=args.json, show_project=args.all)
+            if not args.json:
+                print(f"cactus: timed out waiting for {timed_out_key}", file=sys.stderr)
+            return EXIT_TIMEOUT
 
     found: list[Question] = []
     for key in args.keys:
         q = store.get(key)
-        if q is None:
-            print(f"cactus: no such question: {key}", file=sys.stderr)
-            return EXIT_ERROR
+        assert q is not None
         found.append(q)
 
     if args.answered_only:
@@ -342,7 +355,12 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
         # an error, because nothing went wrong — it was simply beaten to it.
         print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_EMPTY
-    except (KeyError, ValueError) as exc:
+    except KeyError as exc:
+        # No such question: exit 3, the same as every other verb that takes
+        # a key — a missing row is a miss, not a malformed call.
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_EMPTY
+    except ValueError as exc:
         print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_ERROR
     _emit_one(q, as_json=args.json)
@@ -360,7 +378,10 @@ def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             fail_when=args.fail,
             then_do=args.then,
         )
-    except (KeyError, ValueError) as exc:
+    except KeyError as exc:
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_EMPTY
+    except ValueError as exc:
         print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_ERROR
     _emit_one(q, as_json=args.json)
@@ -392,7 +413,10 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         for n in args.undone or []:
             store.set_step_done(args.key, _plan_index(n, len(q.steps)), False)
         q = store.get(args.key)
-    except (KeyError, ValueError) as exc:
+    except KeyError as exc:
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_EMPTY
+    except ValueError as exc:
         print(f"cactus: {exc}", file=sys.stderr)
         return EXIT_ERROR
     if q is None:
@@ -437,6 +461,10 @@ def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
         # Explicit KEY form: an unowned row clears by key with or without
         # --agent; an owned one refuses unless --agent matches. One refused
         # key refuses the whole call, so a batch never clears part of itself.
+        missing = [key for key in args.keys if store.get(key) is None]
+        if missing:
+            print(f"cactus: no such question: {', '.join(missing)}", file=sys.stderr)
+            return EXIT_EMPTY
         refused = []
         for key in args.keys:
             q = store.get(key)
@@ -855,8 +883,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(AGENT_HELP, end="")
         return EXIT_OK
 
+    surfaces = [name for name, on in
+                (("--tui", args.tui), ("--watch", args.watch), ("--monitor", args.monitor))
+                if on]
+    if len(surfaces) > 1:
+        print(f"cactus: {' and '.join(surfaces)} are mutually exclusive", file=sys.stderr)
+        return EXIT_ERROR
+    if (args.tui or args.watch) and not sys.stdout.isatty():
+        which = "--tui" if args.tui else "--watch"
+        print(f"cactus: {which} needs a terminal; stdout is not a tty", file=sys.stderr)
+        return EXIT_ERROR
+
     project, cwd = resolve_project()
-    store = Store(args.db)
+    try:
+        store = Store(args.db)
+    except ValueError as exc:
+        print(f"cactus: {exc}", file=sys.stderr)
+        return EXIT_ERROR
 
     try:
         if args.tui:
