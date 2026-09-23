@@ -3,8 +3,10 @@
 Source: user request 2026-09-23. q207 (default instruction) answered
 `both`. q206 was answered with a question ("can we edit the current
 question or not?"), answered in q211: no verb edits text/context/choices
-today; every option below rewrites the row in place. q211 (mechanism) is
-open; the spec follows its recommended answer, `status`.
+today; every option below rewrites the row in place. q211 answered with
+"can the verb be edit, not elaborate?": yes, the verb is `cactus edit`.
+The mechanism was left unpicked twice, so it proceeds on the default,
+`status`, under steer q212 in thread `elaborate`.
 
 ## Behaviour
 
@@ -24,10 +26,15 @@ null), and `instruction`:
                     the files, what each option costs, what happens if
                     nobody answers. Longer is fine."          (q207: both)
 
-CLI: `cactus elaborate KEY --agent ID [--text ...] [--context ...] [-c ...]`.
-Replaces the given fields, keeps the rest, clears `elaborate`, moves status
-back to `open` (or `live`). Refuses: a row not in `elaborate` status (exit 1),
-another agent's row (exit 1), missing key (exit 3). `--json` echoes the row.
+CLI: `cactus edit KEY --agent ID [--text ...] [--context ...] [-c ...]`
+(q211: the verb is `edit`, not `elaborate`). Replaces the given fields,
+keeps the rest. On a row in `elaborate` status it clears the request and
+moves status back to `open` (or `live`). On any other `open` or `live` row
+it is a plain in-place edit, so an agent can fix a typo or add facts
+unprompted. Refuses: another agent's row (exit 1), a row that is answered
+or cleared (exit 1), missing key (exit 3), `-c` that drops a label named
+by `--recommend` unless `--recommend` is also given (exit 1). `--json`
+echoes the row.
 
 Records: `record.py` writes on `elaborate` request and on the rewrite, both
 appended to the row's decision record as a `rewrite` section, so the record
