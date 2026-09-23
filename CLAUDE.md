@@ -165,3 +165,7 @@ scope.
   idempotent per row state. `CACTUS_RECORDS=0` disables writing; tests must
   set it or run inside a temp git repo, since a record lands in the row's
   *project root*, not the caller's scratch DB.
+- `Store.set_review` merges: each `cactus review` call only touches the
+  fields it was given, `None` (an omitted flag) keeps the stored value, and
+  `""` (`--run ""`) clears it explicitly. A second call can no longer wipe
+  what an earlier one set.
