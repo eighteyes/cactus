@@ -52,6 +52,7 @@ SYNOPSIS
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
   cactus reopen KEY... --agent ID
   cactus poke KEY | --agent ID
+  cactus rehome --agent NEW [--json]
   cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
   cactus --monitor --agent ID [SCOPE] [--all] [--json] [--replay]
                    [--interval N] [--once]
@@ -804,6 +805,32 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     return EXIT_OK
 
 
+def cmd_rehome(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Move every row this identity asked under its old one onto it (q208).
+
+    Gated to the caller's own herdr pane+session stamp: without both, there
+    is no trail to follow, so this refuses rather than guessing which rows
+    are "mine". Safe to call on every session start — zero matches is the
+    normal case, not an error.
+    """
+    pane = os.environ.get("HERDR_PANE_ID") or None
+    session = os.environ.get("HERDR_SESSION") or None
+    if not pane or not session:
+        print(
+            "cactus: rehome needs HERDR_PANE_ID and HERDR_SESSION set — "
+            "without both there is no stamp to rehome from",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    keys = store.rehome(project=project, new_agent=args.agent, pane=pane, session=session)
+    if args.json:
+        json.dump({"agent": args.agent, "count": len(keys), "keys": keys}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print(f"rehomed {len(keys)}")
+    return EXIT_OK
+
+
 def cmd_threads(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     rows = store.threads(project=project, all_projects=args.all)
     if args.json:
@@ -1060,6 +1087,11 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("--agent", help="poke this agent/pane directly instead")
     pk.add_argument("-m", "--message", help="override the nudge text")
     pk.set_defaults(fn=cmd_poke)
+
+    rh = verb("rehome", parents=[common],
+              help="move this session's rows from a prior identity onto --agent")
+    rh.add_argument("--agent", required=True, help="the identity to move matching rows onto")
+    rh.set_defaults(fn=cmd_rehome)
 
     mg = verb("migrate", parents=[common], help="apply pending destructive-shaped table rebuilds")
     mg.add_argument("--yes", action="store_true", help="actually do it")

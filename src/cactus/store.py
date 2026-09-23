@@ -1392,6 +1392,45 @@ class Store:
                 return None
             time.sleep(poll)
 
+    def rehome(
+        self, *, project: str, new_agent: str, pane: str, session: str
+    ) -> list[str]:
+        """Reassign every row stamped with (pane, session) to `new_agent` (q208).
+
+        After a `/clear` an agent's identity changes and its own rows fall
+        off its `--agent` filters. `pane` and `session` are the herdr scope
+        stamped on each row at ask time (da2aff8) — the trail that still ties
+        a row back to the same conversation once the identity that asked it
+        no longer exists. Scoped to `project`, and to `open`/`live`/`answered`
+        rows: a cleared row is retired and rehoming it would resurrect it
+        under an owner that never asked it.
+
+        Bumps `updated_at` so pollers see the move, in one transaction so a
+        poller never reads half the batch reassigned.
+        """
+        now = _now()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
+                "SELECT id, key FROM questions WHERE project = ? AND pane = ? "
+                "AND session = ? AND status IN ('open', 'live', 'answered') "
+                "AND (agent IS NULL OR agent != ?)",
+                (project, pane, session, new_agent),
+            ).fetchall()
+            ids = [int(r["id"]) for r in rows]
+            keys = [r["key"] for r in rows]
+            if ids:
+                self.conn.executemany(
+                    "UPDATE questions SET agent = ?, updated_at = ? WHERE id = ?",
+                    [(new_agent, now, qid) for qid in ids],
+                )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        return keys
+
+
     # ---- internals --------------------------------------------------------
 
     def _scope_where(

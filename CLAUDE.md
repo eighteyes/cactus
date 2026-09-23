@@ -269,3 +269,13 @@ scope.
   that agent's rows of that thread the same way any other `agent` filter
   does — no separate mechanism, `_scope_where`'s thread clause and `list`'s
   `agent` clause already AND together.
+- `cactus rehome --agent NEW` (q208) is gated to rows stamped with the
+  caller's own `HERDR_PANE_ID`/`HERDR_SESSION` — missing either refuses (exit
+  1) rather than guessing which rows are "mine". Scoped to the current
+  project, `open`/`live`/`answered` rows only (a cleared row stays retired),
+  and to rows whose `agent` differs from `NEW`. `Store.rehome` reassigns and
+  bumps `updated_at` in one transaction. It changes `agent` only, which
+  `monitor._signature` deliberately excludes, so a rehome itself never reads
+  as a spurious `answered`/`verdict`/`asked` — a freshly started
+  `--monitor --agent NEW` still sees the moved rows, as an ordinary arrival
+  on its first poll.
