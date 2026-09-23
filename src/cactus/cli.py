@@ -30,19 +30,16 @@ EXIT_EMPTY = 3
 AGENT_HELP = """\
 cactus — ask a human without stopping work
 
-The inbox is durable and project-scoped; any agent in the repository reads
-any answer, in any session
-
 THE ARC
 
   1  ask       post the question, get a key, keep working
   2  work      do everything the answer does not block
   3  get/list  collect answers at the fork
-  4  ask -p    follow up in the same thread when an answer opens a question
+  4  ask -p    follow up in the same thread
 
 ASK
 
-  One question per ask, one -c per choice, taken verbatim
+  One question per ask; one -c per choice, taken verbatim
 
   cactus ask "Which auth backend?" \\
     -c "oidc: existing IdP" \\
@@ -56,43 +53,35 @@ ASK
   confirm    --confirm              yes / no
   text       no choices             free entry
 
-  A choice splits on its first colon: label before, description after
-  An answer carries a selection, typed text, or both; --no-free drops the text
+  A choice splits on its first colon: label, then description
+  An answer may carry a pick and typed text; --no-free drops the text
 
 AUTHORING
 
-  Options say what can be chosen; context says why it is asked
+  Options: two or three, mutually exclusive, each a thing that happens. No
+  "Other"; reframe the question instead. Cut each until it needs no explanation
 
-  Options:
-    two or three, mutually exclusive, each a thing that actually happens
-    no "Other"; reframe the question when the set misses the space
-    cut each option until it needs no explanation
-
-  Context carries what the human cannot see:
+  Context: what the human cannot see
     what you tried, and what it cost
     the measurement, with numbers
     what breaks under each option
     what is hard to reverse
-    what you will do if nobody answers
+    what you do if nobody answers
 
-  Leave out restated labels, reasoning chains, reassurance and apology
-  Long context reads from stdin: --context -
+  Omit restated labels, reasoning chains, reassurance, apology
+  --context - reads stdin
 
 BLOCKING
 
-  Ask without --wait and collect later; --wait only when the work cannot go on
+  Collect later by default; --wait only when the work cannot go on
 
   cactus ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
 
-  --wait returns when the status leaves open, a clear included; a clear means
-  the human declined
-  Pair --wait with --timeout, and treat exit 2 as "proceed on the stated
-  default", not as a failure
-  --wait on a non-blocking row is an error; watch --monitor instead
+  --wait returns when the row leaves open; a clear means declined
+  On exit 2, proceed on the stated default
+  On a non-blocking row --wait errors; watch --monitor instead
 
 ACTS
-
-  The act is what the reply is for; the shape is how it is collected
 
     act      blocks by default   shape                       for
     ask      yes                 choice/multi/text/confirm   a decision you need
@@ -102,20 +91,14 @@ ACTS
     review   no                  confirm (pass/fail)         a verify block
     plan     no                  text                        a checklist
 
-  The table gives defaults; --blocked / --no-block override them on any row
-  Block only on questions you cannot answer yourself; cursor.blocked reports
-  your blocked rate
+  --blocked / --no-block override on any row
+  Block only on what you cannot answer yourself; cursor.blocked counts it
 
-  steer — what happens anyway. --chosen LABEL is required and must name a real
-  option; you proceed with it and a tap redirects. "Using the staging tenant"
-  is a steer; "Which tenant?" is an ask. If proceeding on any assumption is
-  unsafe or wastes the work, ask
-
-  run — a command awaiting approval; attach the command with cactus review
-
-  review, plan — persistent: born live, answered every time the work is
-  re-checked, live until cleared, never blocking. Every verdict is kept, and
-  `answer` is the latest
+  steer: --chosen LABEL required; you proceed with it, a tap redirects. Ask
+  instead when proceeding on a guess is unsafe
+  run, review: attach the command with cactus review
+  review, plan: persistent — live until cleared, answered on every re-check,
+  never blocking. Every verdict is kept; `answer` is the latest
 
   cactus ask "Deploy staging?" --act run -t ship
   q8
@@ -129,41 +112,36 @@ ACTS
   cactus ask "Release steps" --act plan -t ship
   q10
   cactus plan q10 --step "build" --step "test" --step "tag"
-  cactus plan q10 --done 1       # 1-based: ticks "build"; the human can too
+  cactus plan q10 --done 1       # 1-based
 
 RECOMMEND
 
-  Recommend a pick when you have one; the row still waits for the human
+  Recommend a pick when you have one; the row still waits
 
   cactus ask "Which auth backend?" \\
     -c "oidc: existing IdP" -c "local: bcrypt table" \\
     --recommend oidc --confidence high --why "staging tenant is provisioned"
 
-  --recommend LABEL    a real option on any row with choices, confirm included;
-                       repeatable on multi rows only
-  --confidence LEVEL   required with --recommend: low / med / high → ○ ◐ ●
-  --why TEXT           optional, one line
+  --recommend LABEL    a real option, confirm rows included; repeatable on multi
+  --confidence LEVEL   required: low / med / high → ○ ◐ ●
+  --why TEXT           one line
 
-  The TUI marks the pick and preselects it: enter alone submits, a tap redirects
-  Waiting on the human: --recommend. Proceeding anyway: a steer with --chosen
+  The TUI preselects it: enter submits, a tap redirects
 
 OWNERSHIP
 
-  --agent ID names the owner of a row: a RESOLVED identity, the declared
-  session token, never a bare pane id
-
-  --agent has no default. A pane id outlives the conversation it named, and a
-  resumed session would inherit rows it never asked for. Unset means unowned
-  --agent filters; the project still scopes
-  --word SHORT is the label a projector derives a board key from; without it,
-  every row starting "check" or "should" collides
+  --agent ID    the declared session token; never a pane id, which outlives its
+                conversation and hands its rows to a resumed session. No
+                default; unset rows are unowned. Filters only
+  --word SHORT  board-key label; without it, rows starting "check" or "should"
+                collide
 
 THREADS
 
   One thread per decision; post the whole batch up front
 
-  -t NAME     group related questions
-  -p KEY      attach a follow-up; it inherits the parent's thread
+  -t NAME     group
+  -p KEY      follow up; inherits the parent's thread
 
 COLLECT
 
@@ -171,13 +149,13 @@ COLLECT
   cactus list -s answered -t auth --json
   cactus list -s open
 
-  An answered row carries selected[], text and skipped; skipped means the human
-  saw it and chose not to decide
-  Re-read rather than cache: an undo returns an answered row to open
+  An answered row carries selected[], text, skipped; skipped means seen and
+  left undecided
+  Re-read rather than cache; an undo reopens a row
 
 MONITOR
 
-  One line per change, flushed as it happens; point a line watcher at it
+  One line per change; point a line watcher at it
 
   cactus --monitor
 
@@ -188,71 +166,64 @@ MONITOR
   q7  reopened  Which auth backend?
   q9  gone
 
-  reopened   a human undid an answer; any verdict read earlier is stale
+  reopened   an answer was undone; drop any verdict read earlier
   verdict    a persistent row took another verdict
-  stepped    a plan step was ticked or unticked
+  stepped    a plan step changed
   gone       purged
-  Handle every event, not only `answered`; a withdrawn question otherwise reads
-  as a quiet inbox
+  Handle every event; a withdrawn question otherwise reads as a quiet inbox
 
-  --all         every project, each line prefixed with its label
-  --json        one object per line: the question plus an event field
-  --replay      emit the current inbox first, then stream
-  --interval N  seconds between polls (default 1.0)
-
-  Current project only, unless --all
+  --all         every project, lines prefixed with its label
+  --json        one object per line, with an event field
+  --replay      emit the current inbox first
+  --interval N  poll seconds (default 1.0)
 
 POKE
 
   A poke carries no instruction; the agent decides what the moved inbox means
 
-  cactus poke KEY            nudge the agent that owns this row
+  cactus poke KEY            nudge the row's owner
   cactus poke --agent ID     nudge an agent directly
 
-  The human presses p in the TUI; the poked agent re-reads
-  `cactus feed --json --agent ID` and acts on what changed
-  Transport is `herdr agent prompt` unless CACTUS_POKE overrides it; {agent}
-  and {message} substitute per argument, never through a shell
-  A poke PROMPTS A LIVE AGENT — set CACTUS_POKE to something inert before
-  exercising it
+  The human presses p in the TUI; the agent re-reads
+  `cactus feed --json --agent ID`
+  Transport: `herdr agent prompt`, or CACTUS_POKE with {agent} and {message},
+  substituted per argument, never through a shell
+  A poke PROMPTS A LIVE AGENT — set CACTUS_POKE inert before testing
 
 FEED
 
-  The whole actionable inbox as one JSON document, for a board or other
-  projector
+  The actionable inbox as one JSON document, for a board
 
   cactus feed --json
   {"cursor": {"max_id": 41, "max_updated": "...", "count": 12},
    "questions": [{"key": "q7", "act": "review", "agent": "herdr:pane-3",
                   "review": {...}, "steps": [], "answers": [...], ...}]}
 
-  Rows embed their review block, steps and full answer log
-  Steps carry idx (0-based) and n (1-based, what `plan --done` takes)
-  Every project by default; --here narrows
-  Poll by cursor: re-read rows only when the block moves. A sidecar write, like
-  a ticked step, moves it too
+  Rows embed review block, steps, full answer log
+  Steps carry idx (0-based) and n (1-based, for `plan --done`)
+  Re-read rows only when the cursor moves; step ticks move it too
   Filters: --act NAME (repeatable), --agent ID, -t THREAD, -s STATUS, --here
   Answer with `cactus answer KEY -s LABEL`, never by writing the database
 
 SCOPE
 
-  A question records the project it was asked from — the git toplevel, else
-  the working directory. Agent verbs see the current project; human surfaces
-  see every project
+  A question records its project — the git toplevel, else the directory — and
+  persists across sessions. Agent verbs see the current project; human
+  surfaces see all
 
-  cactus where       the resolved project and database path
+  cactus where       project and database path
   cactus projects    projects with live questions
 
 RETIRE
 
   cactus clear KEY           retire; the transcript stays readable
-  cactus clear -t THREAD     retire a whole thread
+  cactus clear -t THREAD     retire a thread
   cactus clear --purge KEY   delete
 
 EXIT CODES
 
   0  ok
-  1  error, including --wait on a row that never blocks
+  1  error
   2  --wait timed out
   3  nothing matched
 """
