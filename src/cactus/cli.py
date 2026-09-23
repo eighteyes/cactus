@@ -182,6 +182,8 @@ MONITOR
   --json        one object per line, with an event field
   --replay      emit the current inbox first
   --interval N  poll seconds (default 1.0)
+  --agent ID    only this agent's rows, gone included; the poll still spans
+                every agent, so a purge is still judged and reported
 
 POKE
 
@@ -731,6 +733,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --monitor, emit the current inbox before streaming")
     p.add_argument("--interval", type=float, default=1.0,
                    help="with --monitor, seconds between polls (default: 1.0)")
+    p.add_argument("--agent", help="with --monitor, only events for this agent's rows")
     p.add_argument("--here", action="store_true",
                    help="with --tui/--watch, scope to the current project only")
     p.add_argument("--json", action="store_true", help="machine-readable output")
@@ -930,6 +933,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=args.json,
                 interval=args.interval,
                 replay=args.replay,
+                agent=args.agent,
             )
         if args.command is None:
             parser.print_help()

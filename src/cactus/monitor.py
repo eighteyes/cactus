@@ -143,8 +143,11 @@ def _emit_gone(key: str, *, as_json: bool) -> None:
         print(f"{key}  gone", flush=True)
 
 
-def _snapshot(questions: Iterable[Question]) -> dict[str, tuple[Any, ...]]:
-    return {q.key: _signature(q) for q in questions}
+def _snapshot(questions: Iterable[Question]) -> dict[str, tuple[str | None, tuple[Any, ...]]]:
+    # The owning agent travels with the signature, not just the row's current
+    # fields: a purge drops the row before a `gone` event can read its agent
+    # off it, so `--agent` filtering for `gone` reads it back from here.
+    return {q.key: (q.agent, _signature(q)) for q in questions}
 
 
 def run_monitor(
@@ -155,6 +158,7 @@ def run_monitor(
     as_json: bool = False,
     interval: float = DEFAULT_INTERVAL,
     replay: bool = False,
+    agent: str | None = None,
 ) -> int:
     """Stream inbox transitions until interrupted. Returns a process exit code.
 
@@ -162,14 +166,23 @@ def run_monitor(
     get undone, get retired, get purged. Every one of those is a line, because
     a watcher that only hears about answers cannot tell a silent inbox from a
     question that was withdrawn.
+
+    `agent`, when given, narrows what is emitted to that agent's own rows —
+    the poll itself still spans every agent, because a `gone` event for a
+    purged row has to be judged against the owner recorded in `seen`, not
+    against a row that no longer exists to ask.
     """
     def fetch() -> list[Question]:
         return store.list(project=project, status=None, all_projects=all_projects)
 
+    def owned(owner: str | None) -> bool:
+        return agent is None or owner == agent
+
     current = fetch()
     if replay:
         for q in current:
-            _emit(q, _arrival_event(q), as_json=as_json, show_project=all_projects)
+            if owned(q.agent):
+                _emit(q, _arrival_event(q), as_json=as_json, show_project=all_projects)
     seen = _snapshot(current)
     cursor = store.cursor()
 
@@ -184,14 +197,18 @@ def run_monitor(
             live = {q.key for q in questions}
             for q in questions:
                 signature = _signature(q)
-                before = seen.get(q.key)
+                prev = seen.get(q.key)
+                before = prev[1] if prev else None
                 if before == signature:
                     continue
-                event = _arrival_event(q) if before is None else _transition_event(before, q)
-                _emit(q, event, as_json=as_json, show_project=all_projects)
-                seen[q.key] = signature
+                if owned(q.agent):
+                    event = _arrival_event(q) if before is None else _transition_event(before, q)
+                    _emit(q, event, as_json=as_json, show_project=all_projects)
+                seen[q.key] = (q.agent, signature)
             for key in [k for k in seen if k not in live]:
-                _emit_gone(key, as_json=as_json)
+                owner, _ = seen[key]
+                if owned(owner):
+                    _emit_gone(key, as_json=as_json)
                 del seen[key]
     except KeyboardInterrupt:
         return 0

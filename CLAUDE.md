@@ -144,3 +144,7 @@ scope.
   `--agent`; an unowned row clears by key regardless. The TUI's `c` binding
   calls `Store.clear` directly with no agent filter, so a human can still
   clear any row.
+- `monitor.run_monitor(agent=...)` still polls every agent's rows; only
+  emission is filtered. `_snapshot` carries each row's owner alongside its
+  signature so a `gone` event, read after the row is already deleted, can
+  still be judged against the agent that owned it.
