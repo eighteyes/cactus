@@ -57,6 +57,8 @@ SYNOPSIS
                    [--interval N] [--once]
   cactus where | projects | threads
 
+  KEY  qN in this project, or LABEL:qN / /abs/path:qN for another one
+
   SCOPE  --workspace ID | --tab ID | --pane ID
 
 ACTS
@@ -319,6 +321,12 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     session = os.environ.get("HERDR_SESSION") or None
 
     try:
+        # -p accepts a bare key (this project), LABEL:qN, or /abs/path:qN
+        # (q166); ambiguous labels and missing parents both raise here and
+        # are reported the same way as any other bad ask().
+        parent_project, parent_bare = (
+            store.resolve_ref(args.parent, project) if args.parent else (None, None)
+        )
         q = store.ask(
             text,
             project=project,
@@ -340,7 +348,8 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             confidence=args.confidence,
             recommend_why=args.why,
             thread=args.thread,
-            parent_key=args.parent,
+            parent_key=parent_bare,
+            parent_project=parent_project,
             context=context,
             asked_by=args.by or os.environ.get("CACTUS_AGENT"),
         )
@@ -355,7 +364,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             print(q.key)
         return EXIT_OK
 
-    answered = store.wait_for_answer(q.key, timeout=args.timeout)
+    answered = store.wait_for_answer(q.key, project=project, timeout=args.timeout)
     if answered is None:
         if args.json:
             json.dump({"key": q.key, "status": "timeout"}, sys.stdout, indent=2)
@@ -410,8 +419,8 @@ def cmd_run(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             context=args.why,
             asked_by=os.environ.get("CACTUS_AGENT"),
         )
-        store.set_review(q.key, run_cmd=text)
-        q = store.get(q.key)
+        store.set_review(q.key, project=project, run_cmd=text)
+        q = store.get(q.key, project=project)
         assert q is not None
     except (KeyError, ValueError) as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
@@ -428,21 +437,31 @@ def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     if args.timeout is not None and not args.wait:
         print("cactus: --timeout needs --wait", file=sys.stderr)
         return EXIT_ERROR
-    for key in args.keys:
-        if store.get(key) is None:
-            print(f"cactus: no such question: {key}", file=sys.stderr)
+    # Each ref resolves independently (q166): a bare qN in this project, or a
+    # qualified LABEL:qN / /abs/path:qN naming another one.
+    try:
+        refs = [(k, *store.resolve_ref(k, project)) for k in args.keys]
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    for raw, rproj, rkey in refs:
+        if store.get(rkey, project=rproj) is None:
+            print(f"cactus: no such question: {raw}", file=sys.stderr)
             return EXIT_EMPTY
 
     if args.wait:
         timed_out_key = None
-        for key in args.keys:
-            if store.wait_for_answer(key, timeout=args.timeout) is None:
-                timed_out_key = key
+        for raw, rproj, rkey in refs:
+            if store.wait_for_answer(rkey, project=rproj, timeout=args.timeout) is None:
+                timed_out_key = raw
                 break
         if timed_out_key is not None:
             # Print whatever already resolved before the miss, so a caller
             # waiting on several keys is not left with nothing at all.
-            settled = [q for q in (store.get(k) for k in args.keys) if q is not None and q.status != "open"]
+            settled = [
+                q for q in (store.get(rkey, project=rproj) for _, rproj, rkey in refs)
+                if q is not None and q.status != "open"
+            ]
             if settled:
                 _print_questions(settled, as_json=args.json, show_project=args.all)
             if not args.json:
@@ -450,8 +469,8 @@ def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             return EXIT_TIMEOUT
 
     found: list[Question] = []
-    for key in args.keys:
-        q = store.get(key)
+    for _, rproj, rkey in refs:
+        q = store.get(rkey, project=rproj)
         assert q is not None
         found.append(q)
 
@@ -490,8 +509,10 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     if text == "-":
         text = sys.stdin.read().strip()
     try:
+        rproj, rkey = store.resolve_ref(args.key, project)
         q = store.answer(
-            args.key,
+            rkey,
+            project=rproj,
             selected=args.select or [],
             text=text,
             skipped=args.skip or args.dismiss,
@@ -516,8 +537,10 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
 def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """Attach or replace the verify block on a review row."""
     try:
+        rproj, rkey = store.resolve_ref(args.key, project)
         q = store.set_review(
-            args.key,
+            rkey,
+            project=rproj,
             look_at=args.look_at,
             run_cmd=args.run,
             pass_when=getattr(args, "pass"),
@@ -549,16 +572,17 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     and the rail; the store keeps them 0-based internally.
     """
     try:
+        rproj, rkey = store.resolve_ref(args.key, project)
         if args.step or args.reset_steps:
-            store.set_steps(args.key, args.step or [], reset=args.reset_steps)
-        q = store.get(args.key)
+            store.set_steps(rkey, args.step or [], project=rproj, reset=args.reset_steps)
+        q = store.get(rkey, project=rproj)
         if q is None:
             raise KeyError(f"no such question: {args.key}")
         for n in args.done or []:
-            store.set_step_done(args.key, _plan_index(n, len(q.steps)), True)
+            store.set_step_done(rkey, _plan_index(n, len(q.steps)), project=rproj)
         for n in args.undone or []:
-            store.set_step_done(args.key, _plan_index(n, len(q.steps)), False)
-        q = store.get(args.key)
+            store.set_step_done(rkey, _plan_index(n, len(q.steps)), False, project=rproj)
+        q = store.get(rkey, project=rproj)
     except KeyError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_EMPTY
@@ -609,15 +633,22 @@ def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
         # Explicit KEY form: an unowned row clears by key with or without
         # --agent; an owned one refuses unless --agent matches. One refused
         # key refuses the whole call, so a batch never clears part of itself.
-        missing = [key for key in args.keys if store.get(key) is None]
+        # Each ref resolves independently (q166) — a bare qN in this project,
+        # or a qualified LABEL:qN / /abs/path:qN naming another one.
+        try:
+            refs = [(k, *store.resolve_ref(k, project)) for k in args.keys]
+        except ValueError as exc:
+            print(f"cactus: {_msg(exc)}", file=sys.stderr)
+            return EXIT_ERROR
+        missing = [raw for raw, rproj, rkey in refs if store.get(rkey, project=rproj) is None]
         if missing:
             print(f"cactus: no such question: {', '.join(missing)}", file=sys.stderr)
             return EXIT_EMPTY
         refused = []
-        for key in args.keys:
-            q = store.get(key)
+        for raw, rproj, rkey in refs:
+            q = store.get(rkey, project=rproj)
             if q is not None and q.agent is not None and q.agent != args.agent:
-                refused.append((key, q.agent))
+                refused.append((raw, q.agent))
         if refused:
             detail = ", ".join(f"{k} (owned by {owner})" for k, owner in refused)
             print(
@@ -626,7 +657,15 @@ def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
             )
             return EXIT_ERROR
         kw = {} if args.purge else {"record": False}
-        count = fn(keys=args.keys, project=project, **kw)
+        # Batched per resolved project — `keys=` combines with `project=` as
+        # one AND'd filter, so a call spanning two projects has to run once
+        # per project rather than lump every bare key under the caller's own.
+        count = 0
+        by_project: dict[str, list[str]] = {}
+        for _, rproj, rkey in refs:
+            by_project.setdefault(rproj, []).append(rkey)
+        for rproj, rkeys in by_project.items():
+            count += fn(keys=rkeys, project=rproj, **kw)
 
     verb = "purged" if args.purge else "cleared"
     if args.json:
@@ -645,26 +684,34 @@ def cmd_reopen(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     keys and rows that were never cleared are refused up front, the same way a
     batch clear never touches part of itself.
     """
-    missing = [key for key in args.keys if store.get(key) is None]
+    try:
+        refs = [(k, *store.resolve_ref(k, project)) for k in args.keys]
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+
+    missing = [raw for raw, rproj, rkey in refs if store.get(rkey, project=rproj) is None]
     if missing:
         print(f"cactus: no such question: {', '.join(missing)}", file=sys.stderr)
         return EXIT_EMPTY
 
     refused = [
-        (key, q.agent) for key in args.keys
-        if (q := store.get(key)).agent is not None and q.agent != args.agent
+        (raw, q.agent) for raw, rproj, rkey in refs
+        if (q := store.get(rkey, project=rproj)).agent is not None and q.agent != args.agent
     ]
     if refused:
         detail = ", ".join(f"{k} (owned by {owner})" for k, owner in refused)
         print(f"cactus: refusing to reopen rows you do not own: {detail}", file=sys.stderr)
         return EXIT_ERROR
 
-    not_cleared = [key for key in args.keys if store.get(key).status != "cleared"]
+    not_cleared = [
+        raw for raw, rproj, rkey in refs if store.get(rkey, project=rproj).status != "cleared"
+    ]
     if not_cleared:
         print(f"cactus: not cleared, nothing to reopen: {', '.join(not_cleared)}", file=sys.stderr)
         return EXIT_ERROR
 
-    results = [store.reopen(key) for key in args.keys]
+    results = [store.reopen(rkey, project=rproj) for _, rproj, rkey in refs]
     if args.json:
         json.dump([q.as_dict() for q in results], sys.stdout, indent=2)
         sys.stdout.write("\n")
@@ -732,7 +779,12 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         if not args.key:
             print("cactus: poke needs a key or --agent", file=sys.stderr)
             return EXIT_ERROR
-        q = store.get(args.key)
+        try:
+            rproj, rkey = store.resolve_ref(args.key, project)
+        except ValueError as exc:
+            print(f"cactus: {_msg(exc)}", file=sys.stderr)
+            return EXIT_ERROR
+        q = store.get(rkey, project=rproj)
         if q is None:
             print(f"cactus: no such question: {args.key}", file=sys.stderr)
             return EXIT_EMPTY
@@ -785,18 +837,25 @@ def cmd_projects(args: argparse.Namespace, store: Store, project: str, cwd: str)
 
 
 def cmd_migrate(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
-    """Run the one schema change that is not safe to do on open.
+    """Run the schema changes that are not safe to do on open.
 
-    Rebuilding `answers` to drop UNIQUE(question_id) changes the schema under
-    every process that already imported an older cactus, so it is a deliberate
-    act rather than a side effect of the next command that touches the file.
+    Rebuilding `answers` to drop UNIQUE(question_id), and `questions` to drop
+    the global UNIQUE(key) that per-project numbering (q166) cannot use, both
+    change the schema under every process that already imported an older
+    cactus, so this is a deliberate act rather than a side effect of the next
+    command that touches the file.
     """
-    if not store.needs_rebuild():
+    needed = []
+    if store.needs_rebuild():
+        needed.append("answers")
+    if store.needs_key_rebuild():
+        needed.append("questions")
+    if not needed:
         print(f"cactus: {store.path} is already current")
         return EXIT_OK
     if not args.yes:
         print(
-            f"cactus: {store.path} needs the answers table rebuilt.\n"
+            f"cactus: {store.path} needs {' and '.join(needed)} rebuilt.\n"
             f"cactus: back it up first:  sqlite-backup {store.path}\n"
             f"cactus: then re-run with --yes. Restart anything holding an "
             f"older cactus module afterwards.",
@@ -804,7 +863,8 @@ def cmd_migrate(args: argparse.Namespace, store: Store, project: str, cwd: str) 
         )
         return EXIT_ERROR
     store._drop_answer_uniqueness()
-    print(f"cactus: rebuilt answers in {store.path}")
+    store._drop_key_uniqueness()
+    print(f"cactus: rebuilt {' and '.join(needed)} in {store.path}")
     return EXIT_OK
 
 
@@ -1001,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("-m", "--message", help="override the nudge text")
     pk.set_defaults(fn=cmd_poke)
 
-    mg = verb("migrate", parents=[common], help="apply the answers-table rebuild")
+    mg = verb("migrate", parents=[common], help="apply pending destructive-shaped table rebuilds")
     mg.add_argument("--yes", action="store_true", help="actually do it")
     mg.set_defaults(fn=cmd_migrate)
 

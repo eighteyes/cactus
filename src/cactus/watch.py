@@ -82,7 +82,7 @@ class WatchApp(App[None]):
         super().__init__()
         self.store = store
         self.project = project
-        self._seen: dict[str, _Seen] = {}
+        self._seen: dict[tuple[str, str], _Seen] = {}
         self._cursor: tuple[int, str, int] = (0, "", 0)
         self._paused = False
         self._pending: list[Question] = []
@@ -124,7 +124,7 @@ class WatchApp(App[None]):
         )
         for q in backlog:
             self._emit_ask(q)
-            self._seen[q.key] = _Seen(q.status, q.updated_at)
+            self._seen[(q.project, q.key)] = _Seen(q.status, q.updated_at)
         self._cursor = self.store.cursor()
 
     def _poll(self) -> None:
@@ -143,10 +143,11 @@ class WatchApp(App[None]):
     def _diff(self) -> list[Question]:
         changed: list[Question] = []
         for q in self._questions():
-            prior = self._seen.get(q.key)
+            ident = (q.project, q.key)
+            prior = self._seen.get(ident)
             if prior is None or prior.status != q.status or prior.updated_at != q.updated_at:
                 changed.append(q)
-                self._seen[q.key] = _Seen(q.status, q.updated_at)
+                self._seen[ident] = _Seen(q.status, q.updated_at)
         return changed
 
     # ---- rendering ------------------------------------------------------
@@ -160,9 +161,8 @@ class WatchApp(App[None]):
     def _emit_ask(self, q: Question) -> None:
         log = self.query_one("#feed", RichLog)
         indent = "  " * q.depth
-        head = f"[{q.created_at}] ASK {q.key}"
-        if self.project is None:
-            head += f" [{project_label(q.project)}]"
+        key = f"{project_label(q.project)}:{q.key}" if self.project is None else q.key
+        head = f"[{q.created_at}] ASK {key}"
         if q.thread:
             # Agent-scoped (q164/q165): shown as owner/thread, since the name
             # alone is only unique within one agent.
@@ -183,9 +183,8 @@ class WatchApp(App[None]):
             return
         log = self.query_one("#feed", RichLog)
         label = "ANSWER" if q.status == "answered" else "CLEAR"
-        head = f"[{q.updated_at}] {label} {q.key}"
-        if self.project is None:
-            head += f" [{project_label(q.project)}]"
+        key = f"{project_label(q.project)}:{q.key}" if self.project is None else q.key
+        head = f"[{q.updated_at}] {label} {key}"
         log.write(f"{head}\n  -> {_fmt_answer_text(q)}")
 
     def _refresh_status(self) -> None:

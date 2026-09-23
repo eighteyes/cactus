@@ -132,11 +132,16 @@ def _detail(q: Question, event: str) -> str:
     return q.text
 
 
+def _display_key(project: str, key: str, *, show_project: bool) -> str:
+    """`LABEL:qN` when spanning projects (q166), else the bare key."""
+    return f"{project_label(project)}:{key}" if show_project else key
+
+
 def _line(q: Question, event: str, *, show_project: bool) -> str:
-    project = f"{project_label(q.project)}  " if show_project else ""
     # The act is on every line: a watcher filtering for its own review rows
     # should not have to fetch each key to learn what kind of row it is.
-    return f"{q.key}  {event:<9}{q.act:<7}{project}{_detail(q, event)}"
+    key = _display_key(q.project, q.key, show_project=show_project)
+    return f"{key}  {event:<9}{q.act:<7}{_detail(q, event)}"
 
 
 def _record(q: Question, event: str) -> dict[str, Any]:
@@ -152,11 +157,14 @@ def _emit(q: Question, event: str, *, as_json: bool, show_project: bool) -> None
         print(_line(q, event, show_project=show_project), flush=True)
 
 
-def _emit_gone(key: str, *, as_json: bool) -> None:
+def _emit_gone(project: str, key: str, *, as_json: bool, show_project: bool) -> None:
     if as_json:
-        print(json.dumps({"key": key, "event": "gone"}), flush=True)
+        payload = {"key": key, "event": "gone"}
+        if show_project:
+            payload["ref"] = _display_key(project, key, show_project=True)
+        print(json.dumps(payload), flush=True)
     else:
-        print(f"{key}  gone", flush=True)
+        print(f"{_display_key(project, key, show_project=show_project)}  gone", flush=True)
 
 
 def _scope_of(q: Question) -> tuple[str | None, str | None, str | None, str | None]:
@@ -165,12 +173,16 @@ def _scope_of(q: Question) -> tuple[str | None, str | None, str | None, str | No
 
 def _snapshot(
     questions: Iterable[Question],
-) -> dict[str, tuple[tuple[str | None, ...], tuple[Any, ...]]]:
+) -> dict[tuple[str, str], tuple[tuple[str | None, ...], tuple[Any, ...]]]:
     # The owning scope travels with the signature, not just the row's current
     # fields: a purge drops the row before a `gone` event can read its agent,
     # workspace, tab, or pane off it, so filtering for `gone` reads it back
     # from here.
-    return {q.key: (_scope_of(q), _signature(q)) for q in questions}
+    #
+    # Keyed by (project, key), not key alone (q166): once keys number per
+    # project, "q1" recurs in every project, and a bare-key dict spanning
+    # `--all` would conflate two different rows' signatures.
+    return {(q.project, q.key): (_scope_of(q), _signature(q)) for q in questions}
 
 
 def run_monitor(
@@ -234,26 +246,34 @@ def run_monitor(
                 continue
             cursor = now
             questions = fetch()
-            live = {q.key for q in questions}
+            live = {(q.project, q.key) for q in questions}
             fired = False
             for q in questions:
+                ident = (q.project, q.key)
                 signature = _signature(q)
-                prev = seen.get(q.key)
+                scope = _scope_of(q)
+                prev = seen.get(ident)
                 before = prev[1] if prev else None
-                if before == signature:
-                    continue
-                if owned(_scope_of(q)):
+                # `seen` always tracks the row's current scope, even when its
+                # signature (and so its content) has not moved — a pure
+                # rehome (q208) changes `agent` only, which `_signature`
+                # excludes on purpose, so it must not read as a spurious
+                # `answered`/`asked`. Skipping the scope update on a no-op
+                # signature would instead leave a freshly rehomed row
+                # invisible to the new owner's `--monitor --agent` until
+                # some unrelated change touched it.
+                if before != signature and owned(scope):
                     event = _arrival_event(q) if before is None else _transition_event(before, q)
                     _emit(q, event, as_json=as_json, show_project=all_projects)
                     if event != "asked":
                         fired = True
-                seen[q.key] = (_scope_of(q), signature)
-            for key in [k for k in seen if k not in live]:
-                scope, _ = seen[key]
+                seen[ident] = (scope, signature)
+            for ident in [k for k in seen if k not in live]:
+                scope, _ = seen[ident]
                 if owned(scope):
-                    _emit_gone(key, as_json=as_json)
+                    _emit_gone(*ident, as_json=as_json, show_project=all_projects)
                     fired = True
-                del seen[key]
+                del seen[ident]
             if once and fired:
                 return 0
     except KeyboardInterrupt:

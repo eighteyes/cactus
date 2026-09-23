@@ -74,8 +74,22 @@ scope.
   invisible to every poller.
 - `_now()` uses microsecond resolution. Second resolution lets two writes inside
   one second share a cursor token, and pollers silently miss the later write.
-- Keys are `q{rowid}`: `ask()` inserts with an empty key, then updates it from
-  `lastrowid`. Key and id are the same number in two forms.
+- Keys number per project (q166): `ask()` inserts with an empty key inside a
+  `BEGIN IMMEDIATE`, then updates it to `q{num}` where `num` is
+  `MAX(num) WHERE project=?` plus one — race-free because the transaction
+  holds SQLite's write lock across both the read and the insert. `key` stays
+  unique only within `(project, key)`, not globally, so a bare `qN` needs a
+  project to resolve unambiguously; `Store.resolve_ref` accepts a bare key
+  (the caller's own project), `LABEL:qN`, or `/abs/path:qN`, and raises
+  `AmbiguousLabel` when two projects share a basename. `id` (the row's
+  AUTOINCREMENT rowid) is still globally unique and is what every foreign key
+  and internal reload (`_get_by_id`) uses — `key` is display and lookup only.
+  Relaxing `key`'s UNIQUE constraint is a table rebuild, so it follows the
+  same destructive-shaped pattern as the `answers` rebuild: additive on open
+  (a `num` column, backfilled from each row's existing key text), gated
+  behind `cactus migrate --yes` (`needs_key_rebuild` / `_drop_key_uniqueness`).
+  Until migrated, `ask()` keeps the old global `q{rowid}` numbering, so an
+  un-migrated database behaves exactly as before.
 - `--json` is accepted before and after the verb. The subparser copy uses
   `default=argparse.SUPPRESS` so an omitted trailing flag cannot clobber a
   leading one.

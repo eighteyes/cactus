@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -20,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
+
+from .scope import project_label
 
 KINDS = ("choice", "multi", "text", "confirm")
 STATUSES = ("open", "live", "answered", "cleared")
@@ -70,6 +73,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS questions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     key          TEXT    NOT NULL UNIQUE,
+    num          INTEGER,
     project      TEXT    NOT NULL,
     cwd          TEXT    NOT NULL,
     thread       TEXT,
@@ -297,6 +301,9 @@ class Question:
     def as_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,
+            # "LABEL:qN" (q166) — a stable cross-project reference, alongside
+            # the bare "key" every single-project surface already uses.
+            "ref": f"{project_label(self.project)}:{self.key}",
             "project": self.project,
             "cwd": self.cwd,
             "thread": self.thread,
@@ -424,15 +431,28 @@ class Store:
             self.conn.execute("ALTER TABLE questions ADD COLUMN run_tail TEXT")
         if "run_log" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN run_log TEXT")
+        # Per-project key numbering (q166): `num` is the integer a project's
+        # keys count from — additive and safe to backfill on open, unlike the
+        # UNIQUE(key) rebuild below. Backfilled once from the numeric suffix
+        # of each row's existing key, so a pre-existing q37 keeps meaning q37.
+        if "num" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN num INTEGER")
+            self.conn.execute(
+                "UPDATE questions SET num = CAST(substr(key, 2) AS INTEGER) "
+                "WHERE num IS NULL"
+            )
 
-        # NOT called here. Rebuilding `answers` is destructive-shaped and
-        # changes the schema under any process that already imported the old
-        # module — which is exactly what happened to a long-running agent when
-        # `cactus where` migrated the live inbox out from under it. Additive
-        # column adds are safe to do on open; a table rebuild is not, so it
-        # needs `cactus migrate` or CACTUS_MIGRATE=1.
+        # NOT called here. Rebuilding `answers` — and, for the same reason,
+        # `questions` to drop the global UNIQUE(key) that per-project numbering
+        # cannot use — is destructive-shaped and changes the schema under any
+        # process that already imported the old module — which is exactly what
+        # happened to a long-running agent when `cactus where` migrated the
+        # live inbox out from under it. Additive column adds are safe to do on
+        # open; a table rebuild is not, so it needs `cactus migrate` or
+        # CACTUS_MIGRATE=1.
         if os.environ.get("CACTUS_MIGRATE") == "1":
             self._drop_answer_uniqueness()
+            self._drop_key_uniqueness()
 
     def needs_rebuild(self) -> bool:
         """Whether `answers` still carries the constraint an append log cannot."""
@@ -472,6 +492,85 @@ class Store:
                    SELECT id, question_id, selected, text, skipped, created_at FROM answers""",
                 "DROP TABLE answers",
                 "ALTER TABLE answers_new RENAME TO answers",
+            ):
+                self.conn.execute(stmt)
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        finally:
+            self.conn.execute("PRAGMA foreign_keys=ON")
+
+    def needs_key_rebuild(self) -> bool:
+        """Whether `questions.key` still carries the global UNIQUE that
+        per-project numbering (q166) cannot use — two projects each minting
+        their own q1 collide on it."""
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='questions'"
+        ).fetchone()
+        sql = row["sql"] or "" if row else ""
+        return "key" in sql and "UNIQUE" in sql and "UNIQUE(project, key)" not in sql
+
+    def _drop_key_uniqueness(self) -> None:
+        """Rebuild `questions` with UNIQUE(project, key) instead of UNIQUE(key), once.
+
+        Keys number per project from here on, so the same text ("q1") is
+        expected to recur across projects — global uniqueness on `key` alone
+        would refuse the second project's first row. `id` stays the untouched
+        AUTOINCREMENT primary key every foreign key already points at, so this
+        rebuild only changes what `key` is allowed to collide on.
+        """
+        if not self.needs_key_rebuild():
+            return
+
+        self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            for stmt in (
+                """CREATE TABLE questions_new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key          TEXT    NOT NULL,
+                    num          INTEGER,
+                    project      TEXT    NOT NULL,
+                    cwd          TEXT    NOT NULL,
+                    thread       TEXT,
+                    parent_id    INTEGER REFERENCES questions(id) ON DELETE CASCADE,
+                    text         TEXT    NOT NULL,
+                    kind         TEXT    NOT NULL,
+                    act          TEXT    NOT NULL DEFAULT 'ask',
+                    agent        TEXT,
+                    word         TEXT,
+                    workspace    TEXT,
+                    tab          TEXT,
+                    pane         TEXT,
+                    session      TEXT,
+                    title        TEXT,
+                    chosen       TEXT,
+                    blocked      INTEGER NOT NULL DEFAULT 1,
+                    choices      TEXT    NOT NULL DEFAULT '[]',
+                    allow_free   INTEGER NOT NULL DEFAULT 1,
+                    recommend    TEXT,
+                    confidence   TEXT,
+                    recommend_why TEXT,
+                    context      TEXT,
+                    asked_by     TEXT,
+                    status       TEXT    NOT NULL DEFAULT 'open',
+                    created_at   TEXT    NOT NULL,
+                    updated_at   TEXT    NOT NULL,
+                    run_exit     INTEGER,
+                    run_tail     TEXT,
+                    run_log      TEXT,
+                    UNIQUE(project, key)
+                )""",
+                """INSERT INTO questions_new
+                   SELECT id, key, num, project, cwd, thread, parent_id, text, kind,
+                          act, agent, word, workspace, tab, pane, session, title,
+                          chosen, blocked, choices, allow_free, recommend,
+                          confidence, recommend_why, context, asked_by, status,
+                          created_at, updated_at, run_exit, run_tail, run_log
+                   FROM questions""",
+                "DROP TABLE questions",
+                "ALTER TABLE questions_new RENAME TO questions",
             ):
                 self.conn.execute(stmt)
             self.conn.execute("COMMIT")
@@ -539,10 +638,16 @@ class Store:
         recommend_why: str | None = None,
         thread: str | None = None,
         parent_key: str | None = None,
+        parent_project: str | None = None,
         context: str | None = None,
         asked_by: str | None = None,
     ) -> Question:
-        """Insert one question and return it, with its assigned key."""
+        """Insert one question and return it, with its assigned key.
+
+        `parent_project` scopes `parent_key` when it names a row in a
+        different project than this one — a qualified `LABEL:qN` follow-up
+        (q166). Defaults to this question's own `project`.
+        """
         if kind not in KINDS:
             raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
         if act not in ACTS:
@@ -608,7 +713,7 @@ class Store:
 
         parent_id = None
         if parent_key:
-            parent = self.get(parent_key)
+            parent = self.get(parent_key, project=parent_project or project)
             if parent is None:
                 raise KeyError(f"no such question: {parent_key}")
             parent_id = parent.id
@@ -621,30 +726,57 @@ class Store:
         # stays answerable, so it never occupies `open` and never blocks a
         # waiting agent.
         status = "live" if act in PERSISTENT_ACTS else "open"
-        cur = self.conn.execute(
-            """
-            INSERT INTO questions
-                (key, project, cwd, thread, parent_id, text, kind, act, agent,
-                 word, workspace, tab, pane, session, title, chosen, blocked,
-                 choices, allow_free, recommend, confidence, recommend_why,
-                 context, asked_by, status, created_at, updated_at)
-            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                project, cwd, thread, parent_id, text, kind, act, agent, word,
-                workspace, tab, pane, session, title,
-                chosen, 1 if blocked else 0,
-                json.dumps([c.as_dict() for c in choices]),
-                1 if allow_free else 0,
-                json.dumps(recommend) if recommend else None,
-                confidence, recommend_why,
-                context, asked_by, status, now, now,
-            ),
-        )
-        rowid = int(cur.lastrowid)
-        key = f"q{rowid}"
-        self.conn.execute("UPDATE questions SET key = ? WHERE id = ?", (key, rowid))
-        result = self.get(key)
+        # Race-free numbering across processes (q166): both the read of the
+        # current max and the insert that claims the next number happen
+        # inside one BEGIN IMMEDIATE, which takes SQLite's write lock up
+        # front rather than at the first write, so two processes asking in
+        # the same project at once serialize on it instead of both reading
+        # the same max and colliding.
+        per_project = not self.needs_key_rebuild()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            if per_project:
+                row = self.conn.execute(
+                    "SELECT COALESCE(MAX(num), 0) AS n FROM questions WHERE project = ?",
+                    (project,),
+                ).fetchone()
+                num = int(row["n"]) + 1
+            else:
+                # Pre-migration: `key` is still globally UNIQUE, so keys stay
+                # numbered off the row id exactly as before.
+                num = None
+            cur = self.conn.execute(
+                """
+                INSERT INTO questions
+                    (key, num, project, cwd, thread, parent_id, text, kind, act, agent,
+                     word, workspace, tab, pane, session, title, chosen, blocked,
+                     choices, allow_free, recommend, confidence, recommend_why,
+                     context, asked_by, status, created_at, updated_at)
+                VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    num, project, cwd, thread, parent_id, text, kind, act, agent, word,
+                    workspace, tab, pane, session, title,
+                    chosen, 1 if blocked else 0,
+                    json.dumps([c.as_dict() for c in choices]),
+                    1 if allow_free else 0,
+                    json.dumps(recommend) if recommend else None,
+                    confidence, recommend_why,
+                    context, asked_by, status, now, now,
+                ),
+            )
+            rowid = int(cur.lastrowid)
+            if num is None:
+                num = rowid
+            key = f"q{num}"
+            self.conn.execute(
+                "UPDATE questions SET key = ?, num = ? WHERE id = ?", (key, num, rowid)
+            )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        result = self._get_by_id(rowid)
         assert result is not None
         return result
 
@@ -652,6 +784,7 @@ class Store:
         self,
         key: str,
         *,
+        project: str | None = None,
         selected: Sequence[str] | None = None,
         text: str | None = None,
         skipped: bool = False,
@@ -663,7 +796,7 @@ class Store:
         review row be passed today and failed tomorrow, and what makes the
         monitor stream an event feed rather than a status poll.
         """
-        q = self.get(key)
+        q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
         if self.needs_rebuild():
@@ -725,7 +858,7 @@ class Store:
         except Exception:
             self.conn.execute("ROLLBACK")
             raise
-        result = self.get(key)
+        result = self._get_by_id(q.id)
         assert result is not None
         self._record(result, event="answer")
         return result
@@ -772,20 +905,20 @@ class Store:
         # UPDATE commits — a bulk clear can touch many rows in one statement,
         # and the record is per-row.
         affected = [
-            r["key"] for r in self.conn.execute(
-                "SELECT key FROM questions WHERE " + clause, params
+            int(r["id"]) for r in self.conn.execute(
+                "SELECT id FROM questions WHERE " + clause, params
             )
         ]
         sql = "UPDATE questions SET status = 'cleared', updated_at = ? WHERE " + clause
         cur = self.conn.execute(sql, [_now(), *params])
         if record:
-            for key in affected:
-                row = self.get(key)
+            for qid in affected:
+                row = self._get_by_id(qid)
                 if row is not None:
                     self._record(row, event="clear")
         return cur.rowcount
 
-    def reopen(self, key: str) -> Question:
+    def reopen(self, key: str, *, project: str | None = None) -> Question:
         """Withdraw the latest answer, or restore a cleared row.
 
         Undo for the human surfaces. On an answered or live row it cannot
@@ -802,7 +935,7 @@ class Store:
         the answer-withdrawing path below cannot do without deleting the
         latest verdict it was never meant to touch.
         """
-        q = self.get(key)
+        q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
         now = _now()
@@ -835,7 +968,7 @@ class Store:
             "UPDATE questions SET status = ?, updated_at = ? WHERE id = ?",
             (status, now, q.id),
         )
-        result = self.get(key)
+        result = self._get_by_id(q.id)
         assert result is not None
         self._record(result, event=event, withdrawn_answer=withdrawn_answer)
         return result
@@ -867,6 +1000,7 @@ class Store:
         self,
         key: str,
         *,
+        project: str | None = None,
         look_at: str | None = None,
         run_cmd: str | None = None,
         pass_when: str | None = None,
@@ -881,7 +1015,7 @@ class Store:
         callers' intents, and argparse already tells them apart: a flag left
         off a command line is `None`, a flag given as `--run ""` is `""`.
         """
-        q = self.get(key)
+        q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
         # `run` rows carry a command too, and it belongs in the same place as a
@@ -911,10 +1045,10 @@ class Store:
             (q.id, merged.look_at, merged.run_cmd, merged.pass_when,
              merged.fail_when, merged.then_do),
         )
-        return self._touch(q.id, key)
+        return self._touch(q.id)
 
     def set_run_result(
-        self, key: str, *, exit_code: int, tail: Sequence[str], log: str
+        self, key: str, *, project: str | None = None, exit_code: int, tail: Sequence[str], log: str
     ) -> Question:
         """Attach the captured outcome of running a `run` row's command.
 
@@ -923,7 +1057,7 @@ class Store:
         durable place `get --json`, `feed`, and the monitor read the result
         from, since the answer alone only says approve/deny, not what happened.
         """
-        q = self.get(key)
+        q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
         if q.act != "run":
@@ -932,9 +1066,11 @@ class Store:
             "UPDATE questions SET run_exit = ?, run_tail = ?, run_log = ? WHERE id = ?",
             (exit_code, json.dumps(list(tail)), log, q.id),
         )
-        return self._touch(q.id, key)
+        return self._touch(q.id)
 
-    def set_steps(self, key: str, steps: Sequence[str], *, reset: bool = False) -> Question:
+    def set_steps(
+        self, key: str, steps: Sequence[str], *, project: str | None = None, reset: bool = False
+    ) -> Question:
         """Add steps to a `plan` row, or replace them outright.
 
         Default appends `steps` after whatever is already there, keeping the
@@ -943,7 +1079,7 @@ class Store:
         `reset=True` (`--reset-steps`) replaces the list with this call's
         steps and clears all done flags, for when the plan itself changed.
         """
-        q = self.get(key)
+        q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
         if q.act != "plan":
@@ -960,16 +1096,18 @@ class Store:
                 "INSERT INTO steps (question_id, idx, text, done) VALUES (?, ?, ?, ?)",
                 [(q.id, start + i, t, 0) for i, t in enumerate(steps)],
             )
-        return self._touch(q.id, key)
+        return self._touch(q.id)
 
-    def set_step_done(self, key: str, idx: int, done: bool = True) -> Question:
+    def set_step_done(
+        self, key: str, idx: int, done: bool = True, *, project: str | None = None
+    ) -> Question:
         """Tick or untick one step.
 
         Both the human surfaces and the agent write this, which is why steps are
         rows rather than a JSON blob on the question: a blob would make every
         toggle a read-modify-write race between the two writers.
         """
-        q = self.get(key)
+        q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
         cur = self.conn.execute(
@@ -978,7 +1116,7 @@ class Store:
         )
         if cur.rowcount == 0:
             raise KeyError(f"{key} has no step {idx}")
-        return self._touch(q.id, key)
+        return self._touch(q.id)
 
     def _record(
         self, row: Question, *, event: str, withdrawn_answer: Answer | None = None
@@ -1004,22 +1142,89 @@ class Store:
             else:
                 print(msg, file=sys.stderr)
 
-    def _touch(self, qid: int, key: str) -> Question:
+    def _touch(self, qid: int) -> Question:
         """Bump `updated_at` so a sidecar-only write still moves the cursor."""
         self.conn.execute(
             "UPDATE questions SET updated_at = ? WHERE id = ?", (_now(), qid)
         )
-        result = self.get(key)
+        result = self._get_by_id(qid)
         assert result is not None
         return result
 
     # ---- reads ------------------------------------------------------------
 
-    def get(self, key: str) -> Question | None:
-        row = self.conn.execute(
-            "SELECT * FROM questions WHERE key = ?", (key,)
-        ).fetchone()
+    def get(self, key: str, project: str | None = None) -> Question | None:
+        """Look up a bare key.
+
+        `project` disambiguates it: post-migration (q166) `key` is only unique
+        within a project, so two projects can each hold a "q1". Without
+        `project` this falls back to a bare match across every project —
+        correct on a pre-migration database, where `key` is still globally
+        unique, and a best-effort for internal callers that have not been
+        updated to pass scope.
+        """
+        if project is not None:
+            row = self.conn.execute(
+                "SELECT * FROM questions WHERE project = ? AND key = ?", (project, key)
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM questions WHERE key = ? ORDER BY id ASC LIMIT 1", (key,)
+            ).fetchone()
         return self._hydrate(row) if row else None
+
+    def _get_by_id(self, qid: int) -> Question | None:
+        """Reload a row already resolved once in this call, by its stable id.
+
+        Used after a mutation to re-fetch the updated row without repeating a
+        key lookup that — post-migration — needs a project to stay
+        unambiguous. `id` never collides, so this sidesteps that entirely.
+        """
+        row = self.conn.execute("SELECT * FROM questions WHERE id = ?", (qid,)).fetchone()
+        return self._hydrate(row) if row else None
+
+    class AmbiguousLabel(ValueError):
+        """A project label (q166's `LABEL:qN`) matches more than one project root."""
+
+        def __init__(self, label: str, paths: Sequence[str]) -> None:
+            self.label = label
+            self.paths = list(paths)
+            super().__init__(
+                f"'{label}' matches multiple projects: {', '.join(self.paths)}"
+            )
+
+    _REF_RE = re.compile(r"^(.*):([Qq]\d+)$")
+
+    def resolve_ref(self, raw: str, default_project: str) -> tuple[str, str]:
+        """Split a possibly-qualified key into (project, bare key) (q166).
+
+        Accepts a bare `qN` (resolved in `default_project`), `LABEL:qN` —
+        matched against every known project's basename — or `/abs/path:qN`.
+        A label matching more than one project raises AmbiguousLabel rather
+        than guessing; a label matching none is left unresolved, so the
+        caller's own "no such question" path reports it as a miss.
+        """
+        m = self._REF_RE.match(raw)
+        if not m:
+            return default_project, raw
+        qualifier, bare = m.group(1), m.group(2)
+        if not qualifier:
+            return default_project, bare
+        if qualifier.startswith("/"):
+            # Resolved the same way `resolve_project` resolves a cwd, so a
+            # symlinked tmp dir (macOS's /var -> /private/var) still matches
+            # the project root a row was actually stored under.
+            try:
+                return str(Path(qualifier).expanduser().resolve()), bare
+            except OSError:
+                return qualifier, bare
+        known = {r["project"] for r in self.conn.execute("SELECT DISTINCT project FROM questions")}
+        matches = sorted(p for p in known if project_label(p) == qualifier)
+        if len(matches) > 1:
+            raise Store.AmbiguousLabel(qualifier, matches)
+        if len(matches) == 1:
+            return matches[0], bare
+        return default_project, raw
 
     def list(
         self,
@@ -1155,14 +1360,19 @@ class Store:
         return (int(row["mid"]), str(row["mts"]), int(row["n"]))
 
     def wait_for_answer(
-        self, key: str, *, timeout: float | None = None, poll: float = 0.4
+        self,
+        key: str,
+        *,
+        project: str | None = None,
+        timeout: float | None = None,
+        poll: float = 0.4,
     ) -> Question | None:
         """Block until `key` leaves `open`. Returns None on timeout.
 
         A cleared question returns too — the agent asked, the human declined to
         answer, and that is an outcome rather than a hang.
         """
-        first = self.get(key)
+        first = self.get(key, project=project)
         if first is None:
             raise KeyError(f"no such question: {key}")
         # The row's own flag decides, because the agent that wrote it decided.
@@ -1173,7 +1383,7 @@ class Store:
             )
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            q = self.get(key)
+            q = self._get_by_id(first.id)
             if q is None:
                 raise KeyError(f"no such question: {key}")
             if q.status != "open":

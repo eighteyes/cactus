@@ -90,9 +90,9 @@ def _card_lines(
     run_state: str = "",
 ) -> str:
     """Full detail for the one question being answered."""
-    meta = [q.key]
-    if show_project:
-        meta.append(project_label(q.project))
+    # LABEL:qN when spanning projects (q166) — the bare key alone can recur
+    # across projects once keys number per project.
+    meta = [f"{project_label(q.project)}:{q.key}" if show_project else q.key]
     if q.thread:
         # Agent-scoped (q164/q165): a thread name is only unique within one
         # agent, so the reader has to see the owner alongside it, not the
