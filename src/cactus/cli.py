@@ -39,6 +39,8 @@ WORKFLOW (required)
 
 SYNOPSIS
   cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [options]
+  cactus run CMD --agent ID [--cwd DIR] [--why X] [-t T]
+             [--recommend approve|deny --confidence L]
   cactus get KEY... [-w] [--timeout S]
   cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
   cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X]
@@ -146,6 +148,10 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         ans = _fmt_answer(q)
         if ans:
             print(f"\t\t{indent}  -> {ans}")
+        if q.act == "run" and q.run_exit is not None:
+            print(f"\t\t{indent}  exit: {q.run_exit}")
+            for line in q.run_tail:
+                print(f"\t\t{indent}  | {line}")
         if q.review is not None:
             block = [
                 ("look at", q.review.look_at),
@@ -355,6 +361,63 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             print(f"cactus: timed out waiting for {q.key}", file=sys.stderr)
         return EXIT_TIMEOUT
     _emit_one(answered, as_json=args.json)
+    return EXIT_OK
+
+
+def cmd_run(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Ask approval to run a command: one step instead of ask --act run + review --run."""
+    if not (args.agent or "").strip():
+        print(
+            "cactus: run needs --agent ID, the declared session identity — "
+            "never a pane id",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    if bool(args.recommend) != bool(args.confidence):
+        print(
+            "cactus: --recommend needs --confidence, and --confidence needs --recommend",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    text = args.cmd
+    if not text or not text.strip():
+        print("cactus: refusing to run an empty command", file=sys.stderr)
+        return EXIT_ERROR
+
+    workspace = os.environ.get("HERDR_WORKSPACE_ID") or None
+    tab = os.environ.get("HERDR_TAB_ID") or None
+    pane = os.environ.get("HERDR_PANE_ID") or None
+    session = os.environ.get("HERDR_SESSION") or None
+
+    try:
+        q = store.ask(
+            text,
+            project=project,
+            cwd=args.cwd or cwd,
+            kind="confirm",
+            act="run",
+            agent=args.agent,
+            workspace=workspace,
+            tab=tab,
+            pane=pane,
+            session=session,
+            recommend=[args.recommend] if args.recommend else None,
+            confidence=args.confidence,
+            thread=args.thread,
+            context=args.why,
+            asked_by=os.environ.get("CACTUS_AGENT"),
+        )
+        store.set_review(q.key, run_cmd=text)
+        q = store.get(q.key)
+        assert q is not None
+    except (KeyError, ValueError) as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.json:
+        _emit_one(q, as_json=True)
+    else:
+        print(q.key)
     return EXIT_OK
 
 
@@ -847,6 +910,19 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("-w", "--wait", action="store_true", help="block until answered")
     ask.add_argument("--timeout", type=float, help="seconds to wait before giving up")
     ask.set_defaults(fn=cmd_ask)
+
+    rn = verb("run", help="ask approval to run a command, one step")
+    rn.add_argument("cmd", help="the command to run, verbatim")
+    rn.add_argument("--agent", required=True,
+                    help="required: owning agent, a RESOLVED identity — not a bare pane id")
+    rn.add_argument("--cwd", help="directory to run in (default: caller's cwd)")
+    rn.add_argument("--why", help="context for the request")
+    rn.add_argument("-t", "--thread", help="group under a named thread")
+    rn.add_argument("--recommend", choices=["approve", "deny"],
+                    help="an option to recommend")
+    rn.add_argument("--confidence", choices=list(CONFIDENCE),
+                    help="how sure the recommendation is; required with --recommend")
+    rn.set_defaults(fn=cmd_run)
 
     get = verb("get", help="read questions by key")
     get.add_argument("keys", nargs="+")

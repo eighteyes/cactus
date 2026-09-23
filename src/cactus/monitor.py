@@ -108,6 +108,10 @@ def _detail(q: Question, event: str) -> str:
     if event == "stepped":
         done = sum(1 for st in q.steps if st.done)
         return f"{done}/{len(q.steps)} steps  {q.text}"
+    if event == "answered" and q.act == "run" and q.answer is not None:
+        picks = f"[{', '.join(q.answer.selected)}]" if q.answer.selected else "[]"
+        exit_part = f" exit {q.run_exit}" if q.run_exit is not None else ""
+        return f"{picks}{exit_part}"
     if event in ("verdict", "answered", "skipped") and q.answer is not None:
         picks = f"[{', '.join(q.answer.selected)}] " if q.answer.selected else ""
         return f"{picks}{q.answer.text or ''}".strip() or "(no answer given)"

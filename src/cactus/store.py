@@ -286,6 +286,9 @@ class Question:
     review: Review | None = None
     steps: list[Step] = field(default_factory=list)
     depth: int = 0
+    run_exit: int | None = None
+    run_tail: list[str] = field(default_factory=list)
+    run_log: str | None = None
 
     @property
     def persistent(self) -> bool:
@@ -324,6 +327,10 @@ class Question:
             "answers": [a.as_dict() for a in self.answers],
             "review": self.review.as_dict() if self.review else None,
             "steps": [st.as_dict() for st in self.steps],
+            "result": (
+                {"exit": self.run_exit, "tail": self.run_tail, "log": self.run_log}
+                if self.run_exit is not None else None
+            ),
         }
 
 
@@ -407,6 +414,16 @@ class Store:
             self.conn.execute("ALTER TABLE questions ADD COLUMN session TEXT")
         if "title" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN title TEXT")
+        # A run row's captured result (q193-195): exit code, a short tail, and
+        # the path of the full-output spill file. Additive, like every other
+        # column here — a run row is answered like any confirm, this is just
+        # where the outcome that produced the answer lives.
+        if "run_exit" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN run_exit INTEGER")
+        if "run_tail" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN run_tail TEXT")
+        if "run_log" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN run_log TEXT")
 
         # NOT called here. Rebuilding `answers` is destructive-shaped and
         # changes the schema under any process that already imported the old
@@ -896,6 +913,27 @@ class Store:
         )
         return self._touch(q.id, key)
 
+    def set_run_result(
+        self, key: str, *, exit_code: int, tail: Sequence[str], log: str
+    ) -> Question:
+        """Attach the captured outcome of running a `run` row's command.
+
+        Written once the command finishes (or is killed, or fails to start),
+        alongside the `answer()` call that records approve/deny — this is the
+        durable place `get --json`, `feed`, and the monitor read the result
+        from, since the answer alone only says approve/deny, not what happened.
+        """
+        q = self.get(key)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        if q.act != "run":
+            raise ValueError(f"{key} is act={q.act!r}, not 'run'")
+        self.conn.execute(
+            "UPDATE questions SET run_exit = ?, run_tail = ?, run_log = ? WHERE id = ?",
+            (exit_code, json.dumps(list(tail)), log, q.id),
+        )
+        return self._touch(q.id, key)
+
     def set_steps(self, key: str, steps: Sequence[str], *, reset: bool = False) -> Question:
         """Add steps to a `plan` row, or replace them outright.
 
@@ -1253,4 +1291,7 @@ class Store:
             answers=answers,
             review=review,
             steps=steps,
+            run_exit=row["run_exit"],
+            run_tail=json.loads(row["run_tail"]) if row["run_tail"] else [],
+            run_log=row["run_log"],
         )

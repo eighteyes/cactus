@@ -39,6 +39,22 @@ HINTS = {
 }
 
 
+def _parse_exit_code(lines: list[str]) -> int:
+    """The exit code shell.run recorded as its last "— exit N —" line.
+
+    -1 if the command never got that far — killed, or a start-up failure that
+    raised before a shell was ever spawned — matching the "killed" line's own
+    exit code, so both read as the same kind of non-completion.
+    """
+    for line in reversed(lines):
+        if line.startswith("— exit") and line.endswith("—"):
+            try:
+                return int(line.strip("— ").split()[-1])
+            except ValueError:
+                return -1
+    return -1
+
+
 def _flatten(text: str) -> str:
     """One-line form for a queue row; the row's own CSS ellipsizes the overflow."""
     return " ".join(text.split())
@@ -652,10 +668,15 @@ class CactusApp(App[int]):
 
         Never on arrival, only on this key: the command is agent-written text
         and the keypress is the authorisation. It runs where the row was
-        recorded, not where the reader happens to be looking.
+        recorded, not where the reader happens to be looking. On a `run`
+        act row this is the same path as approving with y/1 — see
+        _run_and_record.
         """
         q = self._current_question()
         if q is None:
+            return
+        if q.act == "run":
+            self._run_and_record(q)
             return
         command = self._command_of(q)
         if not command:
@@ -683,6 +704,68 @@ class CactusApp(App[int]):
         except ShellError as exc:
             self.call_from_thread(self._append_output, key, f"— {exc} —")
         self.call_from_thread(self._finish_output, key)
+
+    def _run_and_record(self, q: Question) -> None:
+        """Run a `run` act row's command and record the verdict on completion.
+
+        Approving a run row means running it — there is no separate "approve
+        without running" — so this is what both `R` and approving y/1 do on a
+        run row. A kill or a start-up failure still lands here and still
+        records `approve`, with whatever exit code and error line the run
+        produced; only `n`/deny skips running altogether.
+        """
+        command = self._command_of(q)
+        if not command:
+            self.flash = f"{q.key} carries no command"
+            self._rebuild_status_bar()
+            return
+        if self.run_state.get(q.key) == "running":
+            self.flash = f"{q.key} is already running"
+            self._rebuild_status_bar()
+            return
+        self.run_output[q.key] = []
+        self.run_state[q.key] = "running"
+        self.flash = f"running in {q.cwd}"
+        self._rebuild_status_bar()
+        self._redraw_active()
+        self._stream_run_row(q.key, command, q.cwd)
+
+    @work(thread=True)
+    def _stream_run_row(self, key: str, command: str, cwd: str) -> None:
+        from .shell import run, ShellError
+
+        try:
+            for line in run(command, cwd=cwd):
+                self.call_from_thread(self._append_output, key, line)
+        except ShellError as exc:
+            self.call_from_thread(self._append_output, key, f"— {exc} —")
+        self.call_from_thread(self._finish_run_row, key)
+
+    def _finish_run_row(self, key: str) -> None:
+        """Spill the full capture, record the result, and record approve.
+
+        Always spills — unlike a plain review run, a `run` row's result has to
+        outlive this process for `get --json`/`feed`/the monitor to read it
+        back, not just the card's tail.
+        """
+        from .shell import spill
+
+        lines = self.run_output.get(key) or []
+        exit_code = _parse_exit_code(lines)
+        last = lines[-1] if lines else ""
+        self.run_state[key] = last.strip("— ") if last.startswith("—") else "done"
+        log_path = spill(lines, key=key)
+        try:
+            self.store.set_run_result(
+                key, exit_code=exit_code, tail=lines[-50:], log=str(log_path)
+            )
+            self.store.answer(key, selected=["approve"], text=None)
+        except Exception as exc:
+            self.flash = f"{key}: result not recorded: {exc}"
+        if self.focused_key == key:
+            self._rebuild_card()
+            self.flash = f"{key}: approved, exit {exit_code}"
+            self._rebuild_status_bar()
 
     def _append_output(self, key: str, line: str) -> None:
         self.run_output.setdefault(key, []).append(line)
@@ -1127,6 +1210,12 @@ class CactusApp(App[int]):
         if index < 0 or index >= len(labels):
             return
         label = labels[index]
+        if q.act == "run" and label == "approve":
+            # Approving a run row means running it: the answer is recorded
+            # once the command finishes, alongside its result, not on this
+            # keypress — see _run_and_record.
+            self._run_and_record(q)
+            return
         await self._submit_answer(q, selected=[label], text=self.pending_text or None)
 
     async def action_skip(self) -> None:

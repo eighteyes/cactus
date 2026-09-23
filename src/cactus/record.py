@@ -223,6 +223,14 @@ def render(
             parts.append(_answer_content(row.answer))
             parts.append(f"answered at: {row.answer.created_at}")
 
+    if row.act == "run" and row.run_exit is not None:
+        parts += ["", "## Result", ""]
+        parts.append(f"exit: {row.run_exit}")
+        if row.run_tail:
+            parts += ["", "```", *row.run_tail, "```"]
+        if row.run_log:
+            parts += ["", f"log: {row.run_log}"]
+
     return "\n".join(parts) + "\n"
 
 
