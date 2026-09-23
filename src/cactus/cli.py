@@ -42,7 +42,7 @@ SYNOPSIS
   cactus get KEY... [-w] [--timeout S]
   cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
   cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X]
-  cactus plan KEY [--step TEXT]... [--done N] [--undone N]
+  cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N]
   cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
   cactus reopen KEY... --agent ID
@@ -376,8 +376,8 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     and the rail; the store keeps them 0-based internally.
     """
     try:
-        if args.step:
-            store.set_steps(args.key, args.step)
+        if args.step or args.reset_steps:
+            store.set_steps(args.key, args.step or [], reset=args.reset_steps)
         q = store.get(args.key)
         if q is None:
             raise KeyError(f"no such question: {args.key}")
@@ -800,7 +800,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     pl = verb("plan", parents=[common], help="set or tick the steps on a plan row")
     pl.add_argument("key")
-    pl.add_argument("--step", action="append", help="one step, repeatable; replaces the list")
+    pl.add_argument("--step", action="append",
+                    help="one step, repeatable; appends to the existing steps")
+    pl.add_argument("--reset-steps", action="store_true",
+                    help="replace the step list with this call's --step values, clearing done flags")
     pl.add_argument("--done", action="append", type=int, help="tick this step index")
     pl.add_argument("--undone", action="append", type=int, help="untick this step index")
     pl.set_defaults(fn=cmd_plan)

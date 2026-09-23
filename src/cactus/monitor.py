@@ -75,7 +75,15 @@ def _transition_event(before: tuple[Any, ...], q: Question) -> str:
     """
     was_status, *_ = before
     before_answers = before[-2]
-    if before_answers != _answer_signature_of(q):
+    after_answers = _answer_signature_of(q)
+    if before_answers != after_answers:
+        before_count = 0 if before_answers == (0,) else before_answers[0]
+        after_count = 0 if after_answers == (0,) else after_answers[0]
+        if after_count < before_count:
+            # Undo: an answer withdrawn (answered -> open) or a verdict
+            # withdrawn on a persistent row (the log shrinks by one). Both
+            # read as `reopened`, never `asked`/`verdict` again.
+            return "reopened"
         if q.persistent:
             return "verdict"
         return _arrival_event(q)

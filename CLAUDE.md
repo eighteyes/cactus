@@ -129,7 +129,13 @@ scope.
   skip, so `u` calls `Store.reopen` on it and restores it the same way.
   `monitor.py` reports every move out of `cleared` as `reopened`, whatever
   status it lands on — a restored answered row must not read as a second
-  `answered`.
+  `answered`. It also reports any drop in the answers log — an undone
+  one-shot answer or a withdrawn verdict on a persistent row — as `reopened`,
+  never `asked`/`verdict`; only a rising answer count reads as a fresh
+  arrival or verdict.
+- `cactus plan --step` appends to the existing steps and keeps their done
+  flags; `--reset-steps` replaces the list with this call's `--step` values
+  and clears every done flag.
 - `recommend` is advisory, not `chosen`: a chosen option is already being
   acted on, a recommended one still waits for the human. It requires choices,
   every label must be real, more than one only when `kind == "multi"`, and

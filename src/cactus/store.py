@@ -860,19 +860,32 @@ class Store:
         )
         return self._touch(q.id, key)
 
-    def set_steps(self, key: str, steps: Sequence[str]) -> Question:
-        """Replace the step list on a `plan` row, preserving done state by index."""
+    def set_steps(self, key: str, steps: Sequence[str], *, reset: bool = False) -> Question:
+        """Add steps to a `plan` row, or replace them outright.
+
+        Default appends `steps` after whatever is already there, keeping the
+        existing steps and their done flags — a plan is built up call by call,
+        and each `--step` used to wipe the previous ones out from under it.
+        `reset=True` (`--reset-steps`) replaces the list with this call's
+        steps and clears all done flags, for when the plan itself changed.
+        """
         q = self.get(key)
         if q is None:
             raise KeyError(f"no such question: {key}")
         if q.act != "plan":
             raise ValueError(f"{key} is act={q.act!r}, not 'plan'")
-        done = {st.idx for st in q.steps if st.done}
-        self.conn.execute("DELETE FROM steps WHERE question_id = ?", (q.id,))
-        self.conn.executemany(
-            "INSERT INTO steps (question_id, idx, text, done) VALUES (?, ?, ?, ?)",
-            [(q.id, i, t, 1 if i in done else 0) for i, t in enumerate(steps)],
-        )
+        if reset:
+            self.conn.execute("DELETE FROM steps WHERE question_id = ?", (q.id,))
+            self.conn.executemany(
+                "INSERT INTO steps (question_id, idx, text, done) VALUES (?, ?, ?, ?)",
+                [(q.id, i, t, 0) for i, t in enumerate(steps)],
+            )
+        else:
+            start = len(q.steps)
+            self.conn.executemany(
+                "INSERT INTO steps (question_id, idx, text, done) VALUES (?, ?, ?, ?)",
+                [(q.id, start + i, t, 0) for i, t in enumerate(steps)],
+            )
         return self._touch(q.id, key)
 
     def set_step_done(self, key: str, idx: int, done: bool = True) -> Question:
