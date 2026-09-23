@@ -919,7 +919,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tab", help="with --monitor, only events for this tab id")
     p.add_argument("--pane", help="with --monitor, only events for this pane id")
     p.add_argument("--here", action="store_true",
-                   help="with --tui/--watch, scope to the current project only")
+                   help="with --tui/--watch, scope to the current project (git toplevel of pwd)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--agent-help", action="store_true",
                    help="how an agent should use cactus, end to end")
