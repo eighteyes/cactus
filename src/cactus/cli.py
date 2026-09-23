@@ -2,7 +2,8 @@
 cli.py — command-line surface for cactus, covering both the agent and human modes.
 
 Responsibilities:
-- Parse the agent-facing verbs (ask, get, list, answer, clear, purge, threads, projects).
+- Parse the agent-facing verbs (ask, get, list, answer, edit, clear, purge,
+  threads, projects).
 - Resolve project scope from the working directory for every invocation.
 - Render results as human text or JSON, and implement --wait blocking.
 - Dispatch the human-facing --tui and --watch modes, and the agent --monitor stream.
@@ -39,6 +40,7 @@ WORKFLOW (required)
 
   --monitor --agent ID --once        background wait after a time cap
   blocked by a permission prompt -> cactus run CMD --agent ID
+  elaborate event -> cactus edit KEY --agent ID
 
 SYNOPSIS
   cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [options]
@@ -49,6 +51,7 @@ SYNOPSIS
   cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X]
   cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N]
   cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
+  cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]...
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
   cactus reopen KEY... --agent ID
   cactus poke KEY | --agent ID
@@ -95,14 +98,16 @@ STAMPS
                                      HERDR_PANE_ID HERDR_SESSION at ask
 
 EVENTS
-  asked  answered  skipped  cleared  reopened  verdict  stepped  gone
+  asked  answered  skipped  cleared  reopened  verdict  stepped
+  elaborate  edited  gone
 
 EXIT STATUS
   0 ok   1 error   2 --wait timeout   3 no match
 
 FILES
   .ai/cactus/qN-SLUG.md   decision record, rewritten on each answer, undo,
-                          verdict, clear; commit it
+                          verdict, clear, elaborate; commit it. `edit`
+                          updates one only if it already exists.
 
 ENVIRONMENT
   CACTUS_DB       database path
@@ -147,6 +152,8 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         if q.choices and q.status == "open":
             labels = " | ".join(c.label for c in q.choices)
             print(f"\t\t{indent}  choices: {labels}")
+        if q.status == "elaborate":
+            print(f"\t\t{indent}  wants: {q.elaborate or '(no hint given)'}")
         if q.recommend:
             glyph = CONFIDENCE_GLYPH.get(q.confidence, "")
             why = f" — {q.recommend_why}" if q.recommend_why else ""
@@ -532,6 +539,68 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
     _emit_one(q, as_json=args.json)
+    return EXIT_OK
+
+
+def cmd_edit(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Replace fields on an open/live/elaborate row; also how an agent answers
+    an `elaborate` request.
+
+    Owner-gated like keyed `clear`: an unowned row edits with `--agent`, an
+    owned one refuses unless `--agent` matches. `--agent` itself is always
+    required here (unlike `clear`) — an edit is never a bulk, unowned sweep.
+    """
+    if not (args.agent or "").strip():
+        print(
+            "cactus: edit needs --agent ID, the declared session identity — "
+            "never a pane id",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    try:
+        rproj, rkey = store.resolve_ref(args.key, project)
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    q = store.get(rkey, project=rproj)
+    if q is None:
+        print(f"cactus: no such question: {args.key}", file=sys.stderr)
+        return EXIT_EMPTY
+    if q.agent is not None and q.agent != args.agent:
+        print(
+            f"cactus: refusing to edit a row you do not own: {args.key} "
+            f"(owned by {q.agent})",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    text = args.text
+    if text == "-":
+        text = sys.stdin.read().strip()
+    context = args.context
+    if context == "-":
+        context = sys.stdin.read()
+
+    choices = None
+    if args.choice is not None:
+        choices = [Choice.parse(raw.strip()) for raw in args.choice if raw.strip()]
+        labels = [c.label for c in choices]
+        if len(labels) != len(set(labels)):
+            print(f"cactus: duplicate choice labels: {labels}", file=sys.stderr)
+            return EXIT_ERROR
+
+    try:
+        result = store.edit(
+            rkey, agent=args.agent, project=rproj,
+            text=text, context=context, choices=choices,
+        )
+    except KeyError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_EMPTY
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    _emit_one(result, as_json=args.json)
     return EXIT_OK
 
 
@@ -1048,6 +1117,17 @@ def build_parser() -> argparse.ArgumentParser:
                           help="dismiss a seen row without choosing (alias of --skip)")
     ans.set_defaults(fn=cmd_answer)
 
+    ed = verb("edit", help="replace fields on a row; also answers an elaborate request")
+    ed.add_argument("key")
+    ed.add_argument("--agent", required=True,
+                    help="required: owning agent, a RESOLVED identity — not a bare pane id")
+    ed.add_argument("--text", help="replacement question text, or -")
+    ed.add_argument("--context", help="replacement context, or -")
+    ed.add_argument("-c", "--choice", action="append",
+                    help="one choice, taken verbatim; repeat. Replaces the whole "
+                         "list; a recommendation naming a dropped label is cleared")
+    ed.set_defaults(fn=cmd_edit)
+
     clr = verb("clear", help="retire questions from the inbox")
     clr.add_argument("keys", nargs="*")
     clr.add_argument("-t", "--thread")
@@ -1075,7 +1155,7 @@ def build_parser() -> argparse.ArgumentParser:
     fd.add_argument("--tab", help="only rows stamped with this tab id")
     fd.add_argument("--pane", help="only rows stamped with this pane id")
     fd.add_argument("-t", "--thread")
-    fd.add_argument("-s", "--status", default="open,live",
+    fd.add_argument("-s", "--status", default="open,live,elaborate",
                     help="statuses to include, comma-separated, or 'any'")
     fd.add_argument("--here", action="store_true",
                     help="this project only (default: every project)")

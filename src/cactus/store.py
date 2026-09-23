@@ -4,6 +4,8 @@ store.py — SQLite persistence for the cactus question/answer inbox.
 Responsibilities:
 - Own the database location, schema, and migrations.
 - Create, read, answer, and clear questions and their threaded follow-ups.
+- Let a human ask for a rewrite (`elaborate_request`/`unelaborate`) and an
+  agent address it or fix a row in place (`edit`).
 - Expose a change cursor so the TUI and watch feed can poll cheaply.
 - Keep every read and write safe for concurrent agent writers via WAL mode.
 - Write a decision record (record.py) after every state change, fail-soft.
@@ -25,16 +27,19 @@ from typing import Any, Callable, Iterable, Sequence
 from .scope import project_label
 
 KINDS = ("choice", "multi", "text", "confirm")
-STATUSES = ("open", "live", "answered", "cleared")
+# `elaborate` (q212): the human asked for a rewrite; the row stops taking
+# answers until `edit` addresses it, then lands back on `open`/`live`.
+STATUSES = ("open", "live", "elaborate", "answered", "cleared")
 
 # How sure an agent's recommendation is. Advisory only — a recommend still
 # waits for the human, unlike a steer's `chosen`, which proceeds.
 CONFIDENCE = ("low", "med", "high")
 CONFIDENCE_GLYPH = {"low": "○", "med": "◐", "high": "●"}
 
-# What a human surface shows: a fork still waiting, and a persistent row that
-# stays answerable. Both are work in front of the reader.
-ACTIONABLE = ("open", "live")
+# What a human surface shows: a fork still waiting, a persistent row that
+# stays answerable, and a row awaiting a rewrite — all are work in front of
+# the reader, even though `elaborate` accepts no answer until it is edited.
+ACTIONABLE = ("open", "live", "elaborate")
 
 # What the agent is asking for. Orthogonal to KINDS, which is how the answer is
 # collected: a `run` act uses a `confirm` shape, a `steer` act may use either
@@ -99,7 +104,11 @@ CREATE TABLE IF NOT EXISTS questions (
     asked_by     TEXT,
     status       TEXT    NOT NULL DEFAULT 'open',
     created_at   TEXT    NOT NULL,
-    updated_at   TEXT    NOT NULL
+    updated_at   TEXT    NOT NULL,
+    -- The elaborate request (q212): a hint (nullable, free text from the
+    -- human) and when it was made. Cleared by `edit`.
+    elaborate    TEXT,
+    elaborate_at TEXT
 );
 
 -- Append-only. A persistent row is verdicted repeatedly, so the current answer
@@ -282,6 +291,8 @@ class Question:
     status: str
     created_at: str
     updated_at: str
+    elaborate: str | None = None
+    elaborate_at: str | None = None
     recommend: list[str] = field(default_factory=list)
     confidence: str | None = None
     recommend_why: str | None = None
@@ -330,6 +341,8 @@ class Question:
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "elaborate": self.elaborate,
+            "elaborate_at": self.elaborate_at,
             "answer": self.answer.as_dict() if self.answer else None,
             "answers": [a.as_dict() for a in self.answers],
             "review": self.review.as_dict() if self.review else None,
@@ -441,6 +454,14 @@ class Store:
                 "UPDATE questions SET num = CAST(substr(key, 2) AS INTEGER) "
                 "WHERE num IS NULL"
             )
+        # The elaborate request (q212): a hint (nullable) and when it was
+        # made. `status` takes the new value 'elaborate' with no schema
+        # change of its own — it is plain TEXT with no CHECK constraint, so
+        # this is additive like every other column here.
+        if "elaborate" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN elaborate TEXT")
+        if "elaborate_at" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN elaborate_at TEXT")
 
         # NOT called here. Rebuilding `answers` — and, for the same reason,
         # `questions` to drop the global UNIQUE(key) that per-project numbering
@@ -560,6 +581,8 @@ class Store:
                     run_exit     INTEGER,
                     run_tail     TEXT,
                     run_log      TEXT,
+                    elaborate    TEXT,
+                    elaborate_at TEXT,
                     UNIQUE(project, key)
                 )""",
                 """INSERT INTO questions_new
@@ -567,7 +590,8 @@ class Store:
                           act, agent, word, workspace, tab, pane, session, title,
                           chosen, blocked, choices, allow_free, recommend,
                           confidence, recommend_why, context, asked_by, status,
-                          created_at, updated_at, run_exit, run_tail, run_log
+                          created_at, updated_at, run_exit, run_tail, run_log,
+                          elaborate, elaborate_at
                    FROM questions""",
                 "DROP TABLE questions",
                 "ALTER TABLE questions_new RENAME TO questions",
@@ -808,6 +832,10 @@ class Store:
         if q.status == "cleared":
             raise ValueError(
                 f"{key} is cleared; cactus reopen {key} --agent ID first"
+            )
+        if q.status == "elaborate":
+            raise ValueError(
+                f"{key} is awaiting elaboration; cactus edit {key} --agent ID first"
             )
         if not q.persistent and q.status == "answered":
             raise AlreadyAnswered(
@@ -1118,6 +1146,143 @@ class Store:
             raise KeyError(f"{key} has no step {idx}")
         return self._touch(q.id)
 
+    def elaborate_request(
+        self, key: str, *, hint: str | None = None, project: str | None = None
+    ) -> Question:
+        """Ask the owning agent to rewrite a row (q212).
+
+        Only an `open` or `live` row can be asked — the same rows a human can
+        already reach from the TUI's `e`. The row stops taking answers (see
+        `answer`'s refusal) until `edit` addresses it and moves it back.
+        """
+        q = self.get(key, project=project)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        if q.status not in ("open", "live"):
+            raise ValueError(
+                f"{key} is {q.status}; elaborate only applies to an open or live row"
+            )
+        now = _now()
+        self.conn.execute(
+            "UPDATE questions SET status = 'elaborate', elaborate = ?, "
+            "elaborate_at = ?, updated_at = ? WHERE id = ?",
+            (hint, now, now, q.id),
+        )
+        result = self._get_by_id(q.id)
+        assert result is not None
+        self._record(result, event="elaborate")
+        return result
+
+    def unelaborate(self, key: str, *, project: str | None = None) -> Question:
+        """Withdraw an elaborate request before the agent has addressed it.
+
+        The TUI's `u` after `e`. Refused once the row has left `elaborate` —
+        the agent may already have read and edited it, and this cannot
+        un-ring that bell (the same limit `reopen` has on a read answer).
+        """
+        q = self.get(key, project=project)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        if q.status != "elaborate":
+            raise ValueError(f"{key} is not awaiting elaboration")
+        new_status = "live" if q.persistent else "open"
+        now = _now()
+        self.conn.execute(
+            "UPDATE questions SET status = ?, elaborate = NULL, elaborate_at = NULL, "
+            "updated_at = ? WHERE id = ?",
+            (new_status, now, q.id),
+        )
+        result = self._get_by_id(q.id)
+        assert result is not None
+        self._record(result, event="unelaborate")
+        return result
+
+    def edit(
+        self,
+        key: str,
+        *,
+        agent: str,
+        project: str | None = None,
+        text: str | None = None,
+        context: str | None = None,
+        choices: Sequence[Choice] | None = None,
+    ) -> Question:
+        """Replace the given fields on an open/live/elaborate row, in place.
+
+        On a row in `elaborate` status this doubles as the agent's answer to
+        the request: it clears the hint and moves status back to `open` (or
+        `live` for a persistent act) whether or not any field actually
+        changed. On any other open/live row it is a plain fix — a typo, a
+        fact the agent adds unprompted — and status is untouched.
+
+        `agent` names the caller for the record only; ownership refusal is
+        the CLI's job, the same split `clear`/`reopen` already use.
+        `-c` (`choices`, when not None) replaces the whole list; a
+        recommendation naming a label that falls off it is cleared along
+        with its confidence and rationale, since it would otherwise point at
+        nothing real.
+        """
+        q = self.get(key, project=project)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        if q.status not in ("open", "live", "elaborate"):
+            raise ValueError(
+                f"{key} is {q.status}; edit only applies to an open, live, "
+                f"or elaborate row"
+            )
+
+        new_text = q.text if text is None else text
+        if not new_text or not new_text.strip():
+            raise ValueError("edit would leave the question text empty")
+        new_context = q.context if context is None else context
+
+        if choices is not None:
+            if q.kind in ("choice", "multi", "confirm") and not choices:
+                raise ValueError(f"kind={q.kind!r} requires at least one choice")
+            labels = [c.label for c in choices]
+            if len(labels) != len(set(labels)):
+                raise ValueError(f"duplicate choice labels: {labels}")
+            new_choices = choices
+            new_recommend = [r for r in q.recommend if r in labels]
+        else:
+            new_choices = q.choices
+            new_recommend = list(q.recommend)
+
+        if new_recommend:
+            new_confidence = q.confidence
+            new_recommend_why = q.recommend_why
+        else:
+            new_confidence = None
+            new_recommend_why = None
+
+        was_elaborate = q.status == "elaborate"
+        new_status = ("live" if q.persistent else "open") if was_elaborate else q.status
+
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE questions
+            SET text = ?, context = ?, choices = ?, recommend = ?, confidence = ?,
+                recommend_why = ?, status = ?, elaborate = NULL, elaborate_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_text, new_context,
+                json.dumps([c.as_dict() for c in new_choices]),
+                json.dumps(new_recommend) if new_recommend else None,
+                new_confidence, new_recommend_why,
+                new_status, now, q.id,
+            ),
+        )
+        result = self._get_by_id(q.id)
+        assert result is not None
+        self._record_if_exists(
+            result, event="edit",
+            prior={"text": q.text, "context": q.context, "choices": q.choices},
+        )
+        return result
+
     def _record(
         self, row: Question, *, event: str, withdrawn_answer: Answer | None = None
     ) -> None:
@@ -1135,6 +1300,34 @@ class Store:
 
         try:
             _record_mod.write_record(row, event=event, withdrawn_answer=withdrawn_answer)
+        except Exception as exc:
+            msg = f"cactus: record for {row.key} not written: {exc}"
+            if self.record_warning is not None:
+                self.record_warning(msg)
+            else:
+                print(msg, file=sys.stderr)
+
+    def _record_if_exists(
+        self, row: Question, *, event: str, prior: dict[str, Any] | None = None
+    ) -> None:
+        """Update a row's decision record only if one already exists.
+
+        `edit` is an agent action — bookkeeping like the CLI's own agent-
+        initiated `clear`, not a human verdict (records only write on
+        human-originated events and answers, 4659beb) — so it must not
+        conjure a record for a row that never had one. If the row was
+        already recorded (answered, cleared, or elaborated on), the rewrite
+        keeps that record in sync, with `prior` showing what it replaced.
+        """
+        if os.environ.get("CACTUS_RECORDS") == "0":
+            return
+        from . import record as _record_mod
+
+        try:
+            path = _record_mod.record_path(row)
+            if not path.exists():
+                return
+            _record_mod.write_record(row, event=event, prior=prior)
         except Exception as exc:
             msg = f"cactus: record for {row.key} not written: {exc}"
             if self.record_warning is not None:
@@ -1386,7 +1579,10 @@ class Store:
             q = self._get_by_id(first.id)
             if q is None:
                 raise KeyError(f"no such question: {key}")
-            if q.status != "open":
+            # `elaborate` is a detour, not an exit: the row is still waiting
+            # on this same agent, just for a rewrite before it can be
+            # answered, so a blocking ask keeps parking here through it.
+            if q.status not in ("open", "elaborate"):
                 return q
             if deadline is not None and time.monotonic() >= deadline:
                 return None
@@ -1536,6 +1732,8 @@ class Store:
             status=row["status"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            elaborate=row["elaborate"],
+            elaborate_at=row["elaborate_at"],
             answer=answer,
             answers=answers,
             review=review,
