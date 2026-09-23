@@ -279,3 +279,30 @@ scope.
   as a spurious `answered`/`verdict`/`asked` — a freshly started
   `--monitor --agent NEW` still sees the moved rows, as an ordinary arrival
   on its first poll.
+- `elaborate` (q212) is a status, not a rebuild: `status` has no CHECK
+  constraint, so the new value needs only the additive `elaborate`/
+  `elaborate_at` columns. `Store.answer` refuses it like `cleared`, exit 1.
+  `wait_for_answer` keeps blocking through it — only `open`/`elaborate` keep
+  it waiting, any other status returns.
+- `Store.edit` is `cactus edit`'s mechanism, gated open/live/elaborate only;
+  ownership is the CLI's job, same split as `clear`/`reopen`. `-c` replaces
+  the whole choice list and drops any `recommend` (plus its confidence/why)
+  naming a label that fell off it. On an `elaborate` row it always clears
+  the request and returns status to `open`/`live`, whether or not a field
+  actually changed.
+- `Store._record_if_exists` (used by `edit` only) writes only when the row's
+  record file already exists — an agent's edit is bookkeeping like its own
+  `clear`, not a human verdict (records write on human events and answers
+  only, 4659beb), and must not conjure a record for a row that never had
+  one. `elaborate_request`/`unelaborate` are human-triggered and always
+  write, same as `clear`/`reopen`.
+- `record.render(event="edit", prior=...)` appends a `## Rewrite` section
+  from `prior`'s pre-edit text/context/choices, so the file shows the
+  question before (Rewrite) and after (the fields above it) in one document.
+  `event="elaborate"` adds an `## Elaborate requested` section instead.
+- `monitor` cannot tell an agent's `edit` clearing an `elaborate` row apart
+  from a human's `unelaborate` withdrawing it — both are an identical
+  before/after diff — so any `elaborate` -> non-`elaborate` transition reads
+  as `edited`. A plain in-place edit that never went through `elaborate`
+  also reads `edited`, detected by comparing `text`/`choices`/`context`/
+  `recommend` — the only fields `edit` ever touches after `ask`.
