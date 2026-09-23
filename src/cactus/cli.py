@@ -30,12 +30,15 @@ EXIT_EMPTY = 3
 AGENT_HELP = """\
 cactus — ask a human without stopping work
 
-THE ARC
+WORKFLOW — REQUIRED
 
-  1  ask       post the question, get a key, keep working
-  2  work      do everything the answer does not block
-  3  get/list  collect answers at the fork
-  4  ask -p    follow up in the same thread
+  1  monitor   start `cactus --monitor` in the background before your first
+               ask; keep it running while any row of yours is open
+  2  ask       post every decision the human makes here, not in chat;
+               --recommend when you have a pick
+  3  work      do everything the answer does not block
+  4  act       on each event as it lands: answered, reopened, cleared
+  5  clear     your own rows, by key, once acted on
 
 ASK
 
@@ -217,8 +220,9 @@ SCOPE
 RETIRE
 
   cactus clear KEY           retire; the transcript stays readable
-  cactus clear -t THREAD     retire a thread
   cactus clear --purge KEY   delete
+
+  Clear only keys you posted. -t, --here and --all reach every agent's rows
 
 EXIT CODES
 
