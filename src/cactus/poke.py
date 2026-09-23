@@ -24,10 +24,11 @@ DEFAULT_MESSAGE = (
 
 DEFAULT_COMMAND = "herdr agent prompt {agent} {message}"
 
-# The default transport really does prompt a live agent, and `ask --agent`
-# defaults to $HERDR_PANE_ID — so a row created inside a session is addressed to
-# that session. Anything exercising poke must set CACTUS_POKE to something inert
-# first, or the test pokes the person running it.
+# The default transport really does prompt a live agent. `cactus ask` requires
+# --agent and never falls back to a pane id, so a row's owner is whatever the
+# asking session declared — but that is still a live agent once poked.
+# Anything exercising poke must set CACTUS_POKE to something inert first, or
+# the test pokes the person running it.
 
 
 class PokeError(RuntimeError):

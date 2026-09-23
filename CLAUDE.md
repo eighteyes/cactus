@@ -21,9 +21,10 @@ it.
 
 Always set `CACTUS_POKE` to something inert when testing. The default transport
 is `herdr agent prompt`, which prompts a live agent — so poking any row that
-names a real pane with `--agent` interrupts whoever is running there. `ask
---agent` deliberately has no default: a bare pane id outlives the session it
-named, so rows without one are unowned.
+names a real pane with `--agent` interrupts whoever is running there. `cactus
+ask` requires `--agent` at the CLI and never defaults it: a bare pane id
+outlives the session it named. `Store.ask` itself still leaves `agent`
+optional, so legacy and TUI-authored rows can be unowned.
 
 ## Architecture
 
@@ -132,3 +133,14 @@ scope.
   on a plan row, unlike every other kind. `i` still does.
 - An empty multi submit — nothing toggled, nothing typed — is refused with a
   flash rather than stored, so a stray enter cannot record an answer nobody chose.
+- `cli.cmd_ask` refuses a missing `--agent` with exit 1 before calling
+  `Store.ask`; `Store.ask`'s own `agent` parameter stays optional so the TUI
+  and legacy rows are unaffected.
+- `cli.cmd_clear` gates on ownership, not `Store.clear`/`Store.purge`, which
+  stay mechanism and only gained an `agent` filter. Bulk forms (`-t`,
+  `--here`, `--all`) require `--agent` and touch only that agent's rows;
+  unowned rows are never touched in bulk. An explicit-key clear refuses the whole call
+  if any key is owned by another agent, or by the caller without a matching
+  `--agent`; an unowned row clears by key regardless. The TUI's `c` binding
+  calls `Store.clear` directly with no agent filter, so a human can still
+  clear any row.

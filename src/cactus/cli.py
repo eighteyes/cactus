@@ -43,12 +43,13 @@ WORKFLOW — REQUIRED
 ASK
 
   One question per ask; one -c per choice, taken verbatim
+  --agent required: the declared session identity, never a pane id
 
   cactus ask "Which auth backend?" \\
     -c "oidc: existing IdP" \\
     -c "local: bcrypt table" \\
     --context "Staging tenant exists. Local means owning password reset." \\
-    -t auth --by "$CACTUS_AGENT"
+    -t auth --agent "$AGENT" --by "$CACTUS_AGENT"
   q7
 
   choice     -c a -c b              one label
@@ -78,7 +79,8 @@ BLOCKING
 
   Collect later by default; --wait only when the work cannot go on
 
-  cactus ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
+  cactus ask "Safe to drop the legacy column?" --confirm --wait --timeout 600 \\
+    --agent "$AGENT"
 
   --wait returns when the row leaves open; a clear means declined
   On exit 2, proceed on the stated default
@@ -103,16 +105,16 @@ ACTS
   review, plan: persistent — live until cleared, answered on every re-check,
   never blocking. Every verdict is kept; `answer` is the latest
 
-  cactus ask "Deploy staging?" --act run -t ship
+  cactus ask "Deploy staging?" --act run -t ship --agent "$AGENT"
   q8
   cactus review q8 --run "make deploy-staging"
 
-  cactus ask "Does the build verify?" --act review -t ship
+  cactus ask "Does the build verify?" --act review -t ship --agent "$AGENT"
   q9
   cactus review q9 --look-at "the diff" --run "pytest -q" \\
     --pass "0 failures" --fail "any failure" --then "tag the release"
 
-  cactus ask "Release steps" --act plan -t ship
+  cactus ask "Release steps" --act plan -t ship --agent "$AGENT"
   q10
   cactus plan q10 --step "build" --step "test" --step "tag"
   cactus plan q10 --done 1       # 1-based
@@ -122,7 +124,7 @@ RECOMMEND
   Recommend a pick when you have one; the row still waits
 
   cactus ask "Which auth backend?" \\
-    -c "oidc: existing IdP" -c "local: bcrypt table" \\
+    -c "oidc: existing IdP" -c "local: bcrypt table" --agent "$AGENT" \\
     --recommend oidc --confidence high --why "staging tenant is provisioned"
 
   --recommend LABEL    a real option, confirm rows included; repeatable on multi
@@ -133,9 +135,10 @@ RECOMMEND
 
 OWNERSHIP
 
-  --agent ID    the declared session token; never a pane id, which outlives its
-                conversation and hands its rows to a resumed session. No
-                default; unset rows are unowned. Filters only
+  --agent ID    required on ask: the declared session token, never a pane id,
+                which outlives its conversation and hands its rows to a
+                resumed session. Optional elsewhere, to filter or to clear
+                your own rows
   --word SHORT  board-key label; without it, rows starting "check" or "should"
                 collide
 
@@ -222,7 +225,8 @@ RETIRE
   cactus clear KEY           retire; the transcript stays readable
   cactus clear --purge KEY   delete
 
-  Clear only keys you posted. -t, --here and --all reach every agent's rows
+  -t, --here, --all need --agent and touch only its rows
+  A keyed clear on another agent's row is refused
 
 EXIT CODES
 
@@ -318,6 +322,20 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     if context == "-":
         context = sys.stdin.read()
 
+    # Required, not defaulted. A pane id is not an identity: herdr's own
+    # resolver treats `session:pane_id` as the last-resort fallback precisely
+    # because it never changes, so it outlives the conversation it named.
+    # Defaulting to $HERDR_PANE_ID would address a row to whatever
+    # conversation later occupies that pane. The writer is inside the pane
+    # and knows its resolved id, so it states it explicitly every time.
+    if args.agent is None:
+        print(
+            "cactus: ask needs --agent ID, the declared session identity — "
+            "never a pane id",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
     try:
         q = store.ask(
             text,
@@ -325,13 +343,6 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             cwd=cwd,
             kind=kind,
             act=act,
-            # No default. A pane id is not an identity: herdr's own resolver
-            # treats `session:pane_id` as the last-resort fallback precisely
-            # because it never changes, so it outlives the conversation it
-            # named. Defaulting to $HERDR_PANE_ID would address a row to
-            # whatever conversation later occupies that pane. The writer is
-            # inside the pane and knows its resolved id; it passes --agent or
-            # the row stays unowned.
             agent=args.agent or None,
             word=args.word,
             chosen=args.chosen,
@@ -511,13 +522,44 @@ def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
             file=sys.stderr,
         )
         return EXIT_ERROR
+    action = "purge" if args.purge else "clear"
     fn = store.purge if args.purge else store.clear
-    count = fn(
-        keys=args.keys or None,
-        project=project,
-        thread=args.thread,
-        all_projects=args.all,
-    )
+
+    if args.thread or args.all or args.here:
+        # Bulk form: touches every matching row across agents unless scoped to
+        # one, so it needs an owner named up front rather than after the fact.
+        if not args.agent:
+            print(
+                f"cactus: bulk {action}s are limited to your own rows and "
+                f"need --agent",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        count = fn(
+            keys=args.keys or None,
+            project=project,
+            thread=args.thread,
+            all_projects=args.all,
+            agent=args.agent,
+        )
+    else:
+        # Explicit KEY form: an unowned row clears by key with or without
+        # --agent; an owned one refuses unless --agent matches. One refused
+        # key refuses the whole call, so a batch never clears part of itself.
+        refused = []
+        for key in args.keys:
+            q = store.get(key)
+            if q is not None and q.agent is not None and q.agent != args.agent:
+                refused.append((key, q.agent))
+        if refused:
+            detail = ", ".join(f"{k} (owned by {owner})" for k, owner in refused)
+            print(
+                f"cactus: refusing to {action} rows you do not own: {detail}",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        count = fn(keys=args.keys, project=project)
+
     verb = "purged" if args.purge else "cleared"
     if args.json:
         json.dump({verb: count}, sys.stdout)
@@ -718,7 +760,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--act", choices=list(ACTS), default="ask",
                      help="what is being asked for (default: ask)")
     ask.add_argument("--agent",
-                     help="owning agent, as a RESOLVED identity — not a bare pane id")
+                     help="required: owning agent, a RESOLVED identity — not a bare pane id")
     ask.add_argument("--word",
                      help="short label a projector derives its key from")
     ask.add_argument("--chosen",
@@ -779,6 +821,8 @@ def build_parser() -> argparse.ArgumentParser:
     clr.add_argument("--here", action="store_true", help="everything in this project")
     clr.add_argument("--all", action="store_true", help="every project")
     clr.add_argument("--purge", action="store_true", help="delete rather than mark cleared")
+    clr.add_argument("--agent",
+                     help="required for -t/--here/--all; also matches an owned key")
     clr.set_defaults(fn=cmd_clear)
 
     fd = verb("feed", help="the actionable inbox as one JSON document, for a projector")

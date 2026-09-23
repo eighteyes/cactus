@@ -630,15 +630,24 @@ class Store:
         thread: str | None = None,
         all_projects: bool = False,
         include_answered: bool = True,
+        agent: str | None = None,
     ) -> int:
         """Mark questions cleared. Returns the number of rows affected.
 
         Clearing is a status change, not a delete — the transcript survives so a
         thread can still be read back after the agent has moved on.
+
+        `agent`, when given, restricts the update to rows owned by it — a
+        NULL-owned row never matches `agent = ?`, so an unowned row is left
+        alone without a separate check. The refusal policy for who may pass
+        which `agent` lives in cli.py; this is mechanism only.
         """
         where, params = self._scope_where(
             keys=keys, project=project, thread=thread, all_projects=all_projects
         )
+        if agent is not None:
+            where.append("agent = ?")
+            params.append(agent)
         if not include_answered:
             where.append("status = 'open'")
         else:
@@ -688,11 +697,18 @@ class Store:
         project: str | None = None,
         thread: str | None = None,
         all_projects: bool = False,
+        agent: str | None = None,
     ) -> int:
-        """Delete rows outright. Follow-ups cascade with their parent."""
+        """Delete rows outright. Follow-ups cascade with their parent.
+
+        `agent` restricts the delete the same way it restricts `clear`.
+        """
         where, params = self._scope_where(
             keys=keys, project=project, thread=thread, all_projects=all_projects
         )
+        if agent is not None:
+            where.append("agent = ?")
+            params.append(agent)
         sql = "DELETE FROM questions WHERE " + " AND ".join(where)
         cur = self.conn.execute(sql, params)
         return cur.rowcount
