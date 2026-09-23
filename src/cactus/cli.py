@@ -99,7 +99,7 @@ STAMPS
 
 EVENTS
   asked  answered  skipped  cleared  reopened  verdict  stepped
-  elaborate  edited  gone
+  elaborate  edited  withdrawn  gone
 
 EXIT STATUS
   0 ok   1 error   2 --wait timeout   3 no match

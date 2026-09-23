@@ -292,15 +292,23 @@ scope.
   record file already exists — an agent's edit is bookkeeping like its own
   `clear`, not a human verdict (records write on human events and answers
   only, 4659beb), and must not conjure a record for a row that never had
-  one. `elaborate_request`/`unelaborate` are human-triggered and always
-  write, same as `clear`/`reopen`.
+  one. `elaborate_request` is human-triggered and always writes, same as
+  `clear`/`reopen`. `unelaborate` (q228) instead uses `_record_if_exists`
+  like `edit` — it only ever follows an `elaborate_request`, which already
+  wrote the record, so it updates that copy and never conjures a fresh one.
 - `record.render(event="edit", prior=...)` appends a `## Rewrite` section
   from `prior`'s pre-edit text/context/choices, so the file shows the
   question before (Rewrite) and after (the fields above it) in one document.
-  `event="elaborate"` adds an `## Elaborate requested` section instead.
-- `monitor` cannot tell an agent's `edit` clearing an `elaborate` row apart
-  from a human's `unelaborate` withdrawing it — both are an identical
-  before/after diff — so any `elaborate` -> non-`elaborate` transition reads
-  as `edited`. A plain in-place edit that never went through `elaborate`
-  also reads `edited`, detected by comparing `text`/`choices`/`context`/
-  `recommend` — the only fields `edit` ever touches after `ask`.
+  `event="elaborate"` adds an `## Elaborate requested` section instead;
+  `event="unelaborate"` (q228) adds a one-line `## Elaborate withdrawn` note,
+  never a section of its own prose.
+- `questions.last_change` (q228) is the marker that lets the monitor tell an
+  agent's `edit` clearing an `elaborate` row apart from a human's
+  `unelaborate` withdrawing it — both leave the row at the same status, an
+  identical before/after diff otherwise. `unelaborate` stamps `'withdrawn'`,
+  `edit` stamps `'edited'` only on the transition out of `elaborate` (a plain
+  edit elsewhere leaves it as-is, since that path is already told apart by
+  its text/choices/context/recommend diff), and `elaborate_request` clears it
+  on entry so a later cycle never reads a stale value. Additive column,
+  included in `monitor._signature`; a leaving-`elaborate` transition reads
+  `withdrawn` or `edited` from it instead of collapsing both to `edited`.

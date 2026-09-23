@@ -4,7 +4,7 @@ monitor.py — plain-stdout event stream of a cactus inbox, for agents.
 Responsibilities:
 - Poll the store's change cursor and diff the inbox against the previous tick.
 - Emit one line per transition: asked, verdict, answered, skipped, cleared,
-  reopened, stepped, changed, elaborate, edited, gone.
+  reopened, stepped, changed, elaborate, edited, withdrawn, gone.
 - Render each event as a fixed-column line or as one JSON object per line.
 - Flush every line immediately so a line-oriented watcher sees events as they land.
 """
@@ -61,11 +61,14 @@ def _signature(q: Question) -> tuple[Any, ...]:
         q.chosen,
         tuple(c.label for c in q.choices),
         q.context,
-        # Kept ahead of the last two slots: `_transition_event` reads
-        # before[-2] and before[-1] as the answer and sidecar signatures.
         tuple(q.recommend),
         q.confidence,
         q.recommend_why,
+        # withdrawn vs edited (q228): which action last moved this row out
+        # of `elaborate`. Kept ahead of the last two slots below.
+        q.last_change,
+        # Kept last: `_transition_event` reads before[-2] and before[-1] as
+        # the answer and sidecar signatures.
         _answer_signature(q),
         _sidecar_signature(q),
     )
@@ -107,10 +110,12 @@ def _transition_event(before: tuple[Any, ...], q: Question) -> str:
     if was_status != "elaborate" and q.status == "elaborate":
         return "elaborate"
     if was_status == "elaborate" and q.status != "elaborate":
-        # Covers both an agent's `edit` addressing the request and a human
-        # withdrawing it (`unelaborate`) — the two are indistinguishable
-        # from a pure before/after diff, and the spec only names `edited`.
-        return "edited"
+        # An agent's `edit` addressing the request and a human withdrawing it
+        # (`unelaborate`) are otherwise indistinguishable from a pure
+        # before/after diff — both leave the row at the same status — so
+        # `last_change` (q228), stamped by whichever of the two ran, tells
+        # them apart.
+        return "withdrawn" if q.last_change == "withdrawn" else "edited"
     edited_fields = (before[1], before[6], before[7], before[8])
     after_fields = (q.text, tuple(c.label for c in q.choices), q.context, tuple(q.recommend))
     if was_status == q.status and edited_fields != after_fields:

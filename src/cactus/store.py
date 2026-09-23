@@ -108,7 +108,12 @@ CREATE TABLE IF NOT EXISTS questions (
     -- The elaborate request (q212): a hint (nullable, free text from the
     -- human) and when it was made. Cleared by `edit`.
     elaborate    TEXT,
-    elaborate_at TEXT
+    elaborate_at TEXT,
+    -- Which action last moved a row out of `elaborate` (q228): 'withdrawn'
+    -- for Store.unelaborate, 'edited' for Store.edit. A pure before/after
+    -- diff cannot tell the two apart — both leave the row at the same
+    -- status — so the monitor reads this marker instead.
+    last_change  TEXT
 );
 
 -- Append-only. A persistent row is verdicted repeatedly, so the current answer
@@ -293,6 +298,10 @@ class Question:
     updated_at: str
     elaborate: str | None = None
     elaborate_at: str | None = None
+    # Which action last moved this row out of `elaborate` (q228): 'withdrawn'
+    # or 'edited'. Read only by the monitor's transition classifier — not
+    # rendered elsewhere, so it stays off as_dict() like the DB internals it is.
+    last_change: str | None = None
     recommend: list[str] = field(default_factory=list)
     confidence: str | None = None
     recommend_why: str | None = None
@@ -462,6 +471,10 @@ class Store:
             self.conn.execute("ALTER TABLE questions ADD COLUMN elaborate TEXT")
         if "elaborate_at" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN elaborate_at TEXT")
+        # Which action last moved a row out of `elaborate` (q228). See the
+        # column comment in SCHEMA for why the monitor needs it.
+        if "last_change" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN last_change TEXT")
 
         # NOT called here. Rebuilding `answers` — and, for the same reason,
         # `questions` to drop the global UNIQUE(key) that per-project numbering
@@ -583,6 +596,7 @@ class Store:
                     run_log      TEXT,
                     elaborate    TEXT,
                     elaborate_at TEXT,
+                    last_change  TEXT,
                     UNIQUE(project, key)
                 )""",
                 """INSERT INTO questions_new
@@ -591,7 +605,7 @@ class Store:
                           chosen, blocked, choices, allow_free, recommend,
                           confidence, recommend_why, context, asked_by, status,
                           created_at, updated_at, run_exit, run_tail, run_log,
-                          elaborate, elaborate_at
+                          elaborate, elaborate_at, last_change
                    FROM questions""",
                 "DROP TABLE questions",
                 "ALTER TABLE questions_new RENAME TO questions",
@@ -1165,7 +1179,7 @@ class Store:
         now = _now()
         self.conn.execute(
             "UPDATE questions SET status = 'elaborate', elaborate = ?, "
-            "elaborate_at = ?, updated_at = ? WHERE id = ?",
+            "elaborate_at = ?, last_change = NULL, updated_at = ? WHERE id = ?",
             (hint, now, now, q.id),
         )
         result = self._get_by_id(q.id)
@@ -1179,6 +1193,10 @@ class Store:
         The TUI's `u` after `e`. Refused once the row has left `elaborate` —
         the agent may already have read and edited it, and this cannot
         un-ring that bell (the same limit `reopen` has on a read answer).
+
+        Stamps `last_change = 'withdrawn'` (q228) so the monitor can tell this
+        apart from `edit` clearing the same status — both leave the row at
+        the same `open`/`live` status, an identical before/after diff.
         """
         q = self.get(key, project=project)
         if q is None:
@@ -1189,12 +1207,16 @@ class Store:
         now = _now()
         self.conn.execute(
             "UPDATE questions SET status = ?, elaborate = NULL, elaborate_at = NULL, "
-            "updated_at = ? WHERE id = ?",
+            "last_change = 'withdrawn', updated_at = ? WHERE id = ?",
             (new_status, now, q.id),
         )
         result = self._get_by_id(q.id)
         assert result is not None
-        self._record(result, event="unelaborate")
+        # A one-line note on an existing record only — never conjures one.
+        # `elaborate_request` already wrote the record this row has, if any;
+        # a withdrawal a human changed their mind about is bookkeeping on
+        # that record, not a fresh verdict of its own.
+        self._record_if_exists(result, event="unelaborate")
         return result
 
     def edit(
@@ -1257,6 +1279,12 @@ class Store:
 
         was_elaborate = q.status == "elaborate"
         new_status = ("live" if q.persistent else "open") if was_elaborate else q.status
+        # Stamped only on the transition out of `elaborate` (q228) — the same
+        # marker `unelaborate` sets to 'withdrawn', read by the monitor to
+        # tell the two apart. A plain edit outside `elaborate` leaves it as
+        # it was; that path is already told apart by its text/choices/
+        # context/recommend diff, not by this column.
+        new_last_change = "edited" if was_elaborate else q.last_change
 
         now = _now()
         self.conn.execute(
@@ -1264,7 +1292,7 @@ class Store:
             UPDATE questions
             SET text = ?, context = ?, choices = ?, recommend = ?, confidence = ?,
                 recommend_why = ?, status = ?, elaborate = NULL, elaborate_at = NULL,
-                updated_at = ?
+                last_change = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -1272,7 +1300,7 @@ class Store:
                 json.dumps([c.as_dict() for c in new_choices]),
                 json.dumps(new_recommend) if new_recommend else None,
                 new_confidence, new_recommend_why,
-                new_status, now, q.id,
+                new_status, new_last_change, now, q.id,
             ),
         )
         result = self._get_by_id(q.id)
@@ -1739,6 +1767,7 @@ class Store:
             updated_at=row["updated_at"],
             elaborate=row["elaborate"],
             elaborate_at=row["elaborate_at"],
+            last_change=row["last_change"],
             answer=answer,
             answers=answers,
             review=review,

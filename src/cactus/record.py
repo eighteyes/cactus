@@ -194,6 +194,12 @@ def render(
         parts.append(row.elaborate or "(no hint given)")
         parts.append(f"requested at: {row.elaborate_at}")
 
+    if event == "unelaborate":
+        # A one-line note, not a fresh section of prose — `unelaborate` only
+        # ever rewrites a record the `elaborate` request above already wrote.
+        parts += ["", "## Elaborate withdrawn", ""]
+        parts.append(f"withdrawn at: {row.updated_at}")
+
     if row.context:
         parts += ["", "## Context", "", row.context]
 
