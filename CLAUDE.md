@@ -231,3 +231,21 @@ scope.
   `action_undo` — restored a row, or ran out of stack trying — leaves the
   status bar current, so draining the stack via failed entries still flashes
   "nothing to undo" instead of going silent.
+- `Store.clear(record=...)` decides whether the clear writes a decision
+  record. `cli.cmd_clear` (agent-initiated) passes `record=False`; the TUI's
+  `c` keeps the default `True` and writes `declined`/`retired` as before.
+  `Store.purge` never wrote records and is unaffected.
+- A `run` act row's captured outcome — `run_exit`, `run_tail` (JSON list),
+  `run_log` — lives on the row itself, additive columns like every other.
+  `Store.set_run_result` writes them; approving a `run` row (TUI `R`, or y/1
+  on a `run` act) always runs the command first and records `approve`
+  alongside the result once it finishes, killed or not; `n`/deny records
+  without running. `get --json`/`feed` expose it as `"result"`.
+- `cactus --monitor` requires `--agent ID`; humans use `--tui`/`--watch`
+  instead.
+- Threads are agent-scoped: a thread name is only unique within one agent's
+  rows, not project-wide. The TUI card and `watch` show `agent/thread`
+  wherever they show the thread; `list`/`feed -t NAME --agent ID` narrow to
+  that agent's rows of that thread the same way any other `agent` filter
+  does — no separate mechanism, `_scope_where`'s thread clause and `list`'s
+  `agent` clause already AND together.

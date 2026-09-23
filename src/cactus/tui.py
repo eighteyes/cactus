@@ -94,7 +94,10 @@ def _card_lines(
     if show_project:
         meta.append(project_label(q.project))
     if q.thread:
-        meta.append(f"thread {q.thread}")
+        # Agent-scoped (q164/q165): a thread name is only unique within one
+        # agent, so the reader has to see the owner alongside it, not the
+        # bare name a second agent could be reusing.
+        meta.append(f"thread {q.agent or '?'}/{q.thread}")
     if q.asked_by:
         meta.append(f"from {q.asked_by}")
     lines = ["  ".join(meta)]

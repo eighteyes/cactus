@@ -164,7 +164,9 @@ class WatchApp(App[None]):
         if self.project is None:
             head += f" [{project_label(q.project)}]"
         if q.thread:
-            head += f" ({q.thread})"
+            # Agent-scoped (q164/q165): shown as owner/thread, since the name
+            # alone is only unique within one agent.
+            head += f" ({q.agent or '?'}/{q.thread})"
         if q.asked_by:
             head += f" by {q.asked_by}"
         log.write(f"{head}\n{indent}  {q.text}")

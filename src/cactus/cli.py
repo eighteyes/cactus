@@ -37,6 +37,8 @@ WORKFLOW (required)
   3  work; act on each event
   4  cactus clear KEY --agent ID      own rows only
 
+  blocked by a permission prompt -> cactus run CMD --agent ID
+
 SYNOPSIS
   cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [options]
   cactus run CMD --agent ID [--cwd DIR] [--why X] [-t T]
@@ -1093,6 +1095,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return EXIT_ERROR
             return run_watch(store, project=None if not args.here else project)
         if args.monitor:
+            if not (args.agent or "").strip():
+                print(
+                    "cactus: --monitor needs --agent ID — humans use --tui/--watch",
+                    file=sys.stderr,
+                )
+                return EXIT_ERROR
             from .monitor import run_monitor
             return run_monitor(
                 store,
