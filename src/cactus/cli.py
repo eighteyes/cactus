@@ -909,10 +909,30 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.tui:
-            from .tui import run_tui
+            try:
+                from .tui import run_tui
+            except ModuleNotFoundError as exc:
+                if (exc.name or "").split(".")[0] != "textual":
+                    raise
+                print(
+                    "cactus --tui needs textual; install with: "
+                    "uv tool install --editable .",
+                    file=sys.stderr,
+                )
+                return EXIT_ERROR
             return run_tui(store, project=None if not args.here else project)
         if args.watch:
-            from .watch import run_watch
+            try:
+                from .watch import run_watch
+            except ModuleNotFoundError as exc:
+                if (exc.name or "").split(".")[0] != "textual":
+                    raise
+                print(
+                    "cactus --watch needs textual; install with: "
+                    "uv tool install --editable .",
+                    file=sys.stderr,
+                )
+                return EXIT_ERROR
             return run_watch(store, project=None if not args.here else project)
         if args.monitor:
             from .monitor import run_monitor
