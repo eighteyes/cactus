@@ -5,6 +5,7 @@
 #   - stay silent when cactus is not installed
 #   - print the five-step workflow every agent follows: monitor, ask, work, act, clear
 #   - resolve the --agent value through identity.sh and print it
+#   - rehome rows this pane posted under a previous identity (after /clear or --resume)
 #   - teach the two escapes: --once when Monitor's cap expires, cactus run when a permission prompt blocks
 #   - print the open rows for this project so an unanswered thread is not forgotten
 set -u
@@ -26,6 +27,13 @@ Load the cactus skill before the first ask.
 EOF
 if [ -n "$agent" ]; then
   echo "Your cactus identity for this session: --agent $agent"
+  # A /clear or --resume rotates the conversation id. Rows this pane posted
+  # under the old id are still stamped with the pane and herdr session, so
+  # move them onto the new id; exit 1 (no stamps) and count 0 are both silent.
+  moved=$(cactus rehome --agent "$agent" --json 2>/dev/null | jq -r '.rehomed // .count // 0' 2>/dev/null)
+  if [ "${moved:-0}" != "0" ]; then
+    echo "Rehomed $moved row(s) from this pane's previous identity onto --agent $agent."
+  fi
 else
   echo "No herdr session resolved. Choose one stable --agent value for this session and pass it on every ask and clear."
 fi

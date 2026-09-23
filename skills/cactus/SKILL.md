@@ -191,6 +191,9 @@ read is stale; `gone` means the row was purged.
 An answered row carries `selected[]`, `text`, and `skipped`. `skipped` means the
 human saw it and chose not to decide; act on your stated default.
 
+Keys are `qN` within the project. Across projects (`--all`) use the row's
+`ref`, `LABEL:qN`, which every verb accepts as a key.
+
 ## Decision records
 
 Every answer, undo, verdict and clear rewrites one file per row in the
