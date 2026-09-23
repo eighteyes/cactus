@@ -4,7 +4,8 @@ record.py — decision records: one markdown file per question, on disk.
 Responsibilities:
 - Render a Question's current state (and the event that produced it) to
   markdown, fully and idempotently — the same row state always renders to the
-  same bytes.
+  same bytes. An `edit`'s `prior` fields render as a `## Rewrite` section, so
+  the record shows the question before and after.
 - Resolve where that markdown lives: <project>/.ai/cactus/q{N}-{slug}.md,
   reusing whatever filename a row already has even if its word changes.
 - Write it atomically (temp file + os.replace), creating .ai/cactus/ as
@@ -20,7 +21,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .store import CONFIDENCE_GLYPH
 
@@ -70,6 +71,12 @@ def _status_label(row: "Question", event: str) -> str:
         return "retired" if row.answers else "declined"
     if event == "reopen":
         return "live" if row.persistent else "withdrawn"
+    if event == "elaborate":
+        return "elaborate"
+    if event in ("edit", "unelaborate"):
+        # Both leave the row exactly at its current, already-correct status
+        # (open/live) — no fan-out needed, unlike clear/reopen above.
+        return row.status
     if event == "restore":
         # A restore un-clears a row rather than undoing an answer, so its
         # verdict log (or lack of one) is intact, not withdrawn.
@@ -166,16 +173,26 @@ def render(
     *,
     event: str,
     withdrawn_answer: "Answer | None" = None,
+    prior: "dict[str, Any] | None" = None,
 ) -> str:
     """Render a row's full markdown record for the given event.
 
     Idempotent: the same row state and event always render byte-identical
     output — no timestamp of the write itself appears anywhere in it.
+
+    `prior` (an `edit`'s `text`/`context`/`choices` before the rewrite) adds
+    a `## Rewrite` section so the record shows the question before and
+    after, alongside the current state every other section already shows.
     """
     status = _status_label(row, event)
     title = " ".join(row.text.split())
     parts: list[str] = [f"# {row.key} — {title}", ""]
     parts.extend(_field_block(row, status))
+
+    if event == "elaborate":
+        parts += ["", "## Elaborate requested", ""]
+        parts.append(row.elaborate or "(no hint given)")
+        parts.append(f"requested at: {row.elaborate_at}")
 
     if row.context:
         parts += ["", "## Context", "", row.context]
@@ -231,6 +248,20 @@ def render(
         if row.run_log:
             parts += ["", f"log: {row.run_log}"]
 
+    if event == "edit" and prior is not None:
+        parts += ["", "## Rewrite", ""]
+        parts.append(f"was: {prior.get('text', '')}")
+        if prior.get("context"):
+            parts += ["", prior["context"]]
+        prior_choices = prior.get("choices") or []
+        if prior_choices:
+            parts += ["", "options were:"]
+            for c in prior_choices:
+                line = f"- {c.label}"
+                if c.description:
+                    line += f" — {c.description}"
+                parts.append(line)
+
     return "\n".join(parts) + "\n"
 
 
@@ -239,6 +270,7 @@ def write_record(
     *,
     event: str,
     withdrawn_answer: "Answer | None" = None,
+    prior: "dict[str, Any] | None" = None,
 ) -> Path:
     """Write (or rewrite) a row's record. Raises on any I/O failure.
 
@@ -247,7 +279,7 @@ def write_record(
     """
     path = record_path(row)
     path.parent.mkdir(parents=True, exist_ok=True)
-    content = render(row, event=event, withdrawn_answer=withdrawn_answer)
+    content = render(row, event=event, withdrawn_answer=withdrawn_answer, prior=prior)
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(content)
     os.replace(tmp, path)
