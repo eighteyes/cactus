@@ -4,7 +4,7 @@ monitor.py — plain-stdout event stream of a cactus inbox, for agents.
 Responsibilities:
 - Poll the store's change cursor and diff the inbox against the previous tick.
 - Emit one line per transition: asked, verdict, answered, skipped, cleared,
-  reopened, stepped, changed, gone.
+  reopened, stepped, changed, elaborate, edited, gone.
 - Render each event as a fixed-column line or as one JSON object per line.
 - Flush every line immediately so a line-oriented watcher sees events as they land.
 """
@@ -20,6 +20,19 @@ from .scope import project_label
 from .store import CONFIDENCE_GLYPH, Question, Store
 
 DEFAULT_INTERVAL = 1.0
+
+# q207 ("both"): the instruction an `elaborate` event carries when the human
+# typed no hint of their own. Settled wording overrides the plan doc's older
+# phrasing — this is the text an agent actually reads.
+DEFAULT_INSTRUCTION = (
+    "Rewrite the context plainly — no jargon — and add what is missing: "
+    "what you tried, what each option costs, what happens if nobody answers."
+)
+
+
+def _instruction_for(q: Question) -> str:
+    hint = (q.elaborate or "").strip()
+    return hint if hint else DEFAULT_INSTRUCTION
 
 
 def _answer_signature(q: Question) -> tuple[Any, ...]:
@@ -61,6 +74,8 @@ def _signature(q: Question) -> tuple[Any, ...]:
 def _arrival_event(q: Question) -> str:
     if q.status in ("open", "live"):
         return "asked"
+    if q.status == "elaborate":
+        return "elaborate"
     if q.status == "cleared":
         return "cleared"
     return "skipped" if q.answer is not None and q.answer.skipped else "answered"
@@ -89,6 +104,20 @@ def _transition_event(before: tuple[Any, ...], q: Question) -> str:
         return _arrival_event(q)
     if before[-1] != _sidecar_signature(q):
         return "stepped" if q.steps else "changed"
+    if was_status != "elaborate" and q.status == "elaborate":
+        return "elaborate"
+    if was_status == "elaborate" and q.status != "elaborate":
+        # Covers both an agent's `edit` addressing the request and a human
+        # withdrawing it (`unelaborate`) — the two are indistinguishable
+        # from a pure before/after diff, and the spec only names `edited`.
+        return "edited"
+    edited_fields = (before[1], before[6], before[7], before[8])
+    after_fields = (q.text, tuple(c.label for c in q.choices), q.context, tuple(q.recommend))
+    if was_status == q.status and edited_fields != after_fields:
+        # A plain in-place `edit` on a row that never went through
+        # `elaborate` — text/context/choices/recommend are the only fields
+        # `edit` ever touches, and nothing else changes them after `ask`.
+        return "edited"
     if was_status != q.status:
         # Leaving `cleared` is always a restore, whatever status it lands on —
         # a one-shot row that had already been answered when it was cleared
@@ -105,6 +134,8 @@ def _answer_signature_of(q: Question) -> tuple[Any, ...]:
 
 
 def _detail(q: Question, event: str) -> str:
+    if event == "elaborate":
+        return _instruction_for(q)
     if event == "stepped":
         done = sum(1 for st in q.steps if st.done)
         return f"{done}/{len(q.steps)} steps  {q.text}"
@@ -147,6 +178,12 @@ def _line(q: Question, event: str, *, show_project: bool) -> str:
 def _record(q: Question, event: str) -> dict[str, Any]:
     payload = q.as_dict()
     payload["event"] = event
+    if event == "elaborate":
+        # Named exactly as the spec calls for, alongside the row's own
+        # `elaborate`/`elaborate_at` fields already in `payload` — `hint` is
+        # the event's name for the same value, `instruction` is derived.
+        payload["hint"] = q.elaborate
+        payload["instruction"] = _instruction_for(q)
     return payload
 
 
