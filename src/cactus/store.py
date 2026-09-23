@@ -657,7 +657,7 @@ class Store:
             )
         if q.status == "cleared":
             raise ValueError(
-                f"{key} is cleared — reopen it first: cactus reopen {key} --agent ID"
+                f"{key} is cleared; cactus reopen {key} --agent ID first"
             )
         if not q.persistent and q.status == "answered":
             raise AlreadyAnswered(
@@ -666,20 +666,20 @@ class Store:
                 f" — undo it first if that verdict should change".replace("  ", " ")
             )
         selected = list(selected or [])
-        if selected and q.kind in ("choice", "multi", "confirm"):
+        if q.choices and selected:
             valid = [c.label for c in q.choices]
-            bad = [s for s in selected if s not in valid]
-            if bad:
-                raise ValueError(
-                    f"{key}: {bad!r} not among its options — valid labels: "
-                    f"{', '.join(valid)}"
-                )
-        if text and not skipped and not q.allow_free and q.kind != "text":
-            raise ValueError(f"{key} was posted with --no-free: it takes no free text")
-        if not selected and not text and not skipped:
+            for label in selected:
+                if label not in valid:
+                    raise ValueError(
+                        f"{key} has no choice '{label}'; choices are {', '.join(valid)}"
+                    )
+        if not q.allow_free and text and text.strip():
+            valid = [c.label for c in q.choices]
+            raise ValueError(f"{key} takes no free text; pick from {', '.join(valid)}")
+        if not skipped and not selected and not (text and text.strip()):
             raise ValueError(
-                f"{key}: refusing an empty answer — give a selection, text, "
-                f"or --skip/--dismiss"
+                f"{key}: nothing chosen and nothing typed; pick a label, give "
+                f"text, or --skip"
             )
         now = _now()
         status = "live" if q.persistent else "answered"

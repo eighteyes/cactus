@@ -237,6 +237,15 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         # would strand the -c choices on a row that never reads them.
         print(f"cactus: --act {act} takes no choices; it collects text only", file=sys.stderr)
         return EXIT_ERROR
+    if args.no_free and not choices:
+        # A no-free text row (kind=text, including seen/plan) could never be
+        # answered: no choices to pick and free text is refused too.
+        print(
+            "cactus: --no-free needs choices; a text question with no free "
+            "text cannot be answered",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
     kind = args.kind
     if kind is None:
         if args.confirm:

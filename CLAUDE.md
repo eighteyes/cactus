@@ -153,6 +153,12 @@ scope.
 - Re-answering a one-shot row that is already `answered` raises
   `AlreadyAnswered` and exits 3. Two surfaces share one inbox, so the second
   tap must not silently overwrite what the first reader saw.
+- `Store.answer` refuses, exit 1: an off-menu label (not one of the row's
+  choices), an empty answer (nothing selected, nothing typed, and not
+  `--skip`), an answer on a `cleared` row (`cactus reopen` first), and free
+  text on a row posted with `--no-free`. `cli.cmd_ask` refuses `--no-free`
+  up front when the resulting row would have no choices — a no-free text row
+  could never be answered.
 - TUI bindings are gated by `check_action`, so the footer and the keyboard
   agree: no `Run` key on a row with no command, no `d` on a row that is not a
   notice. Textual only re-asks `check_action` when something calls
