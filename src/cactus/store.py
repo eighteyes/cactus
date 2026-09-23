@@ -722,6 +722,7 @@ class Store:
         all_projects: bool = False,
         include_answered: bool = True,
         agent: str | None = None,
+        record: bool = True,
     ) -> int:
         """Mark questions cleared. Returns the number of rows affected.
 
@@ -732,6 +733,12 @@ class Store:
         NULL-owned row never matches `agent = ?`, so an unowned row is left
         alone without a separate check. The refusal policy for who may pass
         which `agent` lives in cli.py; this is mechanism only.
+
+        `record`, when False, skips the decision-record write entirely rather
+        than writing `declined`/`retired` — the CLI's agent-initiated `clear`
+        passes this, because a record documents a human decision and an agent
+        clearing its own row is bookkeeping, not a verdict. The TUI's human
+        `c` keeps the default and writes the record as before.
         """
         where, params = self._scope_where(
             keys=keys, project=project, thread=thread, all_projects=all_projects
@@ -754,10 +761,11 @@ class Store:
         ]
         sql = "UPDATE questions SET status = 'cleared', updated_at = ? WHERE " + clause
         cur = self.conn.execute(sql, [_now(), *params])
-        for key in affected:
-            row = self.get(key)
-            if row is not None:
-                self._record(row, event="clear")
+        if record:
+            for key in affected:
+                row = self.get(key)
+                if row is not None:
+                    self._record(row, event="clear")
         return cur.rowcount
 
     def reopen(self, key: str) -> Question:

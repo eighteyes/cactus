@@ -530,12 +530,14 @@ def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
                 file=sys.stderr,
             )
             return EXIT_ERROR
+        kw = {} if args.purge else {"record": False}
         count = fn(
             keys=args.keys or None,
             project=project,
             thread=args.thread,
             all_projects=args.all,
             agent=args.agent,
+            **kw,
         )
     else:
         # Explicit KEY form: an unowned row clears by key with or without
@@ -557,7 +559,8 @@ def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
                 file=sys.stderr,
             )
             return EXIT_ERROR
-        count = fn(keys=args.keys, project=project)
+        kw = {} if args.purge else {"record": False}
+        count = fn(keys=args.keys, project=project, **kw)
 
     verb = "purged" if args.purge else "cleared"
     if args.json:
