@@ -52,8 +52,12 @@ Do not stop and do not ask in chat. Post the command and keep working:
 
     cactus run "pnpm exec playwright install" --agent "$AGENT" --why "denied in auto mode"
 
-The human approves or denies it from the TUI; the `answered` event carries
-`approve` or `deny`. Run it yourself only after reading `approve`.
+`--why` becomes the row's context. The human approves or denies it from the
+TUI; the `answered` event carries `approve` or `deny`. On approve, re-read
+the row: `cactus get KEY --json | jq '.[0].result'`. A non-null `result`
+means the TUI already ran it (exit code, a 50-line tail, a log path); act on
+that. A null `result` after `approve` means the human approved from the CLI
+and you run it yourself. Never run it before `approve`.
 
 ## Identity
 
@@ -136,13 +140,15 @@ status, not just the exit code.
 
 ## Approve a command
 
-    K=$(cactus ask "Run the prod migration?" --act run -t ship --agent "$AGENT")
-    cactus review "$K" --run "alembic upgrade head" --look-at "alembic history" --pass "no errors"
+    K=$(cactus run "alembic upgrade head" --agent "$AGENT" -t ship --why "schema is one revision behind")
     cactus get "$K" --wait --timeout 900 --json
 
-Post first, attach the command with `review --run`, then wait on `get`. The
-human sees the command and can run it from the TUI. The verdict labels are
-`approve` and `deny`; run it yourself only after reading `approve`.
+`cactus run` posts the command as the row text, `--why` as its context. The
+human sees the command and runs it from the TUI with `R` or `y`, which
+records `result` on the row. The verdict labels are `approve` and `deny`.
+Read `result` before doing anything: non-null means it already ran, null
+after `approve` means run it yourself. `review --run` still attaches a
+command to any other row when a verify block needs one.
 
 ## Persistent rows: review and plan
 
