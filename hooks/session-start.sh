@@ -11,7 +11,7 @@ command -v cactus >/dev/null 2>&1 || exit 0
 open=$(cactus list -s open 2>/dev/null)
 rc=$?
 
-echo "cactus is installed: post questions with \`cactus ask\` and keep working instead of blocking on AskUserQuestion. Load the cactus skill before the first ask; \`cactus --agent-help\` has the syntax."
+echo "cactus is installed. Use it for forks, reviews and questions: a fork is \`cactus ask\` with one -c per direction (\`--act steer --chosen\` when one is the default), a review is \`--act review\` plus \`cactus review KEY --run ... --pass ...\`, a question is \`cactus ask\` posted now and collected at the fork. Keep working instead of blocking on AskUserQuestion; load the cactus skill before the first ask."
 if [ "$rc" -eq 0 ] && [ -n "$open" ]; then
   echo "Open cactus rows in this project (collect with \`cactus get KEY --json\`):"
   echo "$open"
