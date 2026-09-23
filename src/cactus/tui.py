@@ -407,6 +407,8 @@ class CactusApp(App[int]):
         self.drafts: dict[str, str] = {}
         self.undo_stack: list[dict[str, Any]] = []
         self.run_output = {}
+        # Project of each running command's row: keys are only unique per project.
+        self.run_projects: dict[str, str] = {}
         self.run_state = {}
         self.free_text_mode = False
         # Set while the input is open for `e`'s prompt, so on_input_submitted
@@ -758,6 +760,7 @@ class CactusApp(App[int]):
             self._rebuild_status_bar()
             return
         self.run_output[q.key] = []
+        self.run_projects[q.key] = q.project
         self.run_state[q.key] = "running"
         self.flash = f"running in {q.cwd}"
         self._rebuild_status_bar()
@@ -794,6 +797,7 @@ class CactusApp(App[int]):
             self._rebuild_status_bar()
             return
         self.run_output[q.key] = []
+        self.run_projects[q.key] = q.project
         self.run_state[q.key] = "running"
         self.flash = f"running in {q.cwd}"
         self._rebuild_status_bar()
@@ -826,10 +830,11 @@ class CactusApp(App[int]):
         self.run_state[key] = last.strip("— ") if last.startswith("—") else "done"
         log_path = spill(lines, key=key)
         try:
+            project = self.run_projects.get(key)
             self.store.set_run_result(
-                key, exit_code=exit_code, tail=lines[-50:], log=str(log_path)
+                key, project=project, exit_code=exit_code, tail=lines[-50:], log=str(log_path)
             )
-            self.store.answer(key, selected=["approve"], text=None)
+            self.store.answer(key, project=project, selected=["approve"], text=None)
         except Exception as exc:
             self.flash = f"{key}: result not recorded: {exc}"
         if self.focused_key == key:
@@ -1137,7 +1142,7 @@ class CactusApp(App[int]):
 
     async def _submit_elaborate(self, q: Question, hint: str) -> None:
         try:
-            self.store.elaborate_request(q.key, hint=hint or None)
+            self.store.elaborate_request(q.key, hint=hint or None, project=q.project)
         except (KeyError, ValueError) as exc:
             self.flash = str(exc)
         else:
@@ -1152,7 +1157,7 @@ class CactusApp(App[int]):
 
     async def _withdraw_elaborate(self, q: Question) -> None:
         try:
-            self.store.unelaborate(q.key)
+            self.store.unelaborate(q.key, project=q.project)
         except (KeyError, ValueError) as exc:
             self.flash = str(exc)
         else:
@@ -1218,7 +1223,7 @@ class CactusApp(App[int]):
             if step is None:
                 self.flash = f"{plan.key} has no step {n}"
             else:
-                self.store.set_step_done(plan.key, idx, not step.done)
+                self.store.set_step_done(plan.key, idx, not step.done, project=plan.project)
                 self.flash = f"step {n} {'done' if not step.done else 'reopened'}"
             await self.action_refresh_view()
             self._rebuild_status_bar()
@@ -1295,11 +1300,11 @@ class CactusApp(App[int]):
         text = (typed if typed is not None else self.pending_text).strip()
         if text:
             try:
-                self.store.answer(q.key, selected=[], text=text, skipped=False)
+                self.store.answer(q.key, project=q.project, selected=[], text=text, skipped=False)
             except (KeyError, ValueError) as exc:
                 await self._refuse(exc)
                 return
-            self._push_undo(q.key, "noted", [], text)
+            self._push_undo(q.key, "noted", [], text, project=q.project)
             self.pending_text = ""
             self.free_text_mode = False
             self._hide_input()
@@ -1355,8 +1360,8 @@ class CactusApp(App[int]):
         q = self._current_question()
         if q is None:
             return
-        self.store.clear(keys=[q.key], all_projects=True)
-        self._push_undo(q.key, "cleared", [], self.pending_text or None)
+        self.store.clear(keys=[q.key], project=q.project)
+        self._push_undo(q.key, "cleared", [], self.pending_text or None, project=q.project)
         await self._advance_after(q.key)
 
     async def _submit_answer(
@@ -1369,13 +1374,14 @@ class CactusApp(App[int]):
         label: str | None = None,
     ) -> None:
         try:
-            self.store.answer(q.key, selected=selected, text=text, skipped=skipped)
+            self.store.answer(q.key, project=q.project, selected=selected, text=text, skipped=skipped)
         except KeyError:
             return
         except (AlreadyAnswered, ValueError) as exc:
             await self._refuse(exc)
             return
-        self._push_undo(q.key, label or ("skipped" if skipped else "answered"), selected, text)
+        self._push_undo(q.key, label or ("skipped" if skipped else "answered"), selected, text,
+                        project=q.project)
         await self._advance_after(q.key)
 
     async def _refuse(self, exc: Exception) -> None:
@@ -1417,10 +1423,12 @@ class CactusApp(App[int]):
     # ---- undo -----------------------------------------------------------
 
     def _push_undo(
-        self, key: str, label: str, selected: list[str], text: str | None
+        self, key: str, label: str, selected: list[str], text: str | None,
+        *, project: str,
     ) -> None:
         self.undo_stack.append(
-            {"key": key, "label": label, "selected": list(selected), "text": text or ""}
+            {"key": key, "project": project, "label": label,
+             "selected": list(selected), "text": text or ""}
         )
 
     async def action_undo(self) -> None:
@@ -1445,7 +1453,7 @@ class CactusApp(App[int]):
         while self.undo_stack:
             entry = self.undo_stack.pop()
             try:
-                self.store.reopen(entry["key"])
+                self.store.reopen(entry["key"], project=entry["project"])
             except KeyError:
                 # Purged out from under us; the next entry down is still good.
                 continue
@@ -1456,7 +1464,7 @@ class CactusApp(App[int]):
             self.multi_selected = set(entry["selected"])
             self.free_text_mode = False
             self._hide_input()
-            self.current_project = self.store.get(entry["key"]).project \
+            self.current_project = entry["project"] \
                 if self.scoped_project is None else self.current_project
             await self._reload(force=True)
             self._synced_key = self.focused_key

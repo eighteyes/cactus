@@ -1361,9 +1361,14 @@ class Store:
                 "SELECT * FROM questions WHERE project = ? AND key = ?", (project, key)
             ).fetchone()
         else:
-            row = self.conn.execute(
-                "SELECT * FROM questions WHERE key = ? ORDER BY id ASC LIMIT 1", (key,)
-            ).fetchone()
+            rows = self.conn.execute(
+                "SELECT * FROM questions WHERE key = ? ORDER BY id ASC LIMIT 2", (key,)
+            ).fetchall()
+            # A bare key held by two projects must not resolve to either: the
+            # oldest-row fallback wrote TUI answers into another project's row.
+            if len(rows) > 1:
+                raise ValueError(f"{key} exists in more than one project; pass project")
+            row = rows[0] if rows else None
         return self._hydrate(row) if row else None
 
     def _get_by_id(self, qid: int) -> Question | None:
