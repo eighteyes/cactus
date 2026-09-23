@@ -174,6 +174,23 @@ def _card_lines(
     return "\n".join(lines)
 
 
+class RailList(ListView):
+    """The question rail. A click moves the highlight; only a key submits.
+
+    ListView posts Selected on a click, and Selected is where submit fires
+    (enter never reaches an App binding). With a recommendation preselected,
+    a click meant to focus a row answered it.
+    """
+
+    def _on_list_item__child_clicked(self, event: ListItem._ChildClicked) -> None:
+        # Textual dispatches a handler on every class in the MRO; without
+        # prevent_default, ListView's own handler still posts Selected.
+        event.prevent_default()
+        event.stop()
+        self.focus()
+        self.index = self._nodes.index(event.item)
+
+
 class QuestionBlock(ListItem):
     """One block of the question rail — key, gist, and kind, at a fixed height."""
 
@@ -376,7 +393,7 @@ class CactusApp(App[int]):
         with Horizontal(id="body"):
             with Vertical(id="rail"):
                 yield Static(id="project-head", markup=False)
-                yield ListView(id="rail-list")
+                yield RailList(id="rail-list")
             with Vertical(id="main"):
                 yield Static(id="card", markup=False)
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
