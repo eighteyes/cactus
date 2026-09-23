@@ -1,12 +1,35 @@
 {
-  "description": "SessionStart hook that tells the agent cactus is available and lists this project's open rows; Stop hook that blocks a turn which ended without posting a fork.",
+  "description": "SessionStart hook that tells the agent cactus is available and lists this project's open rows; UserPromptSubmit hook that injects the agent's own frontier (answered backlog, open rows, counts) on every prompt; PermissionDenied hook that posts a denied Bash command as a `cactus run` row; Stop hook that blocks a turn which ended without posting a fork.",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/frontier.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/permission-denied.sh\"",
             "timeout": 10
           }
         ]

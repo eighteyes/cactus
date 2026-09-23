@@ -24,18 +24,36 @@ only that project; if it is wrong, `cd` before asking.
 
 ## Workflow, required
 
-    1  monitor   start `cactus --monitor --json` in the background before the
-                 first ask; keep it running while any row of yours is open
+    1  monitor   start `cactus --monitor --json --agent ID` before the first
+                 ask; keep it running while any row of yours is open
     2  ask       post every decision the human makes here, not in chat;
                  --recommend when you have a pick, --agent on every row
     3  work      do everything the answer does not block
     4  act       on each event as it lands: answered, reopened, cleared
     5  clear     your own rows, by key, once acted on
 
-Start the monitor with `Monitor` when the harness has it, otherwise Bash
-`run_in_background`. Every event is one JSON line; filter to your own rows:
+`--agent` is required: an unfiltered monitor is refused. Every event is one
+JSON line, already filtered to your rows:
 
-    cactus --monitor --json | jq -c --unbuffered 'select(.agent == "$AGENT")'
+    cactus --monitor --json --agent "$AGENT"
+
+Run it with the `Monitor` tool by default. Monitor expires after 30 minutes;
+when it does, switch to a background one-shot that exits on the first event
+that is not `asked`, then re-arm `Monitor` once the user is active again:
+
+    cactus --monitor --json --agent "$AGENT" --once      # Bash run_in_background
+
+Without `Monitor` at all, the one-shot in the background is the whole loop:
+re-run it after each event.
+
+## Blocked by a permission prompt
+
+Do not stop and do not ask in chat. Post the command and keep working:
+
+    cactus run "pnpm exec playwright install" --agent "$AGENT" --why "denied in auto mode"
+
+The human approves or denies it from the TUI; the `answered` event carries
+`approve` or `deny`. Run it yourself only after reading `approve`.
 
 ## Identity
 
@@ -147,13 +165,13 @@ cache: a human can undo a verdict and the row reads `open` again.
 The monitor you started first is the wake-up. When a thread needs its own
 watcher, or the harness has no `Monitor`, two more ways:
 
-    Agent(subagent_type: "cactus-courier", prompt: "thread auth, deadline 1800")
+    Agent(subagent_type: "cactus-courier", prompt: "agent $AGENT, thread auth, deadline 1800")
 
 The courier parks on the stream and its task notification carries the answers.
 Launch it right after posting the batch and keep working. Or run the stream
 yourself with Bash `run_in_background`:
 
-    cactus --monitor --json | jq -c --unbuffered 'select(.thread == "auth" and .event == "answered")' | head -1
+    cactus --monitor --json --agent "$AGENT" | jq -c --unbuffered 'select(.thread == "auth" and .event == "answered")' | head -1
 
 Listen for `reopened` and `gone` too: `reopened` means a verdict you already
 read is stale; `gone` means the row was purged.

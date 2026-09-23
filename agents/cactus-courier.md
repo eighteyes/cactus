@@ -14,6 +14,8 @@ you do not interpret what the parent should do next.
 
 The parent gives you one of:
 
+- the parent's agent id, e.g. `agent 24400027-...` (required: the monitor
+  refuses to run unfiltered, and the rows you watch are the parent's)
 - a thread name, e.g. `auth`
 - one or more keys, e.g. `q7 q9`
 - optionally a deadline in seconds (default 1800)
@@ -31,7 +33,7 @@ The parent gives you one of:
    a result: collect it.
 3. Wait for the rest on the stream, one JSON object per line:
 
-       perl -e 'alarm shift; exec @ARGV' DEADLINE cactus --monitor --json \
+       perl -e 'alarm shift; exec @ARGV' DEADLINE cactus --monitor --json --agent AGENT \
          | jq -c --unbuffered 'select(.thread == "THREAD" and (.event == "answered" or .event == "skipped" or .event == "cleared" or .event == "gone" or .event == "reopened"))'
 
    `perl alarm` is the deadline; macOS ships no `timeout`. Exit 142 from the

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# frontier.sh
+# UserPromptSubmit hook: inject this agent's cactus frontier as context on every prompt.
+# Responsibilities:
+#   - stay silent when cactus is not installed, no identity resolves, or the agent has no rows
+#   - list the agent's answered-but-not-cleared rows first (acted-on backlog), then its open rows
+#   - cap the listing at FRONTIER_MAX rows, key and gist each, and close with one counts line
+set -u
+command -v cactus >/dev/null 2>&1 || exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+
+# shellcheck source=identity.sh
+. "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
+agent=$(cactus_resolve_agent)
+[ -n "$agent" ] || exit 0
+
+FRONTIER_MAX="${CACTUS_FRONTIER_MAX:-5}"
+
+rows=$(cactus list -s any --agent "$agent" --json 2>/dev/null) || exit 0
+[ -n "$rows" ] || exit 0
+
+# Gist: --word when set, else the first 60 characters of the question.
+# Answered rows carry their verdict so the agent can act without a get.
+jq -r --argjson max "$FRONTIER_MAX" '
+  def gist: (.word // (.text | .[0:60]));
+  def verdict:
+    if .answer == null then ""
+    elif .answer.skipped then " -> skipped"
+    else " -> " + ((.answer.selected // []) | join(",")) + (if .answer.text then " " + (.answer.text | .[0:40]) else "" end)
+    end;
+  [ .[] | select(.status == "answered") ] as $done
+  | [ .[] | select(.status == "open" or .status == "live") ] as $open
+  | (($done | length) + ($open | length)) as $total
+  | if $total == 0 then empty else
+      "cactus frontier (--agent \($agent)):",
+      ( ($done + $open)[:$max][]
+        | "  \(.key) \(.status) \(gist)\(verdict)" ),
+      (if $total > $max then "  ... \($total - $max) more: cactus list -s any --agent \($agent)" else empty end),
+      "  \($done | length) answered to act on and clear, \($open | length) open"
+    end
+' --arg agent "$agent" <<<"$rows"
+exit 0
