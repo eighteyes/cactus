@@ -28,63 +28,169 @@ EXIT_TIMEOUT = 2
 EXIT_EMPTY = 3
 
 AGENT_HELP = """\
-cactus — ask a human a question without stopping work.
+cactus — ask a human without stopping work
+
+Ask early, keep working, collect at the fork. The inbox is durable and scoped
+to the project: any agent in the repository reads any answer, in any session
 
 THE ARC
 
-  1  ask       write the question, get a key back, keep working
+  1  ask       post the question, get a key, keep working
   2  work      do everything the answer does not block
-  3  get/list  collect answers when you reach the fork
-  4  ask -p    follow up in the same thread if the answer opens a new question
-
-  The inbox is durable and scoped to the project. A question asked in one
-  session is readable from the next, by any agent in the same repository.
+  3  get/list  collect answers at the fork
+  4  ask -p    follow up in the same thread when an answer opens a question
 
 ASK
+
+  One question per ask, one -c per choice, taken verbatim
 
   cactus ask "Which auth backend?" \\
     -c "oidc: existing IdP" \\
     -c "local: bcrypt table" \\
-    --context "Staging tenant is provisioned. Local means owning password reset." \\
+    --context "Staging tenant exists. Local means owning password reset." \\
     -t auth --by "$CACTUS_AGENT"
   q7
-
-  Exactly one question per ask. Choices are taken verbatim, one -c each.
 
   choice     -c a -c b              one label
   multi      -c a -c b --multi      several labels
   confirm    --confirm              yes / no
   text       no choices             free entry
 
-  Free text is accepted alongside a pick unless --no-free is passed, so an
-  answer may carry a selection, typed text, or both.
+  A choice splits on its first colon: label before, description after
+  Free text rides alongside a pick unless --no-free, so an answer may carry a
+  selection, text, or both
 
-CONTEXT CARRIES THE DECISION
+AUTHORING
 
-  --context is what the human needs to decide without opening the repo:
-  the tradeoff the labels hide, what has already been checked, what happens
-  by default if nobody answers, and what is hard to reverse. Long detail
-  reads from stdin with --context -.
+  Options say what can be chosen; context says why it is asked. Never merged,
+  never restating each other
 
-  Leave out restatements of the question, reasoning chains, and anything
-  already visible in the choice labels.
+  Options are mile posts, not a menu:
+    two or three, mutually exclusive, each a thing that actually happens
+    no "Other" — a set that misses the space means the question is wrong
+    an option that has to explain itself is not cut down far enough
 
-BLOCK ONLY WHEN BLOCKED
+  Context carries what the human cannot see and would otherwise go and get:
+    what you tried, and what it cost
+    the measurement, with numbers
+    what breaks under each option
+    what is hard to reverse
+    what you will do if nobody answers
+
+  Leave out restated labels, reasoning chains, reassurance and apology
+  Long context reads from stdin: --context -
+
+  Pruning the option tree is the design work. A tap is cheap so that asking
+  more is affordable; a wall of prose per question is why agents under-ask
+
+BLOCKING
+
+  Block only when blocked — ask now, collect later
 
   cactus ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
 
-  --wait returns the moment the status leaves open, including a clear, which
-  means the human declined. Always pair it with --timeout and handle exit 2
-  as "proceed on the stated default" rather than as a failure. Prefer asking
-  early without --wait and collecting later.
+  --wait returns when the status leaves open, a clear included; a clear means
+  the human declined
+  Pair --wait with --timeout, and treat exit 2 as "proceed on the stated
+  default", not as a failure
+  --wait on a non-blocking row is an error: nothing will ever arrive, so watch
+  --monitor instead
+
+ACTS
+
+  The act is what the reply is for; the shape is how it is collected
+
+    act      blocks by default   shape                       for
+    ask      yes                 choice/multi/text/confirm   a decision you need
+    run      yes                 confirm (approve/deny)      approve a command
+    steer    no                  choice, text                what you do anyway
+    seen     no                  text                        an FYI, dismissed
+    review   no                  confirm (pass/fail)         a verify block
+    plan     no                  text                        a checklist
+
+  Blocking is your call, not the act's: the table is the default, and
+  --blocked / --no-block override it on any row
+  Over-claiming is the failure mode — parking a human on a question you could
+  have answered yourself. It is measured, not policed: cursor.blocked
+
+  steer — what happens anyway. --chosen LABEL is required and must name a real
+  option; you proceed with it and a tap redirects. "Using the staging tenant"
+  is a steer; "Which tenant?" is an ask. If proceeding on any assumption is
+  unsafe or wastes the work, ask
+
+  run — a command awaiting approval; attach the command with cactus review
+
+  review, plan — persistent: born live, answered every time the work is
+  re-checked, live until cleared, never blocking. Every verdict is kept, and
+  `answer` is the latest
+
+  cactus ask "Deploy staging?" --act run -t ship
+  q8
+  cactus review q8 --run "make deploy-staging"
+
+  cactus ask "Does the build verify?" --act review -t ship
+  q9
+  cactus review q9 --look-at "the diff" --run "pytest -q" \\
+    --pass "0 failures" --fail "any failure" --then "tag the release"
+
+  cactus ask "Release steps" --act plan -t ship
+  q10
+  cactus plan q10 --step "build" --step "test" --step "tag"
+  cactus plan q10 --done 1       # 1-based: ticks "build"; the human can too
+
+RECOMMEND
+
+  Recommend a pick when you have one — you still wait, and the human accepts
+  with one key
+
+  cactus ask "Which auth backend?" \\
+    -c "oidc: existing IdP" -c "local: bcrypt table" \\
+    --recommend oidc --confidence high --why "staging tenant is provisioned"
+
+  --recommend LABEL    a real option on any row with choices, confirm included;
+                       repeatable on multi rows only
+  --confidence LEVEL   required with --recommend: low / med / high → ○ ◐ ●
+  --why TEXT           optional, one line
+
+  The TUI marks the pick and preselects it: enter alone submits, a tap redirects
+  Recommend, not chosen — stopping takes --recommend, proceeding takes a steer
+  with --chosen
+
+OWNERSHIP
+
+  --agent ID names the owner of a row: a RESOLVED identity, the declared
+  session token, never a bare pane id
+
+  No default, on purpose. A pane id outlives the conversation it named, so a
+  resumed session would inherit rows it never asked for. Unset means unowned
+  --agent filters; the project still scopes
+  --word SHORT is the label a projector derives a board key from; without it,
+  every row starting "check" or "should" collides
+
+THREADS
+
+  One thread per decision; ask the whole batch up front so the human answers a
+  set, not a drip of interrupts
+
+  -t NAME     group related questions
+  -p KEY      attach a follow-up; it inherits the parent's thread
+
+COLLECT
+
+  cactus get q7 --json
+  cactus list -s answered -t auth --json
+  cactus list -s open
+
+  An answered row carries selected[], text and skipped; skipped means the human
+  saw it and chose not to decide
+  Re-read rather than cache: an undo returns an answered row to open
 
 MONITOR
 
-  cactus --monitor
+  One line per change, flushed as it happens — point a line watcher at it and
+  keep working
 
-  One line per change, flushed as it happens, until interrupted. Point a
-  line-oriented watcher at it and keep working; the frontier moves in both
-  directions and every move is a line:
+  cactus --monitor
 
   q7  asked     Which auth backend?  (2 choices)
   q7  answered  [oidc] staging first
@@ -93,200 +199,75 @@ MONITOR
   q7  reopened  Which auth backend?
   q9  gone
 
-  reopened means a human undid an answer already given: a verdict read earlier
-  is stale. gone means the question was purged. A watcher that listens only for
-  `answered` cannot tell a quiet inbox from a withdrawn question.
+  reopened   a human undid an answer; any verdict read earlier is stale
+  verdict    a persistent row took another verdict
+  stepped    a plan step was ticked or unticked
+  gone       purged
+  A watcher listening only for `answered` cannot tell a quiet inbox from a
+  withdrawn question
 
-  --all         span every project, prefixing each line with its label
-  --json        one JSON object per line, the question plus an event field
+  --all         every project, each line prefixed with its label
+  --json        one object per line: the question plus an event field
   --replay      emit the current inbox first, then stream
   --interval N  seconds between polls (default 1.0)
 
-  Scoped to the current project unless --all is passed.
-
-COLLECT
-
-  cactus get q7 --json
-  cactus list -s answered -t auth --json
-  cactus list -s open
-
-  A question in an answered state carries selected[], text, and skipped.
-  A skipped answer means the human saw it and chose not to decide.
-
-THREADS AND FOLLOW-UPS
-
-  -t NAME     groups related questions; one thread per decision
-  -p KEY      attaches a follow-up, inheriting the parent thread
-
-  Ask the whole batch up front under one thread. The human answers them as a
-  set, which is faster for them than a drip of separate interrupts.
-
-ACTS
-
-  An act says what you are asking for. It is orthogonal to the answer shape:
-  the shape is how a reply is collected, the act is what the reply is for.
-
-    act      blocks by default   shape                       what it is for
-    ask      yes                 choice/multi/text/confirm   a decision you need
-    run      yes                 confirm                     approve a command
-    steer    no                  choice, text                what you will do anyway
-    seen     no                  text                        an FYI; human dismisses
-    review   no                  confirm (pass/fail)         a verify block
-    plan     no                  text                        an ordered checklist
-
-  WHETHER A ROW BLOCKS IS YOUR CALL, not the act's. The table is only the
-  default you get by saying nothing; `--blocked` and `--no-block` override it
-  on any row. The act says what you are asking for, the flag says whether you
-  are stopping for it.
-
-  Over-claiming is the failure mode: parking a human on a question you could
-  have answered yourself. It is measured, not policed — your blocked rate is
-  visible in `cursor.blocked`.
-
-  `--wait` on a row you posted with blocked=false is an error, because nothing
-  will ever arrive: watch `cactus --monitor` instead. A persistent act cannot
-  block at all, since it is answered again every time the work is re-checked.
-
-  A steer states what happens anyway. `--chosen LABEL` is required on one and
-  must name a real option: the agent proceeds with it, and a tap redirects.
-  "I am going to use the staging tenant" is a steer. "Which tenant?" is an
-  ask.
-
-  review and plan are persistent. They are born `live`, take a verdict as
-  often as the work is re-checked, and stay live until cleared. Their answer
-  log keeps every verdict, so `answer` is the latest rather than the only one.
-
-  cactus ask "Does the build verify?" --act review -t ship
-  q8
-  cactus review q8 --look-at "the diff" --run "pytest -q" \
-    --pass "0 failures" --fail "any failure" --then "tag the release"
-
-  cactus ask "Release steps" --act plan -t ship
-  q9
-  cactus plan q9 --step "build" --step "test" --step "tag"
-  cactus plan q9 --done 1        # steps are 1-based: this ticks "build";
-                                  # the human can tick it too
-
-  --agent ID names the agent that owns a row. There is NO default, on purpose.
-  A bare pane id is not an identity: herdr treats `session:pane_id` as its
-  last-resort fallback precisely because it never changes, so it outlives the
-  conversation it named and a resumed session inherits rows it never asked for.
-  Pass a RESOLVED identity — the declared session token, not the pane — or
-  leave it unset and the row is simply unowned. It filters, it does not scope:
-  the project is still the key.
-
-  --word SHORT gives a projector the label it derives a board key from. Without
-  it, a board deriving a letter from the question text collides on every row
-  that starts with "check" or "should".
-
-  Long supporting prose goes in --context, which is a separate field from the
-  question text: a surface with a narrow cell shows `text`, and `context`
-  below it.
-
-RECOMMEND
-
-  An agent can recommend an option on any row that has choices:
-
-  cactus ask "Which auth backend?" -c "oidc: existing IdP" -c "local: bcrypt table" \\
-    --recommend oidc --confidence high --why "staging tenant is provisioned"
-
-  --confidence is required with --recommend, one of low / med / high, shown as
-  ○ / ◐ / ●. --why is optional supporting detail for the pick. The TUI marks
-  the recommended option and preselects it, so enter alone submits it — a tap
-  still redirects to anything else.
-
-  A recommend is advisory and still waits for the human. A steer's `--chosen`
-  is not: the agent proceeds with it and a tap redirects afterwards. Use
-  `--chosen` when you are not stopping; use `--recommend` when you are.
+  Current project only, unless --all
 
 POKE
 
+  A poke says the inbox moved, nothing more; the agent decides what it means
+
   cactus poke KEY            nudge the agent that owns this row
-  cactus poke --agent ID     nudge a pane directly
+  cactus poke --agent ID     nudge an agent directly
 
-  A poke carries no instruction. It says the inbox moved and lets the agent
-  decide what that means. The human presses `p` in the TUI; the agent re-reads
-  `cactus feed --json --agent $HERDR_PANE_ID` and acts on what changed.
-
-  The transport is `herdr agent prompt` unless CACTUS_POKE overrides it, with
-  {agent} and {message} substituted per argument and never through a shell.
-  It really does prompt a live agent, so set CACTUS_POKE to something inert
-  before exercising it.
-
-AUTHORING A QUESTION
-
-  The options say what can be chosen. The context says why it is being asked.
-  They are never merged and never restate each other. An option that has to
-  explain itself has not been cut down far enough.
-
-  Options are mile posts, not a menu. Two or three, mutually exclusive, each
-  one a thing that actually happens. "Other" is never an option: if the set
-  does not cover the space, the question is wrong.
-
-  Pruning the option tree is the design work, not a cost to skip. A tap is
-  cheap on purpose, so that asking more is affordable. A wall of prose per
-  question is why agents under-ask.
-
-  Context carries the facts the human cannot see and would otherwise have to
-  go and get:
-
-    what you already tried, and what it cost
-    the measurement, with numbers
-    what breaks under each option
-    what you will do if nobody answers
-
-  Never a summary of the options. Never reassurance. Never an apology for
-  asking.
-
-  ask or steer? If proceeding under any assumption would be unsafe or would
-  waste the work, it is an ask. If you can proceed sensibly without an answer,
-  it is a steer — say what you are going to do and let a tap redirect you.
-  Parking a human on a question you could have answered yourself is the
-  failure mode worth watching, and it is measurable: your blocked rate.
+  The human presses p in the TUI; the poked agent re-reads
+  `cactus feed --json --agent ID` and acts on what changed
+  Transport is `herdr agent prompt` unless CACTUS_POKE overrides it; {agent}
+  and {message} substitute per argument, never through a shell
+  A poke PROMPTS A LIVE AGENT — set CACTUS_POKE to something inert before
+  exercising it
 
 FEED
 
-  A projector — a board, a web face, anything that is not this CLI — reads the
-  whole actionable inbox in one document:
+  The whole actionable inbox as one JSON document, for a projector — a board,
+  a web face, anything that is not this CLI
 
   cactus feed --json
   {"cursor": {"max_id": 41, "max_updated": "...", "count": 12},
    "questions": [{"key": "q7", "act": "review", "agent": "herdr:pane-3",
                   "review": {...}, "steps": [], "answers": [...], ...}]}
 
-  Rows embed their review block, their steps and their full answer log, so a
-  projector never needs a second call. Default scope is every project, since a
-  board renders whatever the human can reach; --here narrows it.
-
-  Poll it by cursor: compare the block against your last value and only re-read
-  rows when it moves. A sidecar write bumps it too, so a ticked step is visible
-  without a separate check.
-
-  Filters: --act NAME (repeatable), --agent ID, -t THREAD, -s STATUS, --here.
-  Exit 3 when nothing matches.
-
-  Answer back through this same CLI — `cactus answer KEY -s LABEL` — rather
-  than writing the database directly. One writer keeps the cursor honest.
+  Rows embed their review block, steps and full answer log — no second call
+  Steps carry idx (0-based) and n (1-based, what `plan --done` takes)
+  Every project by default, since a board renders whatever the human can
+  reach; --here narrows
+  Poll by cursor: re-read rows only when the block moves. A sidecar write, like
+  a ticked step, moves it too
+  Filters: --act NAME (repeatable), --agent ID, -t THREAD, -s STATUS, --here
+  Answer through the CLI, never the database — one writer keeps the cursor
+  honest: `cactus answer KEY -s LABEL`
 
 SCOPE
 
-  Questions record the project they were asked from: the git toplevel, else
-  the working directory. Agent verbs see only the current project. The human
-  surfaces span every project at once.
+  A question records the project it was asked from — the git toplevel, else
+  the working directory. Agent verbs see the current project; human surfaces
+  see every project
 
   cactus where       the resolved project and database path
   cactus projects    projects with live questions
 
+RETIRE
+
+  cactus clear KEY           retire; the transcript stays readable
+  cactus clear -t THREAD     retire a whole thread
+  cactus clear --purge KEY   delete
+
 EXIT CODES
 
-  0  success
-  1  error, including --wait on an act that never blocks
+  0  ok
+  1  error, including --wait on a row that never blocks
   2  --wait timed out
   3  nothing matched
-
-A question is retired with `clear` and stays readable. Answers a human undoes
-return to open, so a key that read answered may read open again; re-read
-rather than caching the verdict if it still matters.
 """
 
 
