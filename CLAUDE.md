@@ -84,7 +84,16 @@ scope.
 - Choice strings split on the *first* colon into label and description; `-c`
   values are taken verbatim and never split on commas.
 - Exit codes are part of the contract: 0 ok, 1 error, 2 `--wait` timeout, 3 no
-  match. `--wait` on an act that never blocks is an error, not a hang.
+  match. `--wait` on an act that never blocks is an error, not a hang — and
+  `cmd_ask` rejects it before calling `Store.ask`, so a doomed `--wait` never
+  leaves an orphan row behind.
+- argparse usage errors (`cactus: error: ...`) exit 1, not argparse's default
+  2 — `_ArgumentParser.error` overrides it, on the main parser and every
+  subparser alike, because 2 is reserved for `--wait` timeout everywhere else.
+- `Store.answer` refuses: a label not among the row's choices (names the
+  valid labels), an empty answer (no selection, no text, no `--skip`), free
+  text on a row posted with `--no-free`, and answering a `cleared` row
+  (names `cactus reopen KEY --agent ID`). All raise `ValueError`, exit 1.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.

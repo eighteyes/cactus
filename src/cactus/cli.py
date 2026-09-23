@@ -189,6 +189,20 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     if context == "-":
         context = sys.stdin.read()
 
+    # Resolve whether this row will block, the same way Store.ask defaults
+    # it, so --wait on a row that will not block is refused before the row
+    # is ever inserted — no orphan row left behind by a rejected --wait.
+    would_block = args.blocked
+    if would_block is None:
+        would_block = DEFAULT_BLOCKED.get(act, True)
+    if args.wait and not would_block:
+        print(
+            f"cactus: --wait needs a blocking row; this one would be posted "
+            f"with blocked=false — drop --wait or pass --blocked",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
     # Required, not defaulted. A pane id is not an identity: herdr's own
     # resolver treats `session:pane_id` as the last-resort fallback precisely
     # because it never changes, so it outlives the conversation it named.
@@ -241,14 +255,6 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         )
     except (KeyError, ValueError) as exc:
         print(f"cactus: {exc}", file=sys.stderr)
-        return EXIT_ERROR
-
-    if args.wait and not q.blocked:
-        print(
-            f"cactus: {q.key} was posted with blocked=false; it is created, "
-            f"watch `cactus --monitor` for its disposition",
-            file=sys.stderr,
-        )
         return EXIT_ERROR
 
     if not args.wait:
@@ -639,8 +645,22 @@ def cmd_where(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
 # ---- parser ---------------------------------------------------------------
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """argparse's usage-error path exits 2; that code is reserved for --wait
+    timeout everywhere else in cactus, so a bad flag has to exit 1 instead.
+
+    `add_subparsers` hands this class down to every subparser it creates
+    (via `parser_class=type(self)`), so `cactus ask --nope` exits 1 the same
+    way `cactus --nope` does.
+    """
+
+    def error(self, message: str) -> "None":  # pragma: no cover - argparse calls this then exits
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_ERROR, f"{self.prog}: error: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _ArgumentParser(
         prog="cactus",
         description="Transitory question/answer interface between agents and a human.",
     )

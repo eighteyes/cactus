@@ -647,11 +647,31 @@ class Store:
                 "an append-only log cannot use — run `cactus migrate` once, "
                 "and restart anything holding an older cactus module"
             )
+        if q.status == "cleared":
+            raise ValueError(
+                f"{key} is cleared — reopen it first: cactus reopen {key} --agent ID"
+            )
         if not q.persistent and q.status == "answered":
             raise AlreadyAnswered(
                 f"{key} was already answered "
                 f"{'with ' + ', '.join(q.answer.selected) if q.answer and q.answer.selected else ''}"
                 f" — undo it first if that verdict should change".replace("  ", " ")
+            )
+        selected = list(selected or [])
+        if selected and q.kind in ("choice", "multi", "confirm"):
+            valid = [c.label for c in q.choices]
+            bad = [s for s in selected if s not in valid]
+            if bad:
+                raise ValueError(
+                    f"{key}: {bad!r} not among its options — valid labels: "
+                    f"{', '.join(valid)}"
+                )
+        if text and not skipped and not q.allow_free and q.kind != "text":
+            raise ValueError(f"{key} was posted with --no-free: it takes no free text")
+        if not selected and not text and not skipped:
+            raise ValueError(
+                f"{key}: refusing an empty answer — give a selection, text, "
+                f"or --skip/--dismiss"
             )
         now = _now()
         status = "live" if q.persistent else "answered"
