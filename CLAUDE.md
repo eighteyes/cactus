@@ -141,8 +141,9 @@ scope.
   triggers submit from `on_list_view_selected`, not from the `enter` binding.
 - The TUI rotates over projects with open questions only; `store.projects()`
   still reports drained ones, which the CLI needs for history.
-- Rail blocks are a fixed 4 rows and the project header a fixed 1, so an arriving
-  or answered question never shifts the others under the reader's eye.
+- Rail blocks are a fixed 4 rows, the project header a fixed 1, and the
+  project strip below it a fixed 1, so an arriving or answered question never
+  shifts the others under the reader's eye.
 - Typing in the TUI is an explicit mode. Auto-focusing the answer input silently
   retargets `j`, `k`, `s`, `c` and the project brackets into the text field.
 - Opening the store applies additive column adds only. The `answers` table
@@ -243,6 +244,9 @@ scope.
   without running. `get --json`/`feed` expose it as `"result"`.
 - `cactus --monitor` requires `--agent ID`; humans use `--tui`/`--watch`
   instead.
+- `#project-strip` lists every project with open/live rows as `label N`,
+  current bracket-highlighted, rebuilt everywhere `_rebuild_project_head` is.
+  A drained project (0 open/live) drops out, same set as `_live_projects`.
 - Threads are agent-scoped: a thread name is only unique within one agent's
   rows, not project-wide. The TUI card and `watch` show `agent/thread`
   wherever they show the thread; `list`/`feed -t NAME --agent ID` narrow to

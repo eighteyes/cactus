@@ -286,6 +286,12 @@ class CactusApp(App[int]):
         background: $panel;
         color: $text;
     }
+    #project-strip {
+        height: 1;
+        padding: 0 1;
+        background: $panel;
+        color: $text-muted;
+    }
     #rail-list {
         height: 1fr;
     }
@@ -415,6 +421,7 @@ class CactusApp(App[int]):
         with Horizontal(id="body"):
             with Vertical(id="rail"):
                 yield Static(id="project-head", markup=False)
+                yield Static(id="project-strip", markup=False)
                 yield RailList(id="rail-list")
             with Vertical(id="main"):
                 yield Static(id="card", markup=False)
@@ -446,10 +453,7 @@ class CactusApp(App[int]):
         empty rail with nothing to do, so it leaves the rotation until an agent
         asks there again.
         """
-        return [
-            r["project"] for r in self.store.projects()
-            if r["open_count"] > 0 or r["live_count"] > 0
-        ]
+        return [r["project"] for r in self._live_projects_rows()]
 
     def _load_questions(self) -> None:
         self.questions = self.store.tree(
@@ -474,6 +478,7 @@ class CactusApp(App[int]):
         self._load_questions()
         self._flash_plan_done()
         self._rebuild_project_head()
+        self._rebuild_project_strip()
         await self._rebuild_rail()
         self._rebuild_card()
         self._rebuild_status_bar()
@@ -523,6 +528,33 @@ class CactusApp(App[int]):
         if live_count:
             counts += f" · {live_count} live"
         head.update(f"{label}  {counts}{switch}")
+
+    def _rebuild_project_strip(self) -> None:
+        """One fixed row listing every project with open rows, current highlighted.
+
+        Fixed height, like the project header above it — a project arriving or
+        draining must not shift the rail blocks under the reader's eye.
+        """
+        strip = self.query_one("#project-strip", Static)
+        rows = self._live_projects_rows()
+        if not rows:
+            strip.update("")
+            return
+        parts = []
+        for r in rows:
+            label = project_label(r["project"])
+            n = r["open_count"] + r["live_count"]
+            text = f"{label} {n}"
+            if r["project"] == self.current_project:
+                text = f"[{text}]"
+            parts.append(text)
+        strip.update(" · ".join(parts))
+
+    def _live_projects_rows(self) -> list[dict[str, Any]]:
+        return [
+            r for r in self.store.projects()
+            if r["open_count"] > 0 or r["live_count"] > 0
+        ]
 
     async def _rebuild_rail(self) -> None:
         listview = self.query_one("#rail-list", ListView)
@@ -1270,6 +1302,7 @@ class CactusApp(App[int]):
         else:
             self.focused_key = None
         self._rebuild_project_head()
+        self._rebuild_project_strip()
         await self._rebuild_rail()
         self._rebuild_card()
         self._rebuild_status_bar()
