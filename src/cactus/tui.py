@@ -9,6 +9,8 @@ Responsibilities:
 - Poll the store's change cursor and refresh the view without losing focus or
   in-progress input.
 - Provide project switching, skip, and clear actions, plus key-hint and count footers.
+- Let a human ask an agent to rewrite a row (`e`) and withdraw that request
+  (`u`) before the agent addresses it.
 """
 
 from __future__ import annotations
@@ -109,6 +111,10 @@ def _card_lines(
         lines.append("")
         lines.append(q.context)
 
+    if q.status == "elaborate":
+        lines.append("")
+        lines.append(f"wants more: {q.elaborate}" if q.elaborate else "wants more (no hint given)")
+
     if q.answers:
         # A persistent row (review/plan) takes repeated verdicts, so the card
         # has to show the current one — without this, "y" then "n" look
@@ -177,18 +183,28 @@ def _card_lines(
             lines.append("enter submits this text alone, or pick above to send both")
 
     lines.append("")
-    hint = _confirm_hint(q) if q.kind == "confirm" else HINTS.get(q.kind, "")
-    extras = []
-    if q.review is not None and q.review.run_cmd:
-        extras.append("C copy   R run   p poke")
-    elif q.agent:
-        extras.append("p poke")
-    if q.act == "plan" and q.steps:
-        extras.append("1-9 toggle step")
-    if q.act == "seen":
-        extras.append("d dismiss")
-    if run_output:
-        extras.append("O open full output")
+    if q.status == "elaborate":
+        # Stopped accepting answers — the pick/type/skip hints above would
+        # promise a key that check_action already refuses.
+        hint = "awaiting rewrite by the agent — no answers accepted"
+        extras = ["c clear", "u withdraw request"]
+        if q.agent:
+            extras.append("p poke")
+    else:
+        hint = _confirm_hint(q) if q.kind == "confirm" else HINTS.get(q.kind, "")
+        extras = []
+        if q.review is not None and q.review.run_cmd:
+            extras.append("C copy   R run   p poke")
+        elif q.agent:
+            extras.append("p poke")
+        if q.act == "plan" and q.steps:
+            extras.append("1-9 toggle step")
+        if q.act == "seen":
+            extras.append("d dismiss")
+        if run_output:
+            extras.append("O open full output")
+        if q.status in ("open", "live"):
+            extras.append("e elaborate")
     lines.append("   ".join([hint, *extras]).strip())
     return "\n".join(lines)
 
@@ -240,6 +256,8 @@ class QuestionBlock(ListItem):
         parts = [q.act, shape]
         if q.status == "live":
             parts.append("live")
+        elif q.status == "elaborate":
+            parts.append("wants more")
         if not q.blocked and q.status == "open":
             parts.append("not blocking")
         if draft:
@@ -354,6 +372,7 @@ class CactusApp(App[int]):
         Binding("[", "prev_project", "PrevProj"),
         Binding("]", "next_project", "NextProj"),
         Binding("u", "undo", "Undo"),
+        Binding("e", "elaborate", "Elaborate"),
         Binding("p", "poke", "Poke"),
         Binding("C", "copy_command", "Copy"),
         Binding("R", "run_command", "Run"),
@@ -389,6 +408,9 @@ class CactusApp(App[int]):
         self.run_output = {}
         self.run_state = {}
         self.free_text_mode = False
+        # Set while the input is open for `e`'s prompt, so on_input_submitted
+        # and escape route to the elaborate request instead of an answer.
+        self.elaborating = False
         self.last_cursor: tuple[int, str, int] = (-1, "", -1)
         self._rebuilding = False
         self._synced_key: str | None = None
@@ -650,6 +672,15 @@ class CactusApp(App[int]):
                 return bool(self.undo_stack)
             return False
 
+        if q.status == "elaborate":
+            # Stopped accepting answers until `edit` addresses the request —
+            # only navigation, clearing, undo (withdrawing the request), and
+            # poking the owning agent still mean anything here.
+            return action in (
+                "focus_next", "focus_prev", "prev_project", "next_project",
+                "clear_focused", "undo", "poke", "refresh_view", "quit_app",
+            )
+
         always = {
             "focus_next", "focus_prev", "prev_project", "next_project",
             "clear_focused", "skip", "submit", "leave_input",
@@ -667,6 +698,8 @@ class CactusApp(App[int]):
             return bool(q.agent)
         if action == "undo":
             return bool(self.undo_stack)
+        if action == "elaborate":
+            return q.status in ("open", "live")
         if action == "toggle_free_text":
             return bool(q.allow_free)
         if action in ("confirm_yes", "confirm_no"):
@@ -966,7 +999,7 @@ class CactusApp(App[int]):
         # completely unrelated action until the next j/k. Runs ahead of
         # binding dispatch, so an action fired by this same key still gets
         # to set its own fresh flash afterwards.
-        if isinstance(event, events.Key) and not self.free_text_mode:
+        if isinstance(event, events.Key) and not self.free_text_mode and not self.elaborating:
             self._clear_flash()
         await super().on_event(event)
 
@@ -978,7 +1011,7 @@ class CactusApp(App[int]):
         binding from firing, so the press would otherwise land in silence.
         This runs after bindings, so an enabled `u`/`y`/`n` never reaches here.
         """
-        if self.free_text_mode:
+        if self.free_text_mode or self.elaborating:
             return
         if event.key == "u" and not self.undo_stack:
             self.flash = "nothing to undo"
@@ -1027,6 +1060,7 @@ class CactusApp(App[int]):
         self.focused_key = None
         self.multi_selected = set()
         self.free_text_mode = False
+        self.elaborating = False
         self._hide_input()
         await self._reload(force=True)
         self._sync_input_focus()
@@ -1083,7 +1117,56 @@ class CactusApp(App[int]):
             self.query_one("#rail-list", ListView).focus()
         self._rebuild_status_bar()
 
+    def action_elaborate(self) -> None:
+        """`e`: open the input under the `elaborate:` prompt (q212).
+
+        Enter (with or without text) submits the request; escape cancels —
+        both routed through `elaborating`, the same way `free_text_mode`
+        routes a plain free-text answer.
+        """
+        q = self._current_question()
+        if q is None or q.status not in ("open", "live"):
+            return
+        self.elaborating = True
+        inp = self.query_one("#answer-input", Input)
+        inp.value = ""
+        inp.placeholder = "elaborate: — enter to send, esc to cancel"
+        inp.display = True
+        inp.focus()
+
+    async def _submit_elaborate(self, q: Question, hint: str) -> None:
+        try:
+            self.store.elaborate_request(q.key, hint=hint or None)
+        except (KeyError, ValueError) as exc:
+            self.flash = str(exc)
+        else:
+            self.flash = f"{q.key} — elaborate requested"
+        self.elaborating = False
+        self._hide_input()
+        await self._reload(force=True)
+        self._synced_key = None
+        self._sync_input_focus()
+        self.query_one("#rail-list", ListView).focus()
+        self._rebuild_status_bar()
+
+    async def _withdraw_elaborate(self, q: Question) -> None:
+        try:
+            self.store.unelaborate(q.key)
+        except (KeyError, ValueError) as exc:
+            self.flash = str(exc)
+        else:
+            self.flash = f"{q.key} — elaborate request withdrawn"
+        await self._reload(force=True)
+        self._rebuild_status_bar()
+
     def action_leave_input(self) -> None:
+        if self.elaborating:
+            self.elaborating = False
+            self._hide_input()
+            self._redraw_active()
+            self._rebuild_status_bar()
+            self.query_one("#rail-list", ListView).focus()
+            return
         q = self._current_question()
         self.free_text_mode = False
         if q is not None:
@@ -1102,6 +1185,9 @@ class CactusApp(App[int]):
         if q is None:
             return
         value = event.value.strip()
+        if self.elaborating:
+            await self._submit_elaborate(q, value)
+            return
         if q.act == "plan":
             await self._submit_plan(q, typed=value)
             return
@@ -1329,7 +1415,15 @@ class CactusApp(App[int]):
         even though it quietly consumed the stack underneath. Every exit from
         this method now leaves the status bar current, whether it restored a
         row or ran out of stack trying.
+
+        On a row awaiting elaboration, `u` means something else entirely —
+        withdraw the request itself (`Store.unelaborate`) rather than pop the
+        answer-undo stack, which this row was never pushed onto.
         """
+        q = self._current_question()
+        if q is not None and q.status == "elaborate":
+            await self._withdraw_elaborate(q)
+            return
         while self.undo_stack:
             entry = self.undo_stack.pop()
             try:
