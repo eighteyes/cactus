@@ -30,8 +30,8 @@ EXIT_EMPTY = 3
 AGENT_HELP = """\
 cactus — ask a human without stopping work
 
-Ask early, keep working, collect at the fork. The inbox is durable and scoped
-to the project: any agent in the repository reads any answer, in any session
+The inbox is durable and project-scoped; any agent in the repository reads
+any answer, in any session
 
 THE ARC
 
@@ -57,20 +57,18 @@ ASK
   text       no choices             free entry
 
   A choice splits on its first colon: label before, description after
-  Free text rides alongside a pick unless --no-free, so an answer may carry a
-  selection, text, or both
+  An answer carries a selection, typed text, or both; --no-free drops the text
 
 AUTHORING
 
-  Options say what can be chosen; context says why it is asked. Never merged,
-  never restating each other
+  Options say what can be chosen; context says why it is asked
 
-  Options are mile posts, not a menu:
+  Options:
     two or three, mutually exclusive, each a thing that actually happens
-    no "Other" — a set that misses the space means the question is wrong
-    an option that has to explain itself is not cut down far enough
+    no "Other"; reframe the question when the set misses the space
+    cut each option until it needs no explanation
 
-  Context carries what the human cannot see and would otherwise go and get:
+  Context carries what the human cannot see:
     what you tried, and what it cost
     the measurement, with numbers
     what breaks under each option
@@ -80,12 +78,9 @@ AUTHORING
   Leave out restated labels, reasoning chains, reassurance and apology
   Long context reads from stdin: --context -
 
-  Pruning the option tree is the design work. A tap is cheap so that asking
-  more is affordable; a wall of prose per question is why agents under-ask
-
 BLOCKING
 
-  Block only when blocked — ask now, collect later
+  Ask without --wait and collect later; --wait only when the work cannot go on
 
   cactus ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
 
@@ -93,8 +88,7 @@ BLOCKING
   the human declined
   Pair --wait with --timeout, and treat exit 2 as "proceed on the stated
   default", not as a failure
-  --wait on a non-blocking row is an error: nothing will ever arrive, so watch
-  --monitor instead
+  --wait on a non-blocking row is an error; watch --monitor instead
 
 ACTS
 
@@ -108,10 +102,9 @@ ACTS
     review   no                  confirm (pass/fail)         a verify block
     plan     no                  text                        a checklist
 
-  Blocking is your call, not the act's: the table is the default, and
-  --blocked / --no-block override it on any row
-  Over-claiming is the failure mode — parking a human on a question you could
-  have answered yourself. It is measured, not policed: cursor.blocked
+  The table gives defaults; --blocked / --no-block override them on any row
+  Block only on questions you cannot answer yourself; cursor.blocked reports
+  your blocked rate
 
   steer — what happens anyway. --chosen LABEL is required and must name a real
   option; you proceed with it and a tap redirects. "Using the staging tenant"
@@ -140,8 +133,7 @@ ACTS
 
 RECOMMEND
 
-  Recommend a pick when you have one — you still wait, and the human accepts
-  with one key
+  Recommend a pick when you have one; the row still waits for the human
 
   cactus ask "Which auth backend?" \\
     -c "oidc: existing IdP" -c "local: bcrypt table" \\
@@ -153,15 +145,14 @@ RECOMMEND
   --why TEXT           optional, one line
 
   The TUI marks the pick and preselects it: enter alone submits, a tap redirects
-  Recommend, not chosen — stopping takes --recommend, proceeding takes a steer
-  with --chosen
+  Waiting on the human: --recommend. Proceeding anyway: a steer with --chosen
 
 OWNERSHIP
 
   --agent ID names the owner of a row: a RESOLVED identity, the declared
   session token, never a bare pane id
 
-  No default, on purpose. A pane id outlives the conversation it named, so a
+  --agent has no default. A pane id outlives the conversation it named, and a
   resumed session would inherit rows it never asked for. Unset means unowned
   --agent filters; the project still scopes
   --word SHORT is the label a projector derives a board key from; without it,
@@ -169,8 +160,7 @@ OWNERSHIP
 
 THREADS
 
-  One thread per decision; ask the whole batch up front so the human answers a
-  set, not a drip of interrupts
+  One thread per decision; post the whole batch up front
 
   -t NAME     group related questions
   -p KEY      attach a follow-up; it inherits the parent's thread
@@ -187,8 +177,7 @@ COLLECT
 
 MONITOR
 
-  One line per change, flushed as it happens — point a line watcher at it and
-  keep working
+  One line per change, flushed as it happens; point a line watcher at it
 
   cactus --monitor
 
@@ -203,8 +192,8 @@ MONITOR
   verdict    a persistent row took another verdict
   stepped    a plan step was ticked or unticked
   gone       purged
-  A watcher listening only for `answered` cannot tell a quiet inbox from a
-  withdrawn question
+  Handle every event, not only `answered`; a withdrawn question otherwise reads
+  as a quiet inbox
 
   --all         every project, each line prefixed with its label
   --json        one object per line: the question plus an event field
@@ -215,7 +204,7 @@ MONITOR
 
 POKE
 
-  A poke says the inbox moved, nothing more; the agent decides what it means
+  A poke carries no instruction; the agent decides what the moved inbox means
 
   cactus poke KEY            nudge the agent that owns this row
   cactus poke --agent ID     nudge an agent directly
@@ -229,23 +218,21 @@ POKE
 
 FEED
 
-  The whole actionable inbox as one JSON document, for a projector — a board,
-  a web face, anything that is not this CLI
+  The whole actionable inbox as one JSON document, for a board or other
+  projector
 
   cactus feed --json
   {"cursor": {"max_id": 41, "max_updated": "...", "count": 12},
    "questions": [{"key": "q7", "act": "review", "agent": "herdr:pane-3",
                   "review": {...}, "steps": [], "answers": [...], ...}]}
 
-  Rows embed their review block, steps and full answer log — no second call
+  Rows embed their review block, steps and full answer log
   Steps carry idx (0-based) and n (1-based, what `plan --done` takes)
-  Every project by default, since a board renders whatever the human can
-  reach; --here narrows
+  Every project by default; --here narrows
   Poll by cursor: re-read rows only when the block moves. A sidecar write, like
   a ticked step, moves it too
   Filters: --act NAME (repeatable), --agent ID, -t THREAD, -s STATUS, --here
-  Answer through the CLI, never the database — one writer keeps the cursor
-  honest: `cactus answer KEY -s LABEL`
+  Answer with `cactus answer KEY -s LABEL`, never by writing the database
 
 SCOPE
 
