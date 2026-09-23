@@ -180,7 +180,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     # Defaulting to $HERDR_PANE_ID would address a row to whatever
     # conversation later occupies that pane. The writer is inside the pane
     # and knows its resolved id, so it states it explicitly every time.
-    if args.agent is None:
+    if not (args.agent or "").strip():
         print(
             "cactus: ask needs --agent ID, the declared session identity — "
             "never a pane id",
