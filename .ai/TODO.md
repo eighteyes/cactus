@@ -15,7 +15,10 @@
 
 - [x] Monitor emitted `answered` twice for q114. Root cause: `Store.answer` ran its INSERT and UPDATE as two autocommits; another row's write in the gap woke the poller mid-flight. Now one transaction. 9ebfe7d. q132.
 - [x] Cleared rows restore: `cactus reopen KEY --agent ID`; persistent rows return live with steps and verdicts; TUI `u` reachable after clearing the last row. 8486310. q132.
-- [ ] TUI undo walks back one level only; `u` past the latest action does nothing. Deferred from 8486310.
-- [ ] `cactus plan KEY --step X` replaces every step and carries a stale done flag onto the new list. user-monkey pass. q133.
-- [ ] A second `cactus review KEY --pass X` wipes `--run` set by the first call. user-monkey pass. q133.
-- [ ] 39 further surprises in .ai/tests/user-monkey-cactus-cli.md, untriaged. q134.
+- [x] TUI undo: `u` walks the full stack; a stack drained by purged rows now flashes "nothing to undo". d85fa85.
+- [x] `plan --step` appends; `--reset-steps` rewrites and clears ticks. q136. dce0507.
+- [x] `review` merges fields; `--run ""` clears one. cf6d198.
+- [x] user-monkey triage: .ai/tests/user-monkey-triage.md. Fixed high, medium bugs and all ux (q137): 62e8fdc, de3350b, cf01a1d, 774bb52. Monitor undo reads `reopened`: dce0507.
+- [x] Rail click focuses instead of answering. a977caa.
+- [ ] #34 keys after `i` landing as hotkeys: not reproduced under Pilot; may need real terminal timing.
+- [ ] #26 poke to an unknown agent: installed herdr exits 1, so cactus already exits 1; premise did not hold.

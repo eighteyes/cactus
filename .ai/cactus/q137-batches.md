@@ -1,6 +1,6 @@
 # q137 — Which triage batches get fixed next?
 
-status: answered
+status: retired
 act: ask
 kind: multi
 thread: next
