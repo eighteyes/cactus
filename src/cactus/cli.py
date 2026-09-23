@@ -40,15 +40,18 @@ WORKFLOW (required)
 SYNOPSIS
   cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [options]
   cactus get KEY... [-w] [--timeout S]
-  cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID]
+  cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
   cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X]
   cactus plan KEY [--step TEXT]... [--done N] [--undone N]
   cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
   cactus poke KEY | --agent ID
-  cactus feed --json [--act A] [--agent ID] [-t T] [-s S] [--here]
-  cactus --monitor [--agent ID] [--all] [--json] [--replay] [--interval N]
+  cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
+  cactus --monitor [--agent ID] [SCOPE] [--all] [--json] [--replay]
+                   [--interval N]
   cactus where | projects | threads
+
+  SCOPE  --workspace ID | --tab ID | --pane ID
 
 ACTS
   act      blocks   shape
@@ -72,9 +75,14 @@ ASK OPTIONS
   --context TEXT | -
   --no-free
   -t THREAD | -p KEY
-  --word SHORT               board key
+  --word SHORT               board key; 16 chars max
+  --title TEXT               button label; 60 chars max
   --by NAME                  default $CACTUS_AGENT
   --wait --timeout S
+
+STAMPS
+  workspace tab pane session   from HERDR_WORKSPACE_ID HERDR_TAB_ID
+                                     HERDR_PANE_ID HERDR_SESSION at ask
 
 EVENTS
   asked  answered  skipped  cleared  reopened  verdict  stepped  gone
@@ -86,6 +94,7 @@ ENVIRONMENT
   CACTUS_DB     database path
   CACTUS_POKE   poke transport; {agent} {message}. Default prompts a live agent
   CACTUS_AGENT  default --by
+  HERDR_*       scope stamps; see STAMPS
 """
 
 
@@ -188,6 +197,16 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         )
         return EXIT_ERROR
 
+    # Scope stamps, not arguments: herdr resolves a pane to an identity only
+    # in the context of its session, so pane and session are stamped together
+    # from the environment the writer is actually running in. These are what
+    # let a projector scope a row and what a re-home path uses to find a row
+    # whose agent no longer exists (a session token rotates on `claude --resume`).
+    workspace = os.environ.get("HERDR_WORKSPACE_ID") or None
+    tab = os.environ.get("HERDR_TAB_ID") or None
+    pane = os.environ.get("HERDR_PANE_ID") or None
+    session = os.environ.get("HERDR_SESSION") or None
+
     try:
         q = store.ask(
             text,
@@ -197,6 +216,11 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             act=act,
             agent=args.agent or None,
             word=args.word,
+            workspace=workspace,
+            tab=tab,
+            pane=pane,
+            session=session,
+            title=args.title,
             chosen=args.chosen,
             blocked=args.blocked,
             choices=choices,
@@ -278,6 +302,9 @@ def cmd_list(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         all_projects=args.all,
         acts=args.act,
         agent=args.agent,
+        workspace=args.workspace,
+        tab=args.tab,
+        pane=args.pane,
     )
     if not questions:
         if args.json:
@@ -443,6 +470,9 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         all_projects=not args.here,
         acts=args.act,
         agent=args.agent,
+        workspace=args.workspace,
+        tab=args.tab,
+        pane=args.pane,
     )
     mid, mts, count = store.cursor()
     # Per-agent rollup of rows still waiting on a human. A board paints a cell
@@ -584,6 +614,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--interval", type=float, default=1.0,
                    help="with --monitor, seconds between polls (default: 1.0)")
     p.add_argument("--agent", help="with --monitor, only events for this agent's rows")
+    p.add_argument("--workspace", help="with --monitor, only events for this workspace id")
+    p.add_argument("--tab", help="with --monitor, only events for this tab id")
+    p.add_argument("--pane", help="with --monitor, only events for this pane id")
     p.add_argument("--here", action="store_true",
                    help="with --tui/--watch, scope to the current project only")
     p.add_argument("--json", action="store_true", help="machine-readable output")
@@ -616,6 +649,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="required: owning agent, a RESOLVED identity — not a bare pane id")
     ask.add_argument("--word",
                      help="short label a projector derives its key from")
+    ask.add_argument("--title",
+                     help="short button label for a board with no room for the question")
     ask.add_argument("--chosen",
                      help="the option that happens anyway unless a tap redirects")
     ask.add_argument("--recommend", action="append",
@@ -654,6 +689,9 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--act", action="append", choices=list(ACTS),
                     help="only this act, repeatable")
     ls.add_argument("--agent", help="only rows owned by this agent/pane")
+    ls.add_argument("--workspace", help="only rows stamped with this workspace id")
+    ls.add_argument("--tab", help="only rows stamped with this tab id")
+    ls.add_argument("--pane", help="only rows stamped with this pane id")
     ls.add_argument("-s", "--status", default="open",
                     choices=["open", "answered", "cleared", "any"])
     ls.add_argument("--all", action="store_true", help="every project, not just this one")
@@ -682,6 +720,9 @@ def build_parser() -> argparse.ArgumentParser:
     fd.add_argument("--act", action="append", choices=list(ACTS),
                     help="only this act, repeatable")
     fd.add_argument("--agent", help="only rows owned by this agent/pane")
+    fd.add_argument("--workspace", help="only rows stamped with this workspace id")
+    fd.add_argument("--tab", help="only rows stamped with this tab id")
+    fd.add_argument("--pane", help="only rows stamped with this pane id")
     fd.add_argument("-t", "--thread")
     fd.add_argument("-s", "--status", default="open,live",
                     help="statuses to include, comma-separated, or 'any'")
@@ -784,6 +825,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 interval=args.interval,
                 replay=args.replay,
                 agent=args.agent,
+                workspace=args.workspace,
+                tab=args.tab,
+                pane=args.pane,
             )
         if args.command is None:
             parser.print_help()

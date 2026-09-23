@@ -143,11 +143,18 @@ def _emit_gone(key: str, *, as_json: bool) -> None:
         print(f"{key}  gone", flush=True)
 
 
-def _snapshot(questions: Iterable[Question]) -> dict[str, tuple[str | None, tuple[Any, ...]]]:
-    # The owning agent travels with the signature, not just the row's current
-    # fields: a purge drops the row before a `gone` event can read its agent
-    # off it, so `--agent` filtering for `gone` reads it back from here.
-    return {q.key: (q.agent, _signature(q)) for q in questions}
+def _scope_of(q: Question) -> tuple[str | None, str | None, str | None, str | None]:
+    return (q.agent, q.workspace, q.tab, q.pane)
+
+
+def _snapshot(
+    questions: Iterable[Question],
+) -> dict[str, tuple[tuple[str | None, ...], tuple[Any, ...]]]:
+    # The owning scope travels with the signature, not just the row's current
+    # fields: a purge drops the row before a `gone` event can read its agent,
+    # workspace, tab, or pane off it, so filtering for `gone` reads it back
+    # from here.
+    return {q.key: (_scope_of(q), _signature(q)) for q in questions}
 
 
 def run_monitor(
@@ -159,6 +166,9 @@ def run_monitor(
     interval: float = DEFAULT_INTERVAL,
     replay: bool = False,
     agent: str | None = None,
+    workspace: str | None = None,
+    tab: str | None = None,
+    pane: str | None = None,
 ) -> int:
     """Stream inbox transitions until interrupted. Returns a process exit code.
 
@@ -167,21 +177,27 @@ def run_monitor(
     a watcher that only hears about answers cannot tell a silent inbox from a
     question that was withdrawn.
 
-    `agent`, when given, narrows what is emitted to that agent's own rows —
-    the poll itself still spans every agent, because a `gone` event for a
-    purged row has to be judged against the owner recorded in `seen`, not
-    against a row that no longer exists to ask.
+    `agent`, `workspace`, `tab`, and `pane`, when given, narrow what is emitted
+    to rows stamped with that value — the poll itself still spans every row,
+    because a `gone` event for a purged row has to be judged against the scope
+    recorded in `seen`, not against a row that no longer exists to ask.
     """
     def fetch() -> list[Question]:
         return store.list(project=project, status=None, all_projects=all_projects)
 
-    def owned(owner: str | None) -> bool:
-        return agent is None or owner == agent
+    def owned(scope: tuple[str | None, str | None, str | None, str | None]) -> bool:
+        owner, ws, tb, pn = scope
+        return (
+            (agent is None or owner == agent)
+            and (workspace is None or ws == workspace)
+            and (tab is None or tb == tab)
+            and (pane is None or pn == pane)
+        )
 
     current = fetch()
     if replay:
         for q in current:
-            if owned(q.agent):
+            if owned(_scope_of(q)):
                 _emit(q, _arrival_event(q), as_json=as_json, show_project=all_projects)
     seen = _snapshot(current)
     cursor = store.cursor()
@@ -201,13 +217,13 @@ def run_monitor(
                 before = prev[1] if prev else None
                 if before == signature:
                     continue
-                if owned(q.agent):
+                if owned(_scope_of(q)):
                     event = _arrival_event(q) if before is None else _transition_event(before, q)
                     _emit(q, event, as_json=as_json, show_project=all_projects)
-                seen[q.key] = (q.agent, signature)
+                seen[q.key] = (_scope_of(q), signature)
             for key in [k for k in seen if k not in live]:
-                owner, _ = seen[key]
-                if owned(owner):
+                scope, _ = seen[key]
+                if owned(scope):
                     _emit_gone(key, as_json=as_json)
                 del seen[key]
     except KeyboardInterrupt:

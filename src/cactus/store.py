@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS questions (
     act          TEXT    NOT NULL DEFAULT 'ask',
     agent        TEXT,
     word         TEXT,
+    workspace    TEXT,
+    tab          TEXT,
+    pane         TEXT,
+    session      TEXT,
+    title        TEXT,
     chosen       TEXT,
     blocked      INTEGER NOT NULL DEFAULT 1,
     choices      TEXT    NOT NULL DEFAULT '[]',
@@ -258,6 +263,11 @@ class Question:
     act: str
     agent: str | None
     word: str | None
+    workspace: str | None
+    tab: str | None
+    pane: str | None
+    session: str | None
+    title: str | None
     chosen: str | None
     blocked: bool
     choices: list[Choice]
@@ -292,6 +302,11 @@ class Question:
             "act": self.act,
             "agent": self.agent,
             "word": self.word,
+            "workspace": self.workspace,
+            "tab": self.tab,
+            "pane": self.pane,
+            "session": self.session,
+            "title": self.title,
             "chosen": self.chosen,
             "blocked": self.blocked,
             "choices": [c.as_dict() for c in self.choices],
@@ -364,6 +379,20 @@ class Store:
             self.conn.execute("ALTER TABLE questions ADD COLUMN confidence TEXT")
         if "recommend_why" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN recommend_why TEXT")
+        # Scope stamps for projectors and for re-homing a row whose agent no
+        # longer exists (a session token rotates on `claude --resume`). `pane`
+        # and `session` are stamped together: herdr only resolves a pane to an
+        # identity in the context of the session that owns it.
+        if "workspace" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN workspace TEXT")
+        if "tab" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN tab TEXT")
+        if "pane" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN pane TEXT")
+        if "session" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN session TEXT")
+        if "title" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN title TEXT")
 
         # NOT called here. Rebuilding `answers` is destructive-shaped and
         # changes the schema under any process that already imported the old
@@ -465,6 +494,11 @@ class Store:
         act: str = "ask",
         agent: str | None = None,
         word: str | None = None,
+        workspace: str | None = None,
+        tab: str | None = None,
+        pane: str | None = None,
+        session: str | None = None,
+        title: str | None = None,
         chosen: str | None = None,
         blocked: bool | None = None,
         choices: Sequence[Choice] | None = None,
@@ -486,6 +520,13 @@ class Store:
             raise ValueError(
                 f"act={act!r} accepts kind {ACT_SHAPES[act]}, got {kind!r}"
             )
+        if word is not None and len(word) > 16:
+            raise ValueError(
+                "--word is at most 16 characters: a board walks its letters "
+                "for collision fallback"
+            )
+        if title is not None and len(title) > 60:
+            raise ValueError("--title is at most 60 characters")
         choices = list(choices or [])
         if kind in ("choice", "multi") and not choices:
             raise ValueError(f"kind={kind!r} requires at least one choice")
@@ -553,13 +594,14 @@ class Store:
             """
             INSERT INTO questions
                 (key, project, cwd, thread, parent_id, text, kind, act, agent,
-                 word, chosen, blocked, choices, allow_free, recommend,
-                 confidence, recommend_why, context, asked_by,
-                 status, created_at, updated_at)
-            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 word, workspace, tab, pane, session, title, chosen, blocked,
+                 choices, allow_free, recommend, confidence, recommend_why,
+                 context, asked_by, status, created_at, updated_at)
+            VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project, cwd, thread, parent_id, text, kind, act, agent, word,
+                workspace, tab, pane, session, title,
                 chosen, 1 if blocked else 0,
                 json.dumps([c.as_dict() for c in choices]),
                 1 if allow_free else 0,
@@ -807,6 +849,9 @@ class Store:
         keys: Sequence[str] | None = None,
         acts: Sequence[str] | None = None,
         agent: str | None = None,
+        workspace: str | None = None,
+        tab: str | None = None,
+        pane: str | None = None,
         limit: int | None = None,
     ) -> list[Question]:
         where, params = self._scope_where(
@@ -818,6 +863,15 @@ class Store:
         if agent is not None:
             where.append("agent = ?")
             params.append(agent)
+        if workspace is not None:
+            where.append("workspace = ?")
+            params.append(workspace)
+        if tab is not None:
+            where.append("tab = ?")
+            params.append(tab)
+        if pane is not None:
+            where.append("pane = ?")
+            params.append(pane)
         if status:
             statuses = [status] if isinstance(status, str) else list(status)
             where.append("status IN (%s)" % ",".join("?" * len(statuses)))
@@ -874,6 +928,9 @@ class Store:
         all_projects: bool = False,
         acts: Sequence[str] | None = None,
         agent: str | None = None,
+        workspace: str | None = None,
+        tab: str | None = None,
+        pane: str | None = None,
     ) -> list[Question]:
         """Questions in parent-before-child order, each carrying its `depth`.
 
@@ -883,6 +940,7 @@ class Store:
         items = self.list(
             project=project, thread=thread, status=status,
             all_projects=all_projects, acts=acts, agent=agent,
+            workspace=workspace, tab=tab, pane=pane,
         )
         by_id = {q.id: q for q in items}
         children: dict[int | None, list[Question]] = {}
@@ -1030,6 +1088,11 @@ class Store:
             act=row["act"],
             agent=row["agent"],
             word=row["word"],
+            workspace=row["workspace"],
+            tab=row["tab"],
+            pane=row["pane"],
+            session=row["session"],
+            title=row["title"],
             chosen=row["chosen"],
             blocked=bool(row["blocked"]),
             choices=[Choice.parse(c) for c in json.loads(row["choices"] or "[]")],
