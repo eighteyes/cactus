@@ -455,7 +455,7 @@ class CactusApp(App[int]):
             if all_done and q.key not in self._plan_all_done:
                 self._plan_all_done.add(q.key)
                 if q.key == self.focused_key:
-                    self.flash = "all done — enter to close"
+                    self.flash = "all done — c to close"
             elif not all_done:
                 self._plan_all_done.discard(q.key)
 
@@ -932,6 +932,9 @@ class CactusApp(App[int]):
         if q is None:
             return
         value = event.value.strip()
+        if q.act == "plan":
+            await self._submit_plan(q, typed=value)
+            return
         if q.kind == "text":
             if not value:
                 self.flash = "empty — type an answer, or esc then s to skip"
@@ -1024,21 +1027,31 @@ class CactusApp(App[int]):
             self.flash = self._pick_hint(q)
             self._rebuild_status_bar()
 
-    async def _submit_plan(self, q: Question) -> None:
-        """Enter on a plan row closes it once every step is done, and otherwise flashes.
+    async def _submit_plan(self, q: Question, typed: str | None = None) -> None:
+        """Enter on a plan row records typed text as a verdict; it never closes the row.
 
-        Free text never opens from here — `i` still reaches it — because a
-        plan collects no answer of its own, and enter's job on this row is to
-        retire it once nothing is left open.
+        `typed` carries the Input widget's own value when this fires from
+        `on_input_submitted` (the row wasn't focused there yet, so the pending
+        draft cannot be trusted); the rail's enter falls back to the draft.
+        Closing is `c`'s job — see the CLAUDE.md invariant this file keeps.
         """
-        open_count = sum(1 for st in q.steps if not st.done)
-        if q.steps and open_count == 0:
-            self.store.clear(keys=[q.key], all_projects=True)
-            self._push_undo(q.key, "cleared", [], self.pending_text or None)
-            self._plan_all_done.discard(q.key)
-            await self._advance_after(q.key)
+        text = (typed if typed is not None else self.pending_text).strip()
+        if text:
+            self.store.answer(q.key, selected=[], text=text, skipped=False)
+            self._push_undo(q.key, "noted", [], text)
+            self.pending_text = ""
+            self.free_text_mode = False
+            self._hide_input()
+            self.flash = "noted"
+            self._redraw_active()
+            self._rebuild_status_bar()
+            self.query_one("#rail-list", ListView).focus()
             return
-        self.flash = f"{open_count} steps open — i for free text"
+        open_count = sum(1 for st in q.steps if not st.done)
+        self.flash = (
+            f"{open_count} steps open — i for free text" if open_count
+            else "all steps done — c to clear"
+        )
         self._rebuild_status_bar()
 
     def _pick_hint(self, q: Question) -> str:

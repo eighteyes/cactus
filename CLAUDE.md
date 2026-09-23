@@ -128,9 +128,9 @@ scope.
 - `cactus plan --done`/`--undone` take a 1-based step number at the CLI; the
   store's `idx` stays 0-based underneath, and `Step.as_dict` carries both
   (`idx` and `n = idx + 1`) so a consumer never has to offset it itself.
-- Enter on a plan row closes it once every step is done, using the same
-  `clear` path as `c`, and otherwise only flashes — it never opens free text
-  on a plan row, unlike every other kind. `i` still does.
+- Enter on a plan row records typed text as a verdict via `Store.answer` and
+  never closes the row; `c` is the only close. A lost note is worse than a row
+  left open, and an append-only verdict log is what a plan is for.
 - An empty multi submit — nothing toggled, nothing typed — is refused with a
   flash rather than stored, so a stray enter cannot record an answer nobody chose.
 - `cli.cmd_ask` refuses a missing `--agent` with exit 1 before calling
