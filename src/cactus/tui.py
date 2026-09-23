@@ -331,6 +331,9 @@ class CactusApp(App[int]):
     def __init__(self, store: Store, project: str | None = None) -> None:
         super().__init__()
         self.store = store
+        # Route a record-write failure to the status line instead of stderr,
+        # which a Textual screen would otherwise swallow or corrupt.
+        self.store.record_warning = self._on_record_warning
         self.scoped_project = project
         self.current_project: str | None = project
         self.questions: list[Question] = []
@@ -684,6 +687,10 @@ class CactusApp(App[int]):
         else:
             self.flash = f"full output: {spill(lines, key=q.key)}"
         self._rebuild_status_bar()
+
+    def _on_record_warning(self, message: str) -> None:
+        """Store.record_warning hook: surface a failed record write as a flash."""
+        self.flash = message
 
     async def action_dismiss(self) -> None:
         """Dismiss a seen row — it wanted acknowledgement, not an answer."""

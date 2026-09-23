@@ -90,11 +90,16 @@ EVENTS
 EXIT STATUS
   0 ok   1 error   2 --wait timeout   3 no match
 
+FILES
+  .ai/cactus/qN-SLUG.md   decision record, rewritten on each answer, undo,
+                          verdict, clear; commit it
+
 ENVIRONMENT
-  CACTUS_DB     database path
-  CACTUS_POKE   poke transport; {agent} {message}. Default prompts a live agent
-  CACTUS_AGENT  default --by
-  HERDR_*       scope stamps; see STAMPS
+  CACTUS_DB       database path
+  CACTUS_POKE     poke transport; {agent} {message}. Default prompts a live agent
+  CACTUS_AGENT    default --by
+  CACTUS_RECORDS  0 disables records
+  HERDR_*         scope stamps; see STAMPS
 """
 
 

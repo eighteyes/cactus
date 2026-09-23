@@ -148,3 +148,9 @@ scope.
   emission is filtered. `_snapshot` carries each row's owner alongside its
   signature so a `gone` event, read after the row is already deleted, can
   still be judged against the agent that owned it.
+- Decision records (`record.py`) are written by `Store` after the DB commit,
+  in `answer`, `clear`, and `reopen` only — never on `ask` or `purge` — and
+  fail soft: any write error is a warning, not a rollback. Rendering is
+  idempotent per row state. `CACTUS_RECORDS=0` disables writing; tests must
+  set it or run inside a temp git repo, since a record lands in the row's
+  *project root*, not the caller's scratch DB.

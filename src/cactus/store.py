@@ -6,6 +6,7 @@ Responsibilities:
 - Create, read, answer, and clear questions and their threaded follow-ups.
 - Expose a change cursor so the TUI and watch feed can poll cheaply.
 - Keep every read and write safe for concurrent agent writers via WAL mode.
+- Write a decision record (record.py) after every state change, fail-soft.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 KINDS = ("choice", "multi", "text", "confirm")
 STATUSES = ("open", "live", "answered", "cleared")
@@ -351,6 +352,11 @@ class Store:
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.executescript(INDEXES)
+        # Set by a human surface (the TUI) that has somewhere better than
+        # stderr to put a record-write failure — its flash/status line.
+        # Unset, a failure goes to stderr, which is the correct default for
+        # every other caller (the CLI, a script).
+        self.record_warning: Callable[[str], None] | None = None
 
     def _migrate(self) -> None:
         """Bring a qaui-era database up to the current schema.
@@ -662,6 +668,7 @@ class Store:
         )
         result = self.get(key)
         assert result is not None
+        self._record(result, event="answer")
         return result
 
     def clear(
@@ -694,8 +701,21 @@ class Store:
             where.append("status = 'open'")
         else:
             where.append("status != 'cleared'")
-        sql = "UPDATE questions SET status = 'cleared', updated_at = ? WHERE " + " AND ".join(where)
+        clause = " AND ".join(where)
+        # Keys first, so the record for each row can be written after the
+        # UPDATE commits — a bulk clear can touch many rows in one statement,
+        # and the record is per-row.
+        affected = [
+            r["key"] for r in self.conn.execute(
+                "SELECT key FROM questions WHERE " + clause, params
+            )
+        ]
+        sql = "UPDATE questions SET status = 'cleared', updated_at = ? WHERE " + clause
         cur = self.conn.execute(sql, [_now(), *params])
+        for key in affected:
+            row = self.get(key)
+            if row is not None:
+                self._record(row, event="clear")
         return cur.rowcount
 
     def reopen(self, key: str) -> Question:
@@ -708,6 +728,7 @@ class Store:
         q = self.get(key)
         if q is None:
             raise KeyError(f"no such question: {key}")
+        withdrawn_answer = q.answer
         now = _now()
         # Only the latest verdict is withdrawn. On a persistent row that
         # uncovers the previous one rather than returning the row to unanswered.
@@ -730,6 +751,7 @@ class Store:
         )
         result = self.get(key)
         assert result is not None
+        self._record(result, event="reopen", withdrawn_answer=withdrawn_answer)
         return result
 
     def purge(
@@ -821,6 +843,30 @@ class Store:
         if cur.rowcount == 0:
             raise KeyError(f"{key} has no step {idx}")
         return self._touch(q.id, key)
+
+    def _record(
+        self, row: Question, *, event: str, withdrawn_answer: Answer | None = None
+    ) -> None:
+        """Write a decision record for a state change. Never raises.
+
+        CACTUS_RECORDS=0 disables writing outright (tests, and anyone who opts
+        out). Any other failure — an unwritable .ai/cactus, a project root that
+        no longer exists — is a warning, not an error: the DB write it follows
+        already committed, and a record is a courtesy copy of it, not the
+        source of truth.
+        """
+        if os.environ.get("CACTUS_RECORDS") == "0":
+            return
+        from . import record as _record_mod
+
+        try:
+            _record_mod.write_record(row, event=event, withdrawn_answer=withdrawn_answer)
+        except Exception as exc:
+            msg = f"cactus: record for {row.key} not written: {exc}"
+            if self.record_warning is not None:
+                self.record_warning(msg)
+            else:
+                print(msg, file=sys.stderr)
 
     def _touch(self, qid: int, key: str) -> Question:
         """Bump `updated_at` so a sidecar-only write still moves the cursor."""
