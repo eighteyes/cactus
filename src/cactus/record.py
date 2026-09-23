@@ -54,10 +54,10 @@ def record_path(row: "Question") -> Path:
     an existing q{N}-*.md is reused verbatim rather than re-slugged.
     """
     d = records_dir(row.project)
-    existing = sorted(d.glob(f"q{row.id}-*.md"))
+    existing = sorted(d.glob(f"{row.key}-*.md"))
     if existing:
         return existing[0]
-    return d / f"q{row.id}-{slug_for(row)}.md"
+    return d / f"{row.key}-{slug_for(row)}.md"
 
 
 def _status_label(row: "Question", event: str) -> str:
