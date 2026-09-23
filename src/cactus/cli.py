@@ -32,11 +32,12 @@ NAME
   cactus — durable question inbox between agents and a human
 
 WORKFLOW (required)
-  1  cactus --monitor --agent ID      background, before the first ask
+  1  cactus --monitor --agent ID      foreground, before the first ask
   2  cactus ask ... --agent ID        every decision, not chat
   3  work; act on each event
   4  cactus clear KEY --agent ID      own rows only
 
+  --monitor --agent ID --once        background wait after a time cap
   blocked by a permission prompt -> cactus run CMD --agent ID
 
 SYNOPSIS
@@ -52,8 +53,8 @@ SYNOPSIS
   cactus reopen KEY... --agent ID
   cactus poke KEY | --agent ID
   cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
-  cactus --monitor [--agent ID] [SCOPE] [--all] [--json] [--replay]
-                   [--interval N]
+  cactus --monitor --agent ID [SCOPE] [--all] [--json] [--replay]
+                   [--interval N] [--once]
   cactus where | projects | threads
 
   SCOPE  --workspace ID | --tab ID | --pane ID
@@ -849,6 +850,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --monitor, span every project instead of this one")
     p.add_argument("--replay", action="store_true",
                    help="with --monitor, emit the current inbox before streaming")
+    p.add_argument("--once", action="store_true",
+                   help="with --monitor, exit 0 right after the first non-asked event")
     p.add_argument("--interval", type=float, default=1.0,
                    help="with --monitor, seconds between polls (default: 1.0)")
     p.add_argument("--agent", help="with --monitor, only events for this agent's rows")
@@ -1113,6 +1116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 workspace=args.workspace,
                 tab=args.tab,
                 pane=args.pane,
+                once=args.once,
             )
         if args.command is None:
             parser.print_help()

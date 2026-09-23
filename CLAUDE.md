@@ -243,7 +243,9 @@ scope.
   alongside the result once it finishes, killed or not; `n`/deny records
   without running. `get --json`/`feed` expose it as `"result"`.
 - `cactus --monitor` requires `--agent ID`; humans use `--tui`/`--watch`
-  instead.
+  instead. `--once` returns as soon as it emits the first non-`asked` event
+  (or a `gone`) — inside the same tick, not after a further poll — for an
+  agent waiting in the background once the Monitor tool's own time cap hits.
 - `#project-strip` lists every project with open/live rows as `label N`,
   current bracket-highlighted, rebuilt everywhere `_rebuild_project_head` is.
   A drained project (0 open/live) drops out, same set as `_live_projects`.

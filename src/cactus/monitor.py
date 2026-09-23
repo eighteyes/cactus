@@ -185,6 +185,7 @@ def run_monitor(
     workspace: str | None = None,
     tab: str | None = None,
     pane: str | None = None,
+    once: bool = False,
 ) -> int:
     """Stream inbox transitions until interrupted. Returns a process exit code.
 
@@ -197,6 +198,10 @@ def run_monitor(
     to rows stamped with that value — the poll itself still spans every row,
     because a `gone` event for a purged row has to be judged against the scope
     recorded in `seen`, not against a row that no longer exists to ask.
+
+    `once` exits right after the first emitted event that is not `asked` —
+    an agent waiting on a verdict in the background after the Monitor tool's
+    own time cap hits, not a full session watcher.
     """
     def fetch() -> list[Question]:
         return store.list(project=project, status=None, all_projects=all_projects)
@@ -214,7 +219,10 @@ def run_monitor(
     if replay:
         for q in current:
             if owned(_scope_of(q)):
-                _emit(q, _arrival_event(q), as_json=as_json, show_project=all_projects)
+                event = _arrival_event(q)
+                _emit(q, event, as_json=as_json, show_project=all_projects)
+                if once and event != "asked":
+                    return 0
     seen = _snapshot(current)
     cursor = store.cursor()
 
@@ -227,6 +235,7 @@ def run_monitor(
             cursor = now
             questions = fetch()
             live = {q.key for q in questions}
+            fired = False
             for q in questions:
                 signature = _signature(q)
                 prev = seen.get(q.key)
@@ -236,12 +245,17 @@ def run_monitor(
                 if owned(_scope_of(q)):
                     event = _arrival_event(q) if before is None else _transition_event(before, q)
                     _emit(q, event, as_json=as_json, show_project=all_projects)
+                    if event != "asked":
+                        fired = True
                 seen[q.key] = (_scope_of(q), signature)
             for key in [k for k in seen if k not in live]:
                 scope, _ = seen[key]
                 if owned(scope):
                     _emit_gone(key, as_json=as_json)
+                    fired = True
                 del seen[key]
+            if once and fired:
+                return 0
     except KeyboardInterrupt:
         return 0
     except BrokenPipeError:
