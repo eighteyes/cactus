@@ -19,7 +19,7 @@ from typing import Any, Sequence
 
 from .scope import project_display, resolve_project
 from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
-                    DEFAULT_BLOCKED, AlreadyAnswered, Choice,
+                    DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
                     Question, Store, default_db_path)
 
 EXIT_OK = 0
@@ -145,6 +145,38 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         ans = _fmt_answer(q)
         if ans:
             print(f"\t\t{indent}  -> {ans}")
+        if q.review is not None:
+            block = [
+                ("look at", q.review.look_at),
+                ("run", q.review.run_cmd),
+                ("pass", q.review.pass_when),
+                ("fail", q.review.fail_when),
+                ("then", q.review.then_do),
+            ]
+            for label, value in block:
+                if value:
+                    print(f"\t\t{indent}  {label}: {value}")
+        if len(q.answers) > 1:
+            # The verdict log: a persistent row is answered more than once,
+            # so `get`/`list` show every verdict, not just the latest.
+            def _verdict(a: Answer) -> str:
+                if a.selected:
+                    return ", ".join(a.selected)
+                if a.text:
+                    return a.text
+                return "(skipped)" if a.skipped else "(empty)"
+            reprs = ", ".join(_verdict(a) for a in q.answers)
+            print(f"\t\t{indent}  verdicts: {reprs}")
+        if q.act == "plan" and q.steps:
+            for st in q.steps:
+                mark = "x" if st.done else " "
+                print(f"\t\t{indent}  [{mark}] {st.idx + 1}  {st.text}")
+
+
+def _no_match() -> int:
+    """One stderr line for every 'nothing matched' exit 3, text or --json alike."""
+    print("cactus: no match", file=sys.stderr)
+    return EXIT_EMPTY
 
 
 def _emit_one(q: Question, *, as_json: bool) -> None:
@@ -312,7 +344,7 @@ def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     if args.answered_only:
         found = [q for q in found if q.status == "answered"]
         if not found:
-            return EXIT_EMPTY
+            return _no_match()
 
     _print_questions(found, as_json=args.json, show_project=args.all)
     return EXIT_OK
@@ -334,7 +366,7 @@ def cmd_list(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     if not questions:
         if args.json:
             print("[]")
-        return EXIT_EMPTY
+        return _no_match()
     _print_questions(questions, as_json=args.json, show_project=args.all)
     return EXIT_OK
 
@@ -571,7 +603,7 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     }
     json.dump(doc, sys.stdout, indent=2 if args.pretty else None)
     sys.stdout.write("\n")
-    return EXIT_OK if questions else EXIT_EMPTY
+    return EXIT_OK if questions else _no_match()
 
 
 def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
@@ -610,7 +642,7 @@ def cmd_threads(args: argparse.Namespace, store: Store, project: str, cwd: str) 
         sys.stdout.write("\n")
         return EXIT_OK
     if not rows:
-        return EXIT_EMPTY
+        return _no_match()
     for r in rows:
         name = r["thread"] or "(unthreaded)"
         proj = f"[{project_display(r['project'])}]\t" if args.all else ""
@@ -625,7 +657,7 @@ def cmd_projects(args: argparse.Namespace, store: Store, project: str, cwd: str)
         sys.stdout.write("\n")
         return EXIT_OK
     if not rows:
-        return EXIT_EMPTY
+        return _no_match()
     for r in rows:
         marker = "*" if r["project"] == project else " "
         print(

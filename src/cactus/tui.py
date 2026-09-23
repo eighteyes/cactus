@@ -838,6 +838,16 @@ class CactusApp(App[int]):
             self.flash = ""
             self._rebuild_status_bar()
 
+    async def on_event(self, event: events.Event) -> None:
+        # Every keypress retires the previous flash, not only the ones that
+        # move the row — a stale "poke failed" otherwise lingers under a
+        # completely unrelated action until the next j/k. Runs ahead of
+        # binding dispatch, so an action fired by this same key still gets
+        # to set its own fresh flash afterwards.
+        if isinstance(event, events.Key) and not self.free_text_mode:
+            self._clear_flash()
+        await super().on_event(event)
+
     async def on_key(self, event: events.Key) -> None:
         """Catch keys check_action disables, so a press still gets a one-line answer.
 

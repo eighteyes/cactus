@@ -98,7 +98,9 @@ class WatchApp(App[None]):
         self.title = "cactus watch"
         db = str(self.store.path)
         scope = project_display(self.project) if self.project else "all projects"
-        self.sub_title = f"{db} — {scope}"
+        # Header truncates the sub_title from the end, so the scope leads —
+        # a long db path is the part that can afford to lose its tail.
+        self.sub_title = f"{scope} — {db}"
         self._load_backlog()
         self._refresh_status()
         self.set_interval(POLL_INTERVAL, self._poll)

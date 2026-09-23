@@ -105,6 +105,19 @@ scope.
   parent directory `mkdir` cannot create; `main()` turns both into exit 1.
 - `--tui`, `--watch`, `--monitor` are mutually exclusive; `--tui`/`--watch`
   refuse a non-tty stdout. Checked in `main()` before `Store` is opened.
+- Every "nothing matched" exit 3 (`list`, `feed`, `get --answered-only`,
+  `threads`, `projects`) prints one `cactus: no match` stderr line — a
+  `--json` caller ignores stderr, so the line costs it nothing.
+- `_print_questions` (the text renderer behind `get`/`list`/`reopen`) shows
+  a review row's verify block, a persistent row's whole verdict log (not
+  just the latest), and a plan row's steps 1-based with `[x]`/`[ ]`.
+- `WatchApp.on_mount` puts the scope label ahead of the db path in
+  `sub_title` — Header truncates from the end, and a long path is the part
+  that can afford to lose its tail.
+- `CactusApp.on_event` clears `flash` on every keypress ahead of binding
+  dispatch (guarded by `free_text_mode`), so a stale flash from an unrelated
+  action does not linger past the next keypress that isn't a row move; an
+  action fired by that same key still gets to set its own fresh flash after.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.
