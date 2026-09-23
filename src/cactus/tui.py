@@ -24,7 +24,8 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
 from .scope import project_label
-from .store import ACTIONABLE, CONFIDENCE_GLYPH, Answer, Question, Store
+from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
+                    Question, Store)
 
 POLL_INTERVAL = 0.5
 
@@ -1293,7 +1294,11 @@ class CactusApp(App[int]):
         """
         text = (typed if typed is not None else self.pending_text).strip()
         if text:
-            self.store.answer(q.key, selected=[], text=text, skipped=False)
+            try:
+                self.store.answer(q.key, selected=[], text=text, skipped=False)
+            except (KeyError, ValueError) as exc:
+                await self._refuse(exc)
+                return
             self._push_undo(q.key, "noted", [], text)
             self.pending_text = ""
             self.free_text_mode = False
@@ -1367,8 +1372,21 @@ class CactusApp(App[int]):
             self.store.answer(q.key, selected=selected, text=text, skipped=skipped)
         except KeyError:
             return
+        except (AlreadyAnswered, ValueError) as exc:
+            await self._refuse(exc)
+            return
         self._push_undo(q.key, label or ("skipped" if skipped else "answered"), selected, text)
         await self._advance_after(q.key)
+
+    async def _refuse(self, exc: Exception) -> None:
+        """Flash a store refusal instead of letting it crash the app.
+
+        Another surface can answer, clear, or purge a row between this app's
+        polls, so the row on screen may be stale: reload before flashing.
+        """
+        await self._reload(force=True)
+        self.flash = str(exc).strip("'\"")
+        self._rebuild_status_bar()
 
     async def _advance_after(self, answered_key: str) -> None:
         old_index = 0
