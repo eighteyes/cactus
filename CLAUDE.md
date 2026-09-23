@@ -169,3 +169,9 @@ scope.
   fields it was given, `None` (an omitted flag) keeps the stored value, and
   `""` (`--run ""`) clears it explicitly. A second call can no longer wipe
   what an earlier one set.
+- The TUI undo stack (`action_undo`) is a full LIFO stack, not a single slot:
+  each `u` pops and restores one entry, walking past any whose row was purged
+  out from under it (`reopen` raising `KeyError`). Every exit from
+  `action_undo` — restored a row, or ran out of stack trying — leaves the
+  status bar current, so draining the stack via failed entries still flashes
+  "nothing to undo" instead of going silent.

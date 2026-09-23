@@ -1154,7 +1154,16 @@ class CactusApp(App[int]):
         )
 
     async def action_undo(self) -> None:
-        """Put the last resolved question back, with what was typed and picked."""
+        """Put the last resolved question back, with what was typed and picked.
+
+        A purged entry's row is gone, so `reopen` raises `KeyError` and the
+        loop keeps walking to the next-older one — but that walk used to run
+        silently: it could drain several stack entries in one press with no
+        flash and no status-bar refresh, which reads as `u` "doing nothing"
+        even though it quietly consumed the stack underneath. Every exit from
+        this method now leaves the status bar current, whether it restored a
+        row or ran out of stack trying.
+        """
         while self.undo_stack:
             entry = self.undo_stack.pop()
             try:
@@ -1175,6 +1184,10 @@ class CactusApp(App[int]):
             self._synced_key = self.focused_key
             self.query_one("#rail-list", ListView).focus()
             return
+        # Every remaining entry was purged out from under us: the stack is
+        # now empty, same as if there had been nothing to undo at all.
+        self.flash = "nothing to undo"
+        self._rebuild_status_bar()
 
     # ---- misc -----------------------------------------------------------
 
