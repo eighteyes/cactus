@@ -20,7 +20,7 @@ cactus is installed. Its workflow is required, not optional:
   1 monitor  start \`cactus --monitor --json --agent ID\` with the Monitor tool before your first ask; --agent is required. When Monitor's 30-minute cap expires, run \`cactus --monitor --json --agent ID --once\` in the background (it exits on the first event that is not asked); go back to Monitor once the user is active again
   2 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend when you have a pick, --agent on every row
   3 work     do everything the answer does not block
-  4 act      on each event as it lands: answered, reopened, cleared
+  4 act      on each event as it lands: answered, elaborate (rewrite the row with \`cactus edit KEY --agent ID --context ...\`), reopened, cleared
   5 clear    your own rows, by key, once acted on
 Blocked by a permission prompt? Post the command instead of stopping: \`cactus run CMD --agent ID\`. The human approves it from the TUI.
 Load the cactus skill before the first ask.

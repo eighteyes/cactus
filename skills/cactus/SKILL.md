@@ -29,7 +29,7 @@ only that project; if it is wrong, `cd` before asking.
     2  ask       post every decision the human makes here, not in chat;
                  --recommend when you have a pick, --agent on every row
     3  work      do everything the answer does not block
-    4  act       on each event as it lands: answered, reopened, cleared
+    4  act       on each event as it lands: answered, elaborate, reopened, cleared
     5  clear     your own rows, by key, once acted on
 
 `--agent` is required: an unfiltered monitor is refused. Every event is one
@@ -181,6 +181,22 @@ yourself with Bash `run_in_background`:
 
 Listen for `reopened` and `gone` too: `reopened` means a verdict you already
 read is stale; `gone` means the row was purged.
+
+## Elaborate: the human wants the question rewritten
+
+`e` on a row moves it to status `elaborate` and the monitor emits an
+`elaborate` event carrying `hint` (what the human typed, or null) and
+`instruction` (the hint, else: rewrite plainly, no jargon, add what you
+tried, the numbers, what each option costs, what happens if nobody
+answers). Rewrite the row in place; the key stays:
+
+    cactus edit q7 --agent "$AGENT" --context "..." [--text "..."] [-c "label: desc"]...
+
+The row returns to `open` and the monitor reports `edited`. `edit` also
+works on any open or live row you own without a request, so fix a typo or
+add a fact the moment you notice it. `-c` replaces the choices and drops a
+`--recommend` that no longer names one. A human `u` on an elaborate request
+also reads as `edited`: re-read the row before rewriting.
 
 ## Read back
 

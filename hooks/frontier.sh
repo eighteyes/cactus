@@ -3,7 +3,7 @@
 # UserPromptSubmit hook: inject this agent's cactus frontier as context on every prompt.
 # Responsibilities:
 #   - stay silent when cactus is not installed, no identity resolves, or the agent has no rows
-#   - list the agent's answered-but-not-cleared rows first (acted-on backlog), then its open rows
+#   - list the agent's rows awaiting elaboration first, then answered-but-not-cleared (acted-on backlog), then open
 #   - cap the listing at FRONTIER_MAX rows, key and gist each, and close with one counts line
 set -u
 command -v cactus >/dev/null 2>&1 || exit 0
@@ -28,15 +28,17 @@ jq -r --argjson max "$FRONTIER_MAX" '
     elif .answer.skipped then " -> skipped"
     else " -> " + ((.answer.selected // []) | join(",")) + (if .answer.text then " " + (.answer.text | .[0:40]) else "" end)
     end;
-  [ .[] | select(.status == "answered") ] as $done
+  def hint: if .status == "elaborate" then " " + (.elaborate // "(eli5)") else "" end;
+  [ .[] | select(.status == "elaborate") ] as $more
+  | [ .[] | select(.status == "answered") ] as $done
   | [ .[] | select(.status == "open" or .status == "live") ] as $open
-  | (($done | length) + ($open | length)) as $total
+  | (($more | length) + ($done | length) + ($open | length)) as $total
   | if $total == 0 then empty else
       "cactus frontier (--agent \($agent)):",
-      ( ($done + $open)[:$max][]
-        | "  \(.key) \(.status) \(gist)\(verdict)" ),
+      ( ($more + $done + $open)[:$max][]
+        | "  \(.key) \(.status)\(hint) \(gist)\(verdict)" ),
       (if $total > $max then "  ... \($total - $max) more: cactus list -s any --agent \($agent)" else empty end),
-      "  \($done | length) answered to act on and clear, \($open | length) open"
+      "  \($more | length) to elaborate (cactus edit KEY --agent ID --context ...), \($done | length) answered to act on and clear, \($open | length) open"
     end
 ' --arg agent "$agent" <<<"$rows"
 exit 0
