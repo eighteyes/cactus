@@ -820,7 +820,14 @@ class Store:
         fail_when: str | None = None,
         then_do: str | None = None,
     ) -> Question:
-        """Attach or replace the verify block on a `review` row."""
+        """Attach or merge the verify block on a `review` row.
+
+        Each call updates only the fields it passes; an omitted field (`None`)
+        keeps its stored value rather than being wiped. Passing an empty
+        string clears a field explicitly — `None` and `""` are different
+        callers' intents, and argparse already tells them apart: a flag left
+        off a command line is `None`, a flag given as `--run ""` is `""`.
+        """
         q = self.get(key)
         if q is None:
             raise KeyError(f"no such question: {key}")
@@ -829,6 +836,14 @@ class Store:
         # the human decides whether it should be.
         if q.act not in ("review", "run"):
             raise ValueError(f"{key} is act={q.act!r}, not 'review' or 'run'")
+        existing = q.review or Review()
+        merged = Review(
+            look_at=existing.look_at if look_at is None else look_at,
+            run_cmd=existing.run_cmd if run_cmd is None else run_cmd,
+            pass_when=existing.pass_when if pass_when is None else pass_when,
+            fail_when=existing.fail_when if fail_when is None else fail_when,
+            then_do=existing.then_do if then_do is None else then_do,
+        )
         self.conn.execute(
             """
             INSERT INTO reviews (question_id, look_at, run_cmd, pass_when, fail_when, then_do)
@@ -840,7 +855,8 @@ class Store:
                 fail_when = excluded.fail_when,
                 then_do   = excluded.then_do
             """,
-            (q.id, look_at, run_cmd, pass_when, fail_when, then_do),
+            (q.id, merged.look_at, merged.run_cmd, merged.pass_when,
+             merged.fail_when, merged.then_do),
         )
         return self._touch(q.id, key)
 
