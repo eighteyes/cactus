@@ -250,6 +250,8 @@ class CactusApp(App[int]):
 
     TITLE = "cactus"
     SUB_TITLE = "answering"
+    # No palette: its header icon and footer hint are chrome with no cactus use.
+    ENABLE_COMMAND_PALETTE = False
 
     CSS = """
     #body {
@@ -390,7 +392,7 @@ class CactusApp(App[int]):
     # ---- layout -------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(icon="")
         with Horizontal(id="body"):
             with Vertical(id="rail"):
                 yield Static(id="project-head", markup=False)

@@ -53,6 +53,8 @@ class _Seen:
 class WatchApp(App[None]):
     """Textual app driving the live feed."""
 
+    ENABLE_COMMAND_PALETTE = False
+
     CSS = """
     #feed {
         height: 1fr;
@@ -87,7 +89,7 @@ class WatchApp(App[None]):
         self._show_answered = True
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Header(show_clock=True, icon="")
         yield Vertical(
             RichLog(id="feed", wrap=True, highlight=False, markup=False, auto_scroll=True),
             Static(id="status"),
