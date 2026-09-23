@@ -1,5 +1,5 @@
 {
-  "description": "SessionStart hook that tells the agent cactus is available and lists this project's open rows.",
+  "description": "SessionStart hook that tells the agent cactus is available and lists this project's open rows; Stop hook that blocks a turn which ended without posting a fork.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,17 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-fork.sh\"",
             "timeout": 10
           }
         ]

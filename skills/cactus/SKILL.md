@@ -22,6 +22,33 @@ unfamiliar verb:
 `cactus where` prints the project the row will be filed under. Agent verbs see
 only that project; if it is wrong, `cd` before asking.
 
+## Workflow, required
+
+    1  monitor   start `cactus --monitor --json` in the background before the
+                 first ask; keep it running while any row of yours is open
+    2  ask       post every decision the human makes here, not in chat;
+                 --recommend when you have a pick, --agent on every row
+    3  work      do everything the answer does not block
+    4  act       on each event as it lands: answered, reopened, cleared
+    5  clear     your own rows, by key, once acted on
+
+Start the monitor with `Monitor` when the harness has it, otherwise Bash
+`run_in_background`. Every event is one JSON line; filter to your own rows:
+
+    cactus --monitor --json | jq -c --unbuffered 'select(.agent == "$AGENT")'
+
+## Identity
+
+`cactus ask` refuses a row without `--agent`. The session-start hook prints
+the value to pass, resolved through herdr when the session runs in one. Outside
+herdr, choose one stable value for the session and use it on every ask and
+clear. A bare pane id is not an identity: it outlives the session and the next
+occupant inherits your rows.
+
+Clears are scoped by owner. `--thread`, `--here` and `--all` clear only rows
+posted under the `--agent` you pass; another agent's key is refused; a row with
+no owner clears by explicit key only.
+
 ## When cactus, when AskUserQuestion
 
     AskUserQuestion   the answer gates the next action and no default is safe
@@ -42,15 +69,11 @@ rows per agent, for rows posted with `--agent`. Reach for `steer` first, `ask`
 when proceeding under any assumption would waste the work, `--wait` only when
 the very next step depends on it.
 
-## The arc
+## Batching
 
-1. Post every question you can see now, under one thread, without `--wait`.
-2. Do everything the answers do not block.
-3. Collect at the fork: `cactus get KEY --json` or `cactus list -s answered -t THREAD --json`.
-4. Follow up in the same thread with `-p KEY` when an answer opens a new question.
-
-Ask the whole batch up front. A set of taps is cheaper for the human than a drip
-of interrupts across an afternoon.
+Post every question you can see now, under one thread, without `--wait`. Follow
+up in the same thread with `-p KEY` when an answer opens a new question. A set
+of taps is cheaper for the human than a drip of interrupts across an afternoon.
 
 ## Authoring a row
 
@@ -62,7 +85,7 @@ description.
       -c "oidc: existing IdP" \
       -c "local: bcrypt table" \
       --context "Staging tenant is provisioned. Local means owning password reset. Default if unanswered: oidc." \
-      -t auth --recommend oidc --confidence high --why "tenant already exists"
+      -t auth --agent "$AGENT" --recommend oidc --confidence high --why "tenant already exists"
 
 `--context` carries what the human cannot see from the labels: what you tried
 and what it cost, the numbers, what breaks under each option, what happens if
@@ -74,13 +97,10 @@ submits it. `--chosen` on a steer does not wait: you proceed with it.
 `--word SHORT` gives boards a stable label. Set it when a project has many rows
 whose text starts the same way.
 
-Do not pass `--agent` unless you hold a resolved session identity. A bare pane
-id outlives the session and the next occupant inherits your rows.
-
 ## Steer: proceed, invite a veto
 
     cactus ask "Using the staging tenant for the migration dry run" \
-      --act steer --chosen staging -t auth \
+      --act steer --chosen staging -t auth --agent "$AGENT" \
       -c "staging: provisioned, disposable" \
       -c "prod-shadow: real data, read only"
 
@@ -89,7 +109,7 @@ other option redirects you.
 
 ## Block only when blocked
 
-    cactus ask "Safe to drop the legacy column?" --confirm --wait --timeout 600
+    cactus ask "Safe to drop the legacy column?" --confirm --agent "$AGENT" --wait --timeout 600
 
 Always pair `--wait` with `--timeout`. Exit 2 is the timeout: proceed on the
 default you stated in `--context`, do not treat it as an error. A row the human
@@ -98,7 +118,7 @@ status, not just the exit code.
 
 ## Approve a command
 
-    K=$(cactus ask "Run the prod migration?" --act run -t ship)
+    K=$(cactus ask "Run the prod migration?" --act run -t ship --agent "$AGENT")
     cactus review "$K" --run "alembic upgrade head" --look-at "alembic history" --pass "no errors"
     cactus get "$K" --wait --timeout 900 --json
 
@@ -112,10 +132,10 @@ Both are born `live`, take a verdict every time the work is re-checked, and stay
 on the board until cleared. Post them once at the start of a piece of work and
 update them as it moves.
 
-    cactus ask "Does the build verify?" --act review -t ship
+    cactus ask "Does the build verify?" --act review -t ship --agent "$AGENT"
     cactus review q8 --look-at "the diff" --run "pytest -q" --pass "0 failures" --fail "any failure" --then "tag the release"
 
-    cactus ask "Release steps" --act plan -t ship
+    cactus ask "Release steps" --act plan -t ship --agent "$AGENT"
     cactus plan q9 --step build --step test --step tag
     cactus plan q9 --done 1          # 1-based at the CLI
 
@@ -124,7 +144,8 @@ cache: a human can undo a verdict and the row reads `open` again.
 
 ## Collect without blocking the session
 
-Wake yourself when a thread is answered instead of polling by hand. Two ways:
+The monitor you started first is the wake-up. When a thread needs its own
+watcher, or the harness has no `Monitor`, two more ways:
 
     Agent(subagent_type: "cactus-courier", prompt: "thread auth, deadline 1800")
 
@@ -148,9 +169,9 @@ human saw it and chose not to decide; act on your stated default.
 
 ## Retire
 
-    cactus clear q7                retire, keep the transcript
-    cactus clear --thread auth     retire a whole thread
-    cactus clear --purge q7        delete
+    cactus clear q7                                retire, keep the transcript
+    cactus clear --thread auth --agent "$AGENT"    retire your rows in a thread
+    cactus clear --purge q7                        delete
 
 Clear what you have acted on. A stale open row is a question the human answers
 for nothing.
