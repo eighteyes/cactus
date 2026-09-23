@@ -1,8 +1,10 @@
 # Elaborate: the human asks the agent to rewrite a question
 
-Source: user request 2026-09-23. Forks q206 (mechanism) and q207 (default
-instruction) are open on the board; this spec follows the recommended
-answers and is revised when they land.
+Source: user request 2026-09-23. q207 (default instruction) answered
+`both`. q206 was answered with a question ("can we edit the current
+question or not?"), answered in q211: no verb edits text/context/choices
+today; every option below rewrites the row in place. q211 (mechanism) is
+open; the spec follows its recommended answer, `status`.
 
 ## Behaviour
 
@@ -17,9 +19,10 @@ Monitor: emits event `elaborate` with `key`, `hint` (the typed text or
 null), and `instruction`:
 
     hint present   the hint verbatim
-    hint absent    "Rewrite the context plainly. No jargon. Say what you
-                    tried, what each option costs, what happens if nobody
-                    answers."                                    (q207: eli5)
+    hint absent    "Rewrite the context plainly, no jargon, and add the
+                    facts that are missing: what you tried, the numbers,
+                    the files, what each option costs, what happens if
+                    nobody answers. Longer is fine."          (q207: both)
 
 CLI: `cactus elaborate KEY --agent ID [--text ...] [--context ...] [-c ...]`.
 Replaces the given fields, keeps the rest, clears `elaborate`, moves status

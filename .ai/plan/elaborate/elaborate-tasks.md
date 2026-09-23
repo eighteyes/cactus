@@ -1,7 +1,7 @@
 # Elaborate tasks
 
-- [ ] q206 mechanism answered; revise plan if not `status`
-- [ ] q207 default instruction answered; revise plan if not `eli5`
+- [ ] q211 mechanism answered (q206 re-asked as q211); revise plan if not `status`
+- [x] q207 default instruction answered: `both`
 - [ ] store: columns, status, `Store.elaborate_request`, `Store.elaborate`, `Store.unelaborate` (cactus-ba builder)
 - [ ] cli: `cactus elaborate` verb, `--agent-help` line (cactus-ba builder)
 - [ ] tui: `e` binding, `elaborate:` input mode, `wants more` marker, undo (cactus-ba builder)
