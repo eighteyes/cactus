@@ -33,8 +33,8 @@ RUN_TAIL = 12
 # `_confirm_hint` — because a review answers pass/fail and a run approve/deny,
 # and a fixed yes/no hint would lie about what the keys send.
 HINTS = {
-    "choice": "1-9 pick   i free text   s skip (answers)   c clear",
-    "multi": "1-9 toggle   enter submit   i free text   s skip (answers)   c clear",
+    "choice": "1-9 pick   i type   s skip (answers)   c clear",
+    "multi": "1-9 toggle   enter submit   i type   s skip (answers)   c clear",
     "text": "enter to type   esc back to list   s skip (answers)   c clear",
 }
 
@@ -49,7 +49,7 @@ def _confirm_hint(q: Question) -> str:
     labels = [c.label for c in q.choices] or ["yes", "no"]
     keys = ["y/1", "n/2"]
     picks = [f"{key} {label}" for key, label in zip(keys, labels)]
-    return "   ".join([*picks, "i free text", "s skip (answers)", "c clear"])
+    return "   ".join([*picks, "i type", "s skip (answers)", "c clear"])
 
 
 def _verdict_repr(a: Answer) -> str:
@@ -321,7 +321,7 @@ class CactusApp(App[int]):
         Binding("escape", "leave_input", "Back", show=False, priority=True),
         Binding("s", "skip", "Skip (answers)"),
         Binding("c", "clear_focused", "Clear"),
-        Binding("i", "toggle_free_text", "FreeText"),
+        Binding("i", "toggle_free_text", "type"),
         Binding("y", "confirm_yes", "Yes"),
         Binding("n", "confirm_no", "No"),
         Binding("[", "prev_project", "PrevProj"),
@@ -334,7 +334,8 @@ class CactusApp(App[int]):
         Binding("d", "dismiss", "Dismiss"),
         Binding("r", "refresh_view", "Refresh"),
         Binding("q", "quit_app", "Quit"),
-        Binding("1", "select_choice(1)", "1", show=True),
+        Binding("ctrl+c", "quit_app", "Quit", show=False),
+        Binding("1", "select_choice(1)", "1-9 pick", show=True),
         Binding("2", "select_choice(2)", "2", show=False),
         Binding("3", "select_choice(3)", "3", show=False),
         Binding("4", "select_choice(4)", "4", show=False),
@@ -854,13 +855,23 @@ class CactusApp(App[int]):
         The footer hides `u` when the undo stack is empty — a key that cannot
         do anything should not be advertised — but that same gate stops the
         binding from firing, so the press would otherwise land in silence.
-        This runs after bindings, so an enabled `u` never reaches here.
+        This runs after bindings, so an enabled `u`/`y`/`n` never reaches here.
         """
-        if self.free_text_mode or event.key != "u" or self.undo_stack:
+        if self.free_text_mode:
             return
-        self.flash = "nothing to undo"
-        self._rebuild_status_bar()
-        event.stop()
+        if event.key == "u" and not self.undo_stack:
+            self.flash = "nothing to undo"
+            self._rebuild_status_bar()
+            event.stop()
+            return
+        if event.key in ("y", "n"):
+            # confirm_yes/confirm_no only bind on a confirm row (check_action);
+            # a plan or text row otherwise ate the key in silence.
+            q = self._current_question()
+            if q is not None and q.kind != "confirm":
+                self.flash = f"y/n only answer a confirm row — {q.key} is {q.kind}"
+                self._rebuild_status_bar()
+                event.stop()
 
     def action_focus_next(self) -> None:
         self._clear_flash()
@@ -1087,7 +1098,7 @@ class CactusApp(App[int]):
             return
         open_count = sum(1 for st in q.steps if not st.done)
         self.flash = (
-            f"{open_count} steps open — i for free text" if open_count
+            f"{open_count} step{'' if open_count == 1 else 's'} open — i to type" if open_count
             else "all steps done — c to clear"
         )
         self._rebuild_status_bar()

@@ -66,6 +66,7 @@ ACTS
 ASK OPTIONS
   -c LABEL[: DESC]           one choice, verbatim; repeat
   --multi | --confirm        shape; text when no -c
+  --kind choice|multi|text|confirm   override the inferred shape
   --act ACT                  default ask
   --agent ID                 required; session token, not pane id
   --recommend LABEL          repeat on multi
@@ -173,6 +174,19 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
                 print(f"\t\t{indent}  [{mark}] {st.idx + 1}  {st.text}")
 
 
+def _msg(exc: BaseException) -> str:
+    """An exception's text, without str(KeyError(...))'s Python-repr quoting.
+
+    `str(KeyError("no such question: q9"))` renders as `"no such question:
+    q9"` — repr'd, quotes and all — because KeyError's __str__ falls back to
+    repr(args[0]) when it has exactly one argument. Every other exception
+    type here already str()s cleanly.
+    """
+    if isinstance(exc, KeyError) and len(exc.args) == 1:
+        return str(exc.args[0])
+    return str(exc)
+
+
 def _no_match() -> int:
     """One stderr line for every 'nothing matched' exit 3, text or --json alike."""
     print("cactus: no match", file=sys.stderr)
@@ -191,9 +205,31 @@ def _emit_one(q: Question, *, as_json: bool) -> None:
 
 
 def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    if args.multi and args.confirm:
+        # 3: a row cannot be both a checklist and a yes/no at once.
+        print("cactus: --multi and --confirm are mutually exclusive", file=sys.stderr)
+        return EXIT_ERROR
+    if args.timeout is not None and not args.wait:
+        # 9: --timeout only means something alongside --wait.
+        print("cactus: --timeout needs --wait", file=sys.stderr)
+        return EXIT_ERROR
+
     # Each -c is exactly one choice, taken verbatim. Splitting on commas here
     # would silently shred any description that contains one.
     choices = [Choice.parse(raw.strip()) for raw in (args.choice or []) if raw.strip()]
+    labels = [c.label for c in choices]
+    if len(labels) != len(set(labels)):
+        # 2: two choices with the same label are indistinguishable once picked.
+        print(f"cactus: duplicate choice labels: {labels}", file=sys.stderr)
+        return EXIT_ERROR
+    if choices and (args.confirm or ACT_SHAPES[args.act] == ("confirm",)) and len(choices) != 2:
+        # 4, 5: a confirm shape is exactly two options — yes/no, pass/fail,
+        # approve/deny — never a one-button or three-button "confirm".
+        print(
+            f"cactus: a confirm takes exactly 2 choices, got {len(choices)}: {labels}",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
 
     act = args.act
     if choices and ACT_SHAPES[act] == ("text",):
@@ -218,7 +254,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     text = args.text
     if text == "-":
         text = sys.stdin.read().strip()
-    if not text:
+    if not text or not text.strip():
         print("cactus: refusing to ask an empty question", file=sys.stderr)
         return EXIT_ERROR
 
@@ -291,7 +327,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             asked_by=args.by or os.environ.get("CACTUS_AGENT"),
         )
     except (KeyError, ValueError) as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
 
     if not args.wait:
@@ -314,6 +350,9 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
 
 
 def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    if args.timeout is not None and not args.wait:
+        print("cactus: --timeout needs --wait", file=sys.stderr)
+        return EXIT_ERROR
     for key in args.keys:
         if store.get(key) is None:
             print(f"cactus: no such question: {key}", file=sys.stderr)
@@ -385,15 +424,15 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     except AlreadyAnswered as exc:
         # Exit 3, not 1: a projector renders this as a stale cell rather than
         # an error, because nothing went wrong — it was simply beaten to it.
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_EMPTY
     except KeyError as exc:
         # No such question: exit 3, the same as every other verb that takes
         # a key — a missing row is a miss, not a malformed call.
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_EMPTY
     except ValueError as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
     _emit_one(q, as_json=args.json)
     return EXIT_OK
@@ -411,10 +450,10 @@ def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             then_do=args.then,
         )
     except KeyError as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_EMPTY
     except ValueError as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
     _emit_one(q, as_json=args.json)
     return EXIT_OK
@@ -446,10 +485,10 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
             store.set_step_done(args.key, _plan_index(n, len(q.steps)), False)
         q = store.get(args.key)
     except KeyError as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_EMPTY
     except ValueError as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
     if q is None:
         print(f"cactus: no such question: {args.key}", file=sys.stderr)
@@ -624,7 +663,7 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     try:
         ran = poke(agent, message=args.message)
     except PokeError as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
 
     if args.json:
@@ -823,9 +862,10 @@ def build_parser() -> argparse.ArgumentParser:
     ans.add_argument("key")
     ans.add_argument("-s", "--select", action="append", help="a chosen label, repeatable")
     ans.add_argument("text", nargs="?", help="free-text answer, or -")
-    ans.add_argument("--skip", action="store_true", help="record a deliberate non-answer")
-    ans.add_argument("--dismiss", action="store_true",
-                     help="dismiss a seen row without choosing (alias of --skip)")
+    skip_grp = ans.add_mutually_exclusive_group()
+    skip_grp.add_argument("--skip", action="store_true", help="record a deliberate non-answer")
+    skip_grp.add_argument("--dismiss", action="store_true",
+                          help="dismiss a seen row without choosing (alias of --skip)")
     ans.set_defaults(fn=cmd_answer)
 
     clr = verb("clear", help="retire questions from the inbox")
@@ -843,7 +883,11 @@ def build_parser() -> argparse.ArgumentParser:
     ro.add_argument("--agent", help="required to reopen a row you own")
     ro.set_defaults(fn=cmd_reopen)
 
-    fd = verb("feed", help="the actionable inbox as one JSON document, for a projector")
+    fd = verb(
+        "feed", help="the actionable inbox as one JSON document, for a projector",
+        description="Always emits JSON. --json is accepted as a no-op, for a "
+                     "caller that passes it to every verb uniformly.",
+    )
     fd.add_argument("--act", action="append", choices=list(ACTS),
                     help="only this act, repeatable")
     fd.add_argument("--agent", help="only rows owned by this agent/pane")
@@ -907,7 +951,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # a misconfigured CACTUS_DB surfaces here rather than as a traceback.
         parser = build_parser()
     except ValueError as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
     args = parser.parse_args(argv)
 
@@ -930,7 +974,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         store = Store(args.db)
     except ValueError as exc:
-        print(f"cactus: {exc}", file=sys.stderr)
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
 
     try:

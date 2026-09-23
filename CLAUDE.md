@@ -118,6 +118,17 @@ scope.
   dispatch (guarded by `free_text_mode`), so a stale flash from an unrelated
   action does not linger past the next keypress that isn't a row move; an
   action fired by that same key still gets to set its own fresh flash after.
+- `cli._msg(exc)` strips `str(KeyError(...))`'s Python-repr quoting before
+  it reaches stderr — every `cactus: {exc}` print goes through it.
+- `cactus ask` refuses before touching the store: whitespace-only text,
+  duplicate choice labels, `--multi` with `--confirm`, a confirm-shaped row
+  (explicit `--confirm` or an act whose only shape is confirm) given a
+  choice count other than 2, and `--timeout` without `--wait` (`get` refuses
+  the same `--timeout`-without-`--wait` case).
+- `cactus feed` always emits JSON; `--json` is accepted as a no-op so a
+  caller can pass it to every verb uniformly.
+- `on_key` also catches `y`/`n` on a non-confirm row (check_action gates the
+  binding off there) and flashes why, the same pattern as the `u` undo gate.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.
