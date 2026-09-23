@@ -553,7 +553,8 @@ class CactusApp(App[int]):
     def _live_projects_rows(self) -> list[dict[str, Any]]:
         return [
             r for r in self.store.projects()
-            if r["open_count"] > 0 or r["live_count"] > 0
+            if (r["open_count"] > 0 or r["live_count"] > 0)
+            and (self.scoped_project is None or r["project"] == self.scoped_project)
         ]
 
     async def _rebuild_rail(self) -> None:
