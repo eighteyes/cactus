@@ -569,9 +569,13 @@ class CactusApp(App[int]):
         if q is None:
             # Nothing on the rail to act on: navigation between live projects
             # and the two global keys are the only bindings that still mean
-            # something on an empty inbox.
+            # something on an empty inbox — except `undo`, which is exactly
+            # what a human reaches for after clearing the last visible row,
+            # the one action that empties the rail in the first place.
             if action in ("prev_project", "next_project"):
                 return len(self._live_projects()) > 1
+            if action == "undo":
+                return bool(self.undo_stack)
             return False
 
         always = {

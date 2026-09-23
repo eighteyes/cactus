@@ -118,7 +118,18 @@ scope.
   deletes rows.
 - `reopen` is undo's store primitive: status back to `open`, answer row deleted.
   It cannot recall an answer an agent already read — `wait_for_answer` returns
-  the moment the status leaves `open`.
+  the moment the status leaves `open`. On a *cleared* row it takes a second
+  path instead of that delete: `clear` never touched the answers log, review,
+  or steps, so restoring only moves `status` back — to `live` for a
+  persistent row (every verdict intact), to `answered` for a one-shot row
+  that already had one, else `open`. `cli.cmd_reopen` (`cactus reopen KEY...
+  --agent ID`) is gated on ownership exactly like keyed `clear`, and refuses
+  a key that is not cleared (exit 1) or does not exist (exit 3). The TUI's
+  `c` (clear) pushes the row onto the undo stack the same as an answer or a
+  skip, so `u` calls `Store.reopen` on it and restores it the same way.
+  `monitor.py` reports every move out of `cleared` as `reopened`, whatever
+  status it lands on — a restored answered row must not read as a second
+  `answered`.
 - `recommend` is advisory, not `chosen`: a chosen option is already being
   acted on, a recommended one still waits for the human. It requires choices,
   every label must be real, more than one only when `kind == "multi"`, and

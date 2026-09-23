@@ -45,6 +45,7 @@ SYNOPSIS
   cactus plan KEY [--step TEXT]... [--done N] [--undone N]
   cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
+  cactus reopen KEY... --agent ID
   cactus poke KEY | --agent ID
   cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
   cactus --monitor [--agent ID] [SCOPE] [--all] [--json] [--replay]
@@ -453,6 +454,42 @@ def cmd_clear(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
     return EXIT_OK
 
 
+def cmd_reopen(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Restore cleared rows: persistent acts to `live`, one-shot rows to their prior state.
+
+    Owner-gated exactly like keyed `clear`: an unowned row reopens by key with
+    or without --agent, an owned one refuses unless --agent matches. Missing
+    keys and rows that were never cleared are refused up front, the same way a
+    batch clear never touches part of itself.
+    """
+    missing = [key for key in args.keys if store.get(key) is None]
+    if missing:
+        print(f"cactus: no such question: {', '.join(missing)}", file=sys.stderr)
+        return EXIT_EMPTY
+
+    refused = [
+        (key, q.agent) for key in args.keys
+        if (q := store.get(key)).agent is not None and q.agent != args.agent
+    ]
+    if refused:
+        detail = ", ".join(f"{k} (owned by {owner})" for k, owner in refused)
+        print(f"cactus: refusing to reopen rows you do not own: {detail}", file=sys.stderr)
+        return EXIT_ERROR
+
+    not_cleared = [key for key in args.keys if store.get(key).status != "cleared"]
+    if not_cleared:
+        print(f"cactus: not cleared, nothing to reopen: {', '.join(not_cleared)}", file=sys.stderr)
+        return EXIT_ERROR
+
+    results = [store.reopen(key) for key in args.keys]
+    if args.json:
+        json.dump([q.as_dict() for q in results], sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    else:
+        _print_questions(results, as_json=False, show_project=False)
+    return EXIT_OK
+
+
 def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """Emit the actionable inbox as one document, for a projector to render.
 
@@ -720,6 +757,11 @@ def build_parser() -> argparse.ArgumentParser:
     clr.add_argument("--agent",
                      help="required for -t/--here/--all; also matches an owned key")
     clr.set_defaults(fn=cmd_clear)
+
+    ro = verb("reopen", help="restore cleared rows")
+    ro.add_argument("keys", nargs="+")
+    ro.add_argument("--agent", help="required to reopen a row you own")
+    ro.set_defaults(fn=cmd_reopen)
 
     fd = verb("feed", help="the actionable inbox as one JSON document, for a projector")
     fd.add_argument("--act", action="append", choices=list(ACTS),

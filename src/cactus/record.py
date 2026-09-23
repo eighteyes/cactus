@@ -70,6 +70,14 @@ def _status_label(row: "Question", event: str) -> str:
         return "retired" if row.answers else "declined"
     if event == "reopen":
         return "live" if row.persistent else "withdrawn"
+    if event == "restore":
+        # A restore un-clears a row rather than undoing an answer, so its
+        # verdict log (or lack of one) is intact, not withdrawn.
+        if row.persistent:
+            return "live"
+        if row.answer is not None and row.answer.skipped:
+            return "skipped"
+        return "answered" if row.answer is not None else "open"
     # event == "answer"
     if row.answer is not None and row.answer.skipped:
         return "skipped"

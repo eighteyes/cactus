@@ -82,7 +82,11 @@ def _transition_event(before: tuple[Any, ...], q: Question) -> str:
     if before[-1] != _sidecar_signature(q):
         return "stepped" if q.steps else "changed"
     if was_status != q.status:
-        if q.status in ("open", "live"):
+        # Leaving `cleared` is always a restore, whatever status it lands on —
+        # a one-shot row that had already been answered when it was cleared
+        # comes back `answered`, not `open`, and that still has to read as
+        # `reopened` rather than `answered` a second time.
+        if was_status == "cleared" or q.status in ("open", "live"):
             return "reopened"
         return _arrival_event(q)
     return "changed"

@@ -733,39 +733,58 @@ class Store:
         return cur.rowcount
 
     def reopen(self, key: str) -> Question:
-        """Withdraw the latest answer.
+        """Withdraw the latest answer, or restore a cleared row.
 
-        Undo for the human surfaces. It cannot recall an answer an agent has
-        already read — `--wait` returns the moment the status leaves `open` — so
-        the question simply becomes askable again.
+        Undo for the human surfaces. On an answered or live row it cannot
+        recall an answer an agent has already read — `--wait` returns the
+        moment the status leaves `open` — so the question simply becomes
+        askable again.
+
+        On a *cleared* row there is nothing to withdraw: `clear` only ever
+        flips `status`, so the answers log, review, and steps are exactly as
+        they were. Restoring just moves status back — to `live` for a
+        persistent row (review, plan), keeping every verdict; to `answered`
+        for a one-shot row that already had one, else `open`. Undoing a
+        `clear` this way is what recovers a cleared review/plan row, which
+        the answer-withdrawing path below cannot do without deleting the
+        latest verdict it was never meant to touch.
         """
         q = self.get(key)
         if q is None:
             raise KeyError(f"no such question: {key}")
-        withdrawn_answer = q.answer
         now = _now()
-        # Only the latest verdict is withdrawn. On a persistent row that
-        # uncovers the previous one rather than returning the row to unanswered.
-        self.conn.execute(
-            "DELETE FROM answers WHERE id = ("
-            " SELECT id FROM answers WHERE question_id = ?"
-            " ORDER BY created_at DESC, id DESC LIMIT 1)",
-            (q.id,),
-        )
-        remaining = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM answers WHERE question_id = ?", (q.id,)
-        ).fetchone()["n"]
-        if q.persistent:
-            status = "live"
+        if q.status == "cleared":
+            withdrawn_answer = None
+            if q.persistent:
+                status = "live"
+            else:
+                status = "answered" if q.answer is not None else "open"
+            event = "restore"
         else:
-            status = "answered" if remaining else "open"
+            withdrawn_answer = q.answer
+            # Only the latest verdict is withdrawn. On a persistent row that
+            # uncovers the previous one rather than returning the row to unanswered.
+            self.conn.execute(
+                "DELETE FROM answers WHERE id = ("
+                " SELECT id FROM answers WHERE question_id = ?"
+                " ORDER BY created_at DESC, id DESC LIMIT 1)",
+                (q.id,),
+            )
+            remaining = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM answers WHERE question_id = ?", (q.id,)
+            ).fetchone()["n"]
+            if q.persistent:
+                status = "live"
+            else:
+                status = "answered" if remaining else "open"
+            event = "reopen"
         self.conn.execute(
             "UPDATE questions SET status = ?, updated_at = ? WHERE id = ?",
             (status, now, q.id),
         )
         result = self.get(key)
         assert result is not None
-        self._record(result, event="reopen", withdrawn_answer=withdrawn_answer)
+        self._record(result, event=event, withdrawn_answer=withdrawn_answer)
         return result
 
     def purge(
