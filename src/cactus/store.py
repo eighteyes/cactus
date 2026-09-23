@@ -654,18 +654,32 @@ class Store:
                 f" — undo it first if that verdict should change".replace("  ", " ")
             )
         now = _now()
-        self.conn.execute(
-            """
-            INSERT INTO answers (question_id, selected, text, skipped, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (q.id, json.dumps(list(selected or [])), text, 1 if skipped else 0, now),
-        )
         status = "live" if q.persistent else "answered"
-        self.conn.execute(
-            "UPDATE questions SET status = ?, updated_at = ? WHERE id = ?",
-            (status, now, q.id),
-        )
+        # One explicit transaction, not two autocommitted statements: in
+        # autocommit mode (isolation_level=None) each execute() commits on
+        # its own, so a poller — the monitor, another TUI tick — can land
+        # between the INSERT and the UPDATE and see an answer attached to a
+        # question whose status has not moved yet. That mid-flight read and
+        # the settled one differ, so the monitor emitted `answered` twice for
+        # one answer. Wrapping both writes in one transaction makes them a
+        # single state change from any other reader's point of view.
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO answers (question_id, selected, text, skipped, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (q.id, json.dumps(list(selected or [])), text, 1 if skipped else 0, now),
+            )
+            self.conn.execute(
+                "UPDATE questions SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, q.id),
+            )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
         result = self.get(key)
         assert result is not None
         self._record(result, event="answer")
