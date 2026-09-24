@@ -19,7 +19,8 @@ FRONTIER_MAX="${CACTUS_FRONTIER_MAX:-5}"
 rows=$(cactus list -s any --agent "$agent" --json 2>/dev/null) || exit 0
 # Whether a monitor for this agent is alive. An agent with open rows and no
 # monitor never hears the answers, so the frontier says so.
-watching=$(ps -ax -o command= | grep -F -- "--monitor" | grep -cF -- "--agent $agent")
+# Count processes whose --agent argument is exactly this id, not a prefix.
+watching=$(ps -ax -o command= | grep -F -- "--monitor" | awk -v id="$agent" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
 [ -n "$rows" ] || exit 0
 
 # Gist: --word when set, else the first 60 characters of the question.
@@ -43,7 +44,7 @@ jq -r --argjson max "$FRONTIER_MAX" '
       (if $total > $max then "  ... \($total - $max) more: cactus list -s any --agent \($agent)" else empty end),
       "  \($more | length) to elaborate (cactus edit KEY --agent ID --context ...), \($done | length) answered to act on and clear, \($open | length) open",
       (if (($more | length) + ($open | length)) > 0 and $watching == "0"
-       then "  no cactus monitor is running for this agent: start Monitor(command=\"cactus --monitor --agent \($agent)\", timeout_ms=1800000) now"
+       then "  no cactus monitor is running for this agent: start Monitor(command=\"cactus --monitor --json --agent \($agent)\", timeout_ms=1800000) now"
        else empty end)
     end
 ' --arg agent "$agent" --arg watching "$watching" <<<"$rows"
