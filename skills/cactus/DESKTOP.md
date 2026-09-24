@@ -1,5 +1,14 @@
 # Cactus on Claude Desktop and other MCP hosts
 
+A chat host is a poor fit for cactus because it has no backchannel: nothing
+can wake the agent when the human answers, so an answer is only ever found
+by polling. Chat turns also carry few decisions, and the human is already
+present, so most questions belong in the reply, not on the board. Post a
+row only when the decision outlives the conversation: a verify block, a
+plan, a command that needs approval, or a fork another agent or a later
+session will act on. Reading the board is the common case here, not
+writing to it.
+
 On an MCP host the cactus verbs are tools, not shell commands. Every verb in
 [SKILL.md](SKILL.md) maps to one tool with the same name and flags spelled as
 arguments:
