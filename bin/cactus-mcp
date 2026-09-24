@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# cactus-mcp — launcher for the MCP server, run from the checkout or plugin.
+#
+# Responsibilities:
+# - Run cactus.mcp from ../src with python3 >= 3.11 and no install step; the
+#   server and every agent verb it calls need only the standard library.
+# - Find that interpreter without a shell PATH: an MCP host such as Claude
+#   Desktop starts servers with the bare system PATH, where macOS python3 is
+#   too old. Honor $CACTUS_PYTHON, then search versioned names across PATH and
+#   the usual install prefixes.
+# - Keep PYTHONPATH exported so the server's `python -m cactus` subprocesses
+#   resolve the same source tree.
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}"
+
+ok() { [ -x "$1" ] && "$1" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; }
+
+py=""
+if [ -n "${CACTUS_PYTHON:-}" ]; then
+  ok "$CACTUS_PYTHON" && py="$CACTUS_PYTHON"
+fi
+if [ -z "$py" ]; then
+  dirs="/opt/homebrew/bin /usr/local/bin $HOME/.local/bin $HOME/.pyenv/shims /Library/Frameworks/Python.framework/Versions/Current/bin"
+  for name in python3.14 python3.13 python3.12 python3.11 python3; do
+    cand=$(command -v "$name" 2>/dev/null) && ok "$cand" && { py="$cand"; break; }
+    for d in $dirs; do
+      ok "$d/$name" && { py="$d/$name"; break 2; }
+    done
+  done
+fi
+if [ -z "$py" ]; then
+  echo "cactus-mcp: no python3 >= 3.11 found; set CACTUS_PYTHON to one" >&2
+  exit 1
+fi
+
+exec "$py" -m cactus.mcp "$@"

@@ -107,15 +107,17 @@ A mouse click moves the highlight and never submits.
 
 ## MCP server
 
-`cactus-mcp` exposes the agent verbs to any Model Context Protocol client over
-stdio, with no dependency beyond the standard library. Each tool runs one
-`cactus` verb with `--json`, so validation, ownership and exit codes are the
-CLI's. Claude Desktop reads it from `claude_desktop_config.json`:
+`bin/cactus-mcp` exposes the agent verbs to any Model Context Protocol client
+over stdio. It runs from the checkout or the installed plugin with `python3`
+alone, the same way `bin/cactus` does: no install step, no dependency beyond
+the standard library. Each tool runs one `cactus` verb with `--json`, so
+validation, ownership and exit codes are the CLI's. Claude Desktop reads it
+from `claude_desktop_config.json`:
 
     {
       "mcpServers": {
         "cactus": {
-          "command": "/Users/you/.local/bin/cactus-mcp",
+          "command": "/Users/you/projects/cactus/bin/cactus-mcp",
           "env": {
             "CACTUS_AGENT": "claude-desktop",
             "CACTUS_PROJECT": "/Users/you/projects/repo"
@@ -124,8 +126,9 @@ CLI's. Claude Desktop reads it from `claude_desktop_config.json`:
       }
     }
 
-Use the absolute path from `which cactus-mcp`; the desktop app does not
-inherit a shell `PATH`. `CACTUS_AGENT` is the `--agent` stamped on every row
+Use an absolute path; the desktop app does not inherit a shell `PATH`. The
+plugin's `.mcp.json` registers the same server for Claude Code under
+`${CLAUDE_PLUGIN_ROOT}`. `CACTUS_AGENT` is the `--agent` stamped on every row
 the client posts, `CACTUS_PROJECT` is the project rows file under when a call
 gives no `project`, and defaults to the home directory. `CACTUS_DB` is honored
 the same way as at the CLI.
