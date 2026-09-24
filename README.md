@@ -153,9 +153,25 @@ The hooks exit quietly when no `cactus` is on `PATH`.
 ## Other agents: Codex, Grok, Gemini
 
 **Any agent with a shell uses the CLI; any MCP client uses the server.** The
-skill and hooks are Claude Code only, so teach the workflow through the
-instruction file these agents read: `AGENTS.md` at the repository root
-(Codex, Grok and Gemini all load it).
+`/plugin` install above is the Claude Code plugin. Each host has its own
+page in the skill, and two hosts have a plugin of their own:
+
+    Codex    plugins/cactus — Codex plugin: the skill plus SessionStart,
+             UserPromptSubmit, PermissionRequest and Stop hooks, which take
+             the Codex session id as the row owner. Install from the repo's
+             marketplace at .agents/plugins/marketplace.json (`cactus-local`).
+             Host page: skills/cactus/CODEX.md
+    Grok     no plugin; a webhook wakes the agent instead of a monitor.
+             Host page: skills/cactus/GROK.md; transport: WEBHOOK_SETUP.md
+    Gemini   no plugin; CLI or MCP server, workflow from AGENTS.md
+
+- [skills/cactus/CODEX.md](skills/cactus/CODEX.md)
+- [skills/cactus/GROK.md](skills/cactus/GROK.md)
+- [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md)
+
+An agent with no plugin learns the workflow from the instruction file it
+reads, `AGENTS.md` at the repository root (Codex, Grok and Gemini all load
+it):
 
     ## cactus
     Every decision the human makes goes to cactus, not chat.
