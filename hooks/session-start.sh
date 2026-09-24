@@ -3,6 +3,7 @@
 # Inject the required cactus workflow, the agent's identity, and the project's open rows at session start.
 # Responsibilities:
 #   - stay silent when cactus is not installed
+#   - open with a ready-to-run Monitor command when no monitor runs for this agent
 #   - print the five-step workflow every agent follows: monitor, ask, work, act, clear
 #   - resolve the --agent value through identity.sh and print it
 #   - rehome rows this pane posted under a previous identity (after /clear or --resume)
@@ -14,6 +15,20 @@ command -v cactus >/dev/null 2>&1 || exit 0
 # shellcheck source=identity.sh
 . "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
 agent=$(cactus_resolve_agent)
+
+# Setup comes first: an agent with no monitor never hears its answers (q252).
+if [ -n "$agent" ]; then
+  watching=$(ps -ax -o command= | grep -F -- "--monitor" \
+    | awk -v id="$agent" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
+  if [ "$watching" = "0" ]; then
+    echo "FIRST, before anything else: set up your cactus monitor with the Monitor tool:"
+    echo "  Monitor(command=\"cactus --monitor --json --agent $agent\", timeout_ms=1800000)"
+  else
+    echo "Your cactus monitor is running (--agent $agent)."
+  fi
+else
+  echo "FIRST: choose one stable --agent value for this session and start the Monitor tool on \`cactus --monitor --json --agent <that value>\`."
+fi
 
 cat <<EOF
 cactus is installed. Its workflow is required, not optional:

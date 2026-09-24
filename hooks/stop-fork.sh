@@ -13,12 +13,29 @@
 #     already contains a Bash `cactus ask`/`cac ask` invocation or an
 #     AskUserQuestion tool_use
 #
-# Never touches the cactus database and never runs `cactus` beyond `command -v`.
+#   - block when the agent has open rows and no monitor process (q252)
+#
+# Read-only: one `cactus list` for the agent's open rows; never writes.
 set -u
 
 command -v cactus >/dev/null 2>&1 || exit 0
 
 input=$(cat)
+
+# Monitor check (q252): an agent with open rows and no monitor never hears the
+# answers. Read-only: one `cactus list` and a process scan.
+# shellcheck source=identity.sh
+. "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
+CACTUS_ID=$(cactus_resolve_agent 2>/dev/null)
+CACTUS_OPEN=0
+CACTUS_WATCHING=1
+if [ -n "$CACTUS_ID" ] && command -v jq >/dev/null 2>&1; then
+  CACTUS_OPEN=$(cactus list -s any --agent "$CACTUS_ID" --json 2>/dev/null \
+    | jq '[.[] | select(.status == "open" or .status == "live" or .status == "elaborate")] | length' 2>/dev/null)
+  CACTUS_WATCHING=$(ps -ax -o command= | grep -F -- "--monitor" \
+    | awk -v id="$CACTUS_ID" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
+fi
+export CACTUS_ID CACTUS_OPEN="${CACTUS_OPEN:-0}" CACTUS_WATCHING
 
 python3 - "$input" <<'PYEOF'
 import json
@@ -31,6 +48,19 @@ except Exception:
     sys.exit(0)
 
 if hook_input.get("stop_hook_active"):
+    sys.exit(0)
+
+# Checked before the fork rule and on every turn, background ones included:
+# a --once waiter that has fired leaves the agent with no monitor at all.
+import os
+open_rows = int(os.environ.get("CACTUS_OPEN") or 0)
+if open_rows > 0 and os.environ.get("CACTUS_WATCHING") == "0":
+    agent = os.environ.get("CACTUS_ID", "ID")
+    print(json.dumps({"decision": "block", "reason": (
+        f"you have {open_rows} open cactus row(s) and no monitor running; start "
+        f"Monitor(command=\"cactus --monitor --json --agent {agent}\", "
+        "timeout_ms=1800000) now, then stop"
+    )}))
     sys.exit(0)
 
 transcript_path = hook_input.get("transcript_path")
