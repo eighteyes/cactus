@@ -198,3 +198,12 @@ Install it as a plugin and confirm the skill and agent register:
     claude plugin install cactus@cactus
 
 PASS: a fresh session's Skill listing shows `cactus` and the Agent types show `cactus-courier`.
+
+# cactus --www (2d603d0)
+
+1. `PYTHONPATH=src python3 -m cactus --www --open` from a project with open rows.
+2. Rail lists rows grouped by project; first row is selected; `j`/`k` move.
+3. Answer a choice row with the recommended option preselected; toast reports the poke outcome.
+4. Post a new row from another shell; it appears without reload and raises a toast.
+5. `bash .ai/tmp/test_www.sh` prints `ALL PASS`.
+Fail: any 500 from `/api/*`, page needs reload to see a new row, answer on an answered row succeeds.

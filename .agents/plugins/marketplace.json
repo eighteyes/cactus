@@ -1,0 +1,20 @@
+{
+  "name": "cactus-local",
+  "interface": {
+    "displayName": "Cactus Local"
+  },
+  "plugins": [
+    {
+      "name": "cactus",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cactus"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

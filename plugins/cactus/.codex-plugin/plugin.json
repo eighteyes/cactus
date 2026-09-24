@@ -1,0 +1,19 @@
+{
+  "name": "cactus",
+  "version": "0.1.0",
+  "description": "Durable human decision inbox for Codex agents.",
+  "author": {
+    "name": "eighteyes"
+  },
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Cactus",
+    "shortDescription": "Ask durable questions without stopping work.",
+    "longDescription": "Cactus gives Codex agents a durable, project-scoped inbox for human decisions, approvals, and follow-up work.",
+    "developerName": "eighteyes",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Cactus to park a decision while continuing the task."
+  }
+}

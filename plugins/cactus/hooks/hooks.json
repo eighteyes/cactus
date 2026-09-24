@@ -1,0 +1,52 @@
+{
+  "description": "Keep Cactus rows owned by the active Codex session visible and actionable.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/hooks/session-start.sh\"",
+            "timeout": 10,
+            "statusMessage": "Loading Cactus frontier"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/hooks/frontier.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/hooks/permission-request.sh\"",
+            "timeout": 10,
+            "statusMessage": "Creating Cactus approval"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT}/hooks/stop.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
