@@ -197,15 +197,32 @@ git. An agent clearing its own row does not write a record.
 
 ## Configuration
 
-    CACTUS_DB        database path; default ~/.local/share/cactus/cactus.db
-    CACTUS_POKE      transport for pokes; {agent} and {message} are substituted
-    CACTUS_AGENT     default for --by
-    CACTUS_RECORDS   0 disables decision records
-    HERDR_*          workspace, tab, pane and session stamps recorded at ask time
+    CACTUS_DB             database path; default ~/.local/share/cactus/cactus.db
+    CACTUS_POKE           override poke transport for *every* agent; {agent} and
+                         {message} are substituted (tests / forced transport)
+    CACTUS_POKE_WEBHOOKS  JSON map of agent id → webhook; default
+                         ~/.config/cactus/poke-webhooks.json
+    CACTUS_AGENT          default for --by
+    CACTUS_RECORDS        0 disables decision records
+    HERDR_*               workspace, tab, pane and session stamps recorded at ask time
 
-Pokes default to `herdr agent prompt`, which delivers a prompt to a live agent
-in the herdr terminal multiplexer. Without
-herdr, set `CACTUS_POKE` to another command or leave pokes unused.
+Poke is question-level: it targets the row's `--agent`. Resolution order is
+`CACTUS_POKE` (if set), else a webhook map entry for that agent id, else
+`herdr agent prompt`. Webhook map entries look like:
+
+    {
+      "AGENT_ID": {
+        "url": "https://example.com/wake",
+        "authorization": "Bearer …"
+      }
+    }
+
+The TUI's `p` binding is offered whenever the row has an agent, including
+agents outside herdr. Answering a row auto-pokes when that agent is in the
+webhook map; herdr/monitor agents are not auto-poked.
+
+Full checklist, smoke test, and gotchas:
+[skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md).
 
 ## Testing against cactus
 

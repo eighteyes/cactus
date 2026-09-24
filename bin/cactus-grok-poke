@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Deprecated. Poke routing is built into cactus via
+# ~/.config/cactus/poke-webhooks.json (see skills/cactus/WEBHOOK_SETUP.md).
+# This script remains as a manual POST helper.
+set -euo pipefail
+agent=${1:?agent}
+message=${2:?message}
+exec cactus poke --agent "$agent" -m "$message"

@@ -5,6 +5,18 @@ description: Ask the human without stopping work. Use cactus instead of AskUserQ
 
 # cactus — the durable inbox between you and the human
 
+## Choose your runtime instructions
+
+This file is the shared Cactus workflow. Before starting a monitor or relying
+on an automatic wake-up, read the instructions for the host running you:
+
+- [Claude Code](CLAUDE.md) — Claude plugin hooks, Herdr identity, and courier.
+- [Codex](CODEX.md) — Codex plugin hooks and the Codex session identity.
+- [Grok](GROK.md) — webhook wake-up rather than a persistent local monitor.
+
+The host-specific file changes only identity and wake-up mechanics. The row
+semantics, authoring rules, and ownership rules below apply everywhere.
+
 cactus is a SQLite inbox. You post a row, get a key back, and keep working. The
 human answers in `cactus --tui` on their own schedule, from any project, and you
 read the answer when you reach the fork. Rows survive the session, so the next
@@ -37,14 +49,9 @@ JSON line, already filtered to your rows:
 
     cactus --monitor --json --agent "$AGENT"
 
-Run it with the `Monitor` tool by default. Monitor expires after 30 minutes;
-when it does, switch to a background one-shot that exits on the first event
-that is not `asked`, then re-arm `Monitor` once the user is active again:
-
-    cactus --monitor --json --agent "$AGENT" --once      # Bash run_in_background
-
-Without `Monitor` at all, the one-shot in the background is the whole loop:
-re-run it after each event.
+Start and re-arm the monitor using the mechanism in your runtime instructions.
+If the host cannot retain a monitor attached to the conversation, it must use
+a webhook wake-up instead.
 
 ## Blocked by a permission prompt
 
@@ -236,3 +243,11 @@ for nothing.
 
 `--wait` on a row you posted with `--no-block`, or on a `steer`, `seen`,
 `review`, or `plan`, is exit 1: nothing will ever arrive.
+
+## Webhook owners
+
+Agents that cannot keep a local monitor attached to their conversation must
+use a per-agent webhook wake-up. Read [GROK.md](GROK.md) for the external-agent
+recipe and [WEBHOOK_SETUP.md](WEBHOOK_SETUP.md) for the map, smoke test, and
+transport details. Do not set global `CACTUS_POKE` in a normal shell profile:
+it overrides Herdr delivery for every agent.

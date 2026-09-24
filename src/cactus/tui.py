@@ -64,10 +64,13 @@ def _flatten(text: str) -> str:
 
 
 def _pokeable(q: Question) -> bool:
-    """A row can be poked only when it has an owner and herdr pane and session
-    stamps: the default transport prompts a herdr pane, so a row posted outside
-    herdr has nowhere for the nudge to land, and the footer should not offer it."""
-    return bool(q.agent and q.pane and q.session)
+    """A row can be poked when it names an owning agent.
+
+    Poke is question-level: the transport follows `q.agent` (webhook map entry
+    or the default herdr prompt). Herdr pane/session stamps are not required —
+    agents outside herdr still need a nudge path.
+    """
+    return bool(q.agent)
 
 
 def _confirm_hint(q: Question) -> str:
@@ -812,12 +815,15 @@ class CactusApp(App[int]):
             self.store.set_run_result(
                 key, project=project, exit_code=exit_code, tail=lines[-50:], log=str(log_path)
             )
-            self.store.answer(key, project=project, selected=["approve"], text=None)
+            answered = self.store.answer(key, project=project, selected=["approve"], text=None)
+            self._auto_poke_webhook(answered.agent)
         except Exception as exc:
             self.flash = f"{key}: result not recorded: {exc}"
         if self.focused_key == key:
             self._rebuild_card()
-            self.flash = f"{key}: approved, exit {exit_code}"
+            # Prefer auto-poke flash when set; otherwise the approve summary.
+            if not (self.flash or "").startswith("answered"):
+                self.flash = f"{key}: approved, exit {exit_code}"
             self._rebuild_status_bar()
 
     def _append_output(self, key: str, line: str) -> None:
@@ -862,6 +868,18 @@ class CactusApp(App[int]):
             self._rebuild_status_bar()
             return
         await self._submit_answer(q, selected=[], text=None, skipped=True, label="dismissed")
+
+    def _auto_poke_webhook(self, agent: str | None) -> None:
+        """After an answer, wake webhook-mapped agents only (never herdr)."""
+        from .poke import poke_webhook_if_mapped, PokeError
+
+        try:
+            woke = poke_webhook_if_mapped(agent, timeout=5.0)
+        except PokeError as exc:
+            self.flash = f"answered; webhook poke failed: {exc}"
+            return
+        if woke:
+            self.flash = f"answered; auto-poked {agent}"
 
     async def action_poke(self) -> None:
         """Nudge the agent that owns the focused row to re-read its feed.
@@ -1295,6 +1313,7 @@ class CactusApp(App[int]):
             except (KeyError, ValueError) as exc:
                 await self._refuse(exc)
                 return
+            self._auto_poke_webhook(q.agent)
             self._push_undo(q.key, "noted", [], text, project=q.project)
             self.pending_text = ""
             self.free_text_mode = False
@@ -1371,6 +1390,7 @@ class CactusApp(App[int]):
         except (AlreadyAnswered, ValueError) as exc:
             await self._refuse(exc)
             return
+        self._auto_poke_webhook(q.agent)
         self._push_undo(q.key, label or ("skipped" if skipped else "answered"), selected, text,
                         project=q.project)
         await self._advance_after(q.key)

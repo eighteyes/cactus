@@ -111,7 +111,8 @@ FILES
 
 ENVIRONMENT
   CACTUS_DB       database path
-  CACTUS_POKE     poke transport; {agent} {message}. Default prompts a live agent
+  CACTUS_POKE     override poke transport for every agent; {agent} {message}
+  CACTUS_POKE_WEBHOOKS  agent→webhook JSON map (default ~/.config/cactus/poke-webhooks.json)
   CACTUS_AGENT    default --by
   CACTUS_RECORDS  0 disables records
   HERDR_*         scope stamps; see STAMPS
@@ -538,6 +539,15 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     except ValueError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
+    # Webhook-mapped owners need a wake; herdr agents rely on --monitor.
+    try:
+        from .poke import poke_webhook_if_mapped, PokeError
+
+        woke = poke_webhook_if_mapped(q.agent)
+        if woke and not args.json:
+            print(f"auto-poke: {woke}", file=sys.stderr)
+    except PokeError as exc:
+        print(f"cactus: answer saved; webhook poke failed: {_msg(exc)}", file=sys.stderr)
     _emit_one(q, as_json=args.json)
     return EXIT_OK
 
