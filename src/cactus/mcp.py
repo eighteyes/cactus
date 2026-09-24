@@ -17,13 +17,21 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .store import default_db_path
 
 PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_AGENT = "claude-desktop"
+# Longest a single tool call may block. MCP hosts cap a call at about a
+# minute; a `wait` past that reads as a hang, so the server clamps it and the
+# client calls again. CACTUS_MCP_MAX_WAIT overrides it.
+MAX_WAIT = 50.0
+# Slack past the wait for the subprocess itself to start and exit.
+SUBPROCESS_GRACE = 15.0
 
 # Exit codes mirrored from cli.py; imported lazily there to keep startup cheap.
 EXIT_OK, EXIT_ERROR, EXIT_TIMEOUT, EXIT_EMPTY = 0, 1, 2, 3
@@ -60,28 +68,69 @@ def _default_project() -> str:
     return os.environ.get("CACTUS_PROJECT") or str(Path.home())
 
 
-def _run(argv: list[str], *, project: str | None, agent: str | None = None) -> dict[str, Any]:
+def _max_wait() -> float:
+    try:
+        return float(os.environ.get("CACTUS_MCP_MAX_WAIT") or MAX_WAIT)
+    except ValueError:
+        return MAX_WAIT
+
+
+def _log_path() -> str | None:
+    """Where request lines go: $CACTUS_MCP_LOG, else mcp.log beside the
+    database; "0" or "" turns it off. A host shows no server stderr, so
+    this file is the only trace of what reached the server."""
+    raw = os.environ.get("CACTUS_MCP_LOG")
+    if raw is None:
+        return str(default_db_path().parent / "mcp.log")
+    return raw if raw not in ("", "0") else None
+
+
+def _log(line: str) -> None:
+    """Append one timestamped line to the request log; never raises."""
+    path = _log_path()
+    if not path:
+        return
+    try:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} [{os.getpid()}] {line.rstrip(chr(10))}\n")
+    except (OSError, ValueError):
+        pass
+
+
+def _run(argv: list[str], *, project: str | None, agent: str | None = None,
+         wait: float | None = None) -> dict[str, Any]:
     """Run one cactus verb and shape its outcome for a tool result.
 
     Exit 0 returns the parsed JSON (or raw text). Exit 3 is an empty match,
     not an error. Exit 2 is a --wait timeout, reported as such. Exit 1 is an
-    error carrying the CLI's stderr line.
+    error carrying the CLI's stderr line. `wait` is the --timeout the argv
+    carries, so the hard subprocess limit can sit just past it.
     """
     cwd = project or _default_project()
     if not Path(cwd).is_dir():
         return {"is_error": True, "text": f"cactus: project directory not found: {cwd}"}
     env = dict(os.environ)
     env.setdefault("CACTUS_AGENT", agent or _default_agent())
+    limit = (wait or 0.0) + SUBPROCESS_GRACE
+    _log(f"run cwd={cwd} limit={limit:.0f}s argv={argv!r}")
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "cactus", "--json", *argv],
             cwd=cwd,
             env=env,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            timeout=limit,
         )
+    except subprocess.TimeoutExpired:
+        _log("run killed: subprocess exceeded its limit")
+        return {"is_error": True, "text": f"cactus: verb did not finish within {limit:.0f}s and was killed"}
     except OSError as exc:
         return {"is_error": True, "text": f"cactus: could not start subprocess: {exc}"}
+    _log(f"run exit={proc.returncode}")
     out = proc.stdout.strip()
     err = proc.stderr.strip()
     if proc.returncode == EXIT_OK:
@@ -286,6 +335,22 @@ def _repeat(argv: list[str], name: str, values: Any) -> None:
         argv.extend([name, str(v)])
 
 
+def _clamp_wait(a: dict[str, Any]) -> float | None:
+    """The --timeout to pass for a `wait` call: the caller's, clamped to the cap.
+
+    A `wait` with no timeout would block the CLI forever, and an MCP host
+    reads that as a hung tool. So every wait gets a timeout.
+    """
+    if not a.get("wait"):
+        return None
+    cap = _max_wait()
+    try:
+        asked = float(a.get("timeout")) if a.get("timeout") is not None else cap
+    except (TypeError, ValueError):
+        asked = cap
+    return max(0.0, min(asked, cap))
+
+
 def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
     """Translate tool arguments into a cactus argv, or None for a tool with no CLI verb."""
     argv: list[str] = []
@@ -311,7 +376,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         _flag(argv, "--word", a.get("word"))
         _flag(argv, "--title", a.get("title"))
         _flag(argv, "--wait", a.get("wait"))
-        _flag(argv, "--timeout", a.get("timeout"))
+        _flag(argv, "--timeout", _clamp_wait(a))
     elif name == "cactus_run":
         argv = ["run", a["command"], "--agent", a.get("agent") or _default_agent()]
         _flag(argv, "--why", a.get("why"))
@@ -322,7 +387,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
     elif name == "cactus_get":
         argv = ["get", *a["keys"]]
         _flag(argv, "--wait", a.get("wait"))
-        _flag(argv, "--timeout", a.get("timeout"))
+        _flag(argv, "--timeout", _clamp_wait(a))
         _flag(argv, "--answered-only", a.get("answered_only"))
         _flag(argv, "--all", a.get("all"))
     elif name == "cactus_list":
@@ -390,7 +455,8 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     argv = _argv_for(name, arguments)
     if argv is None:
         return {"content": [{"type": "text", "text": f"unknown tool: {name}"}], "isError": True}
-    outcome = _run(argv, project=arguments.get("project"), agent=arguments.get("agent"))
+    outcome = _run(argv, project=arguments.get("project"), agent=arguments.get("agent"),
+                   wait=_clamp_wait(arguments))
     return {"content": [{"type": "text", "text": outcome["text"]}], "isError": outcome["is_error"]}
 
 
@@ -405,14 +471,17 @@ def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
 
 
-def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
+def handle(msg: Any) -> dict[str, Any] | None:
     """Dispatch one request; a notification (no id) returns None."""
+    if not isinstance(msg, dict):
+        return _error(None, -32600, "invalid request: expected a JSON object")
     method = msg.get("method")
     msg_id = msg.get("id")
     params = msg.get("params") or {}
+    _log(f"<- {method} id={msg_id!r}")
     if method == "initialize":
         return _reply(msg_id, {
-            "protocolVersion": params.get("protocolVersion") or PROTOCOL_VERSION,
+            "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "cactus", "version": __version__},
             "instructions": INSTRUCTIONS,
@@ -433,10 +502,30 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
     return _error(msg_id, -32601, f"method not found: {method}")
 
 
+def _emit(stdout, out: dict[str, Any] | None) -> bool:
+    """Write one reply; False when the host has closed the pipe."""
+    if out is None:
+        return True
+    try:
+        stdout.write(json.dumps(out) + "\n")
+        stdout.flush()
+    except BrokenPipeError:
+        _log("serve end: host closed stdout")
+        return False
+    return True
+
+
 def serve(stdin=None, stdout=None) -> int:
-    """Read newline-delimited JSON-RPC from stdin, write responses to stdout."""
+    """Read newline-delimited JSON-RPC from stdin, write responses to stdout.
+
+    One bad message never ends the loop: a parse error, a batch (a JSON
+    array, answered element by element), or an exception inside a handler
+    each produce an error reply for that message, and the next line is read.
+    A silent exit here would look to the host exactly like a hung server.
+    """
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
+    _log("serve start")
     for line in stdin:
         line = line.strip()
         if not line:
@@ -444,12 +533,19 @@ def serve(stdin=None, stdout=None) -> int:
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
-            out = _error(None, -32700, "parse error")
-        else:
-            out = handle(msg)
-        if out is not None:
-            stdout.write(json.dumps(out) + "\n")
-            stdout.flush()
+            if not _emit(stdout, _error(None, -32700, "parse error")):
+                return 0
+            continue
+        for one in (msg if isinstance(msg, list) else [msg]):
+            try:
+                out = handle(one)
+            except Exception as exc:  # noqa: BLE001 - keep serving whatever broke
+                _log(f"handler error: {exc!r}")
+                msg_id = one.get("id") if isinstance(one, dict) else None
+                out = _error(msg_id, -32603, f"internal error: {exc}")
+            if not _emit(stdout, out):
+                return 0
+    _log("serve end: stdin closed")
     return 0
 
 

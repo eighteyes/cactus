@@ -154,9 +154,14 @@ Tools: `cactus_ask`, `cactus_run`, `cactus_get`, `cactus_list`, `cactus_feed`,
 `cactus_where`, `cactus_help`. Every tool takes an optional `project` (absolute
 path) so one server can file rows under any repository. An MCP host cannot
 hold a monitor, so a client reads answers with `cactus_get`; a `wait` there
-should stay under the host's tool timeout and be called again, and a timeout
-comes back as `{"timeout": true}` rather than an error. Exit 3 comes back as
-`{"match": false}`.
+is clamped to `CACTUS_MCP_MAX_WAIT` seconds (default 50, under a host's tool
+cap) and comes back as `{"timeout": true}` rather than an error, so the
+client calls again. Exit 3 comes back as `{"match": false}`.
+
+The server appends one line per request and per verb run to `mcp.log` beside
+the database (`~/.local/share/cactus/mcp.log`); `CACTUS_MCP_LOG` moves it,
+`CACTUS_MCP_LOG=0` turns it off. A host shows no server stderr, so that file
+is the only trace of what reached the server when a call appears to hang.
 
 ## Concepts
 
