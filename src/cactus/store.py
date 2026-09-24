@@ -77,7 +77,7 @@ ACT_SHAPES: dict[str, tuple[str, ...]] = {
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS questions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    key          TEXT    NOT NULL UNIQUE,
+    key          TEXT    NOT NULL,
     num          INTEGER,
     project      TEXT    NOT NULL,
     cwd          TEXT    NOT NULL,
@@ -113,7 +113,10 @@ CREATE TABLE IF NOT EXISTS questions (
     -- for Store.unelaborate, 'edited' for Store.edit. A pure before/after
     -- diff cannot tell the two apart — both leave the row at the same
     -- status — so the monitor reads this marker instead.
-    last_change  TEXT
+    last_change  TEXT,
+    -- Keys number per project (q166). A fresh database starts here; an older
+    -- one reaches it through `cactus migrate --yes`.
+    UNIQUE(project, key)
 );
 
 -- Append-only. A persistent row is verdicted repeatedly, so the current answer
