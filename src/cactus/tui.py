@@ -63,6 +63,13 @@ def _flatten(text: str) -> str:
     return " ".join(text.split())
 
 
+def _pokeable(q: Question) -> bool:
+    """A row can be poked only when it has an owner and herdr pane and session
+    stamps: the default transport prompts a herdr pane, so a row posted outside
+    herdr has nowhere for the nudge to land, and the footer should not offer it."""
+    return bool(q.agent and q.pane and q.session)
+
+
 def _confirm_hint(q: Question) -> str:
     """Confirm-row hint built from the row's own labels, not a fixed yes/no."""
     labels = [c.label for c in q.choices] or ["yes", "no"]
@@ -189,14 +196,14 @@ def _card_lines(
         # promise a key that check_action already refuses.
         hint = "awaiting rewrite by the agent — no answers accepted"
         extras = ["c clear", "u withdraw request"]
-        if q.agent:
+        if _pokeable(q):
             extras.append("p poke")
     else:
         hint = _confirm_hint(q) if q.kind == "confirm" else HINTS.get(q.kind, "")
         extras = []
         if q.review is not None and q.review.run_cmd:
-            extras.append("C copy   R run   p poke")
-        elif q.agent:
+            extras.append("C copy   R run")
+        if _pokeable(q):
             extras.append("p poke")
         if q.act == "plan" and q.steps:
             extras.append("1-9 toggle step")
@@ -669,7 +676,7 @@ class CactusApp(App[int]):
         if action == "dismiss":
             return q.act == "seen"
         if action == "poke":
-            return bool(q.agent)
+            return _pokeable(q)
         if action == "undo":
             return bool(self.undo_stack)
         if action == "elaborate":
@@ -868,8 +875,9 @@ class CactusApp(App[int]):
         q = self._current_question()
         if q is None:
             return
-        if not q.agent:
-            self.flash = f"{q.key} has no agent to poke"
+        if not _pokeable(q):
+            # check_action keeps the binding off here; on_key owns the flash.
+            return
         else:
             try:
                 poke(q.agent, timeout=5.0)
@@ -1001,6 +1009,18 @@ class CactusApp(App[int]):
             q = self._current_question()
             if q is not None and q.kind != "confirm":
                 self.flash = f"y/n only answer a confirm row — {q.key} is {q.kind}"
+                self._rebuild_status_bar()
+                event.stop()
+            return
+        if event.key == "p":
+            # poke only binds on a row with an owner and herdr stamps
+            # (check_action); a row posted outside herdr otherwise ate the key.
+            q = self._current_question()
+            if q is not None and not _pokeable(q):
+                self.flash = (
+                    f"{q.key} has no agent to poke" if not q.agent
+                    else f"{q.key} was posted outside herdr; nothing to poke"
+                )
                 self._rebuild_status_bar()
                 event.stop()
 
