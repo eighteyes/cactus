@@ -105,6 +105,41 @@ keyboard-driven:
 
 A mouse click moves the highlight and never submits.
 
+## MCP server
+
+`cactus-mcp` exposes the agent verbs to any Model Context Protocol client over
+stdio, with no dependency beyond the standard library. Each tool runs one
+`cactus` verb with `--json`, so validation, ownership and exit codes are the
+CLI's. Claude Desktop reads it from `claude_desktop_config.json`:
+
+    {
+      "mcpServers": {
+        "cactus": {
+          "command": "/Users/you/.local/bin/cactus-mcp",
+          "env": {
+            "CACTUS_AGENT": "claude-desktop",
+            "CACTUS_PROJECT": "/Users/you/projects/repo"
+          }
+        }
+      }
+    }
+
+Use the absolute path from `which cactus-mcp`; the desktop app does not
+inherit a shell `PATH`. `CACTUS_AGENT` is the `--agent` stamped on every row
+the client posts, `CACTUS_PROJECT` is the project rows file under when a call
+gives no `project`, and defaults to the home directory. `CACTUS_DB` is honored
+the same way as at the CLI.
+
+Tools: `cactus_ask`, `cactus_run`, `cactus_get`, `cactus_list`, `cactus_feed`,
+`cactus_answer`, `cactus_edit`, `cactus_review`, `cactus_plan`,
+`cactus_clear`, `cactus_reopen`, `cactus_threads`, `cactus_projects`,
+`cactus_where`, `cactus_help`. Every tool takes an optional `project` (absolute
+path) so one server can file rows under any repository. An MCP host cannot
+hold a monitor, so a client reads answers with `cactus_get`; a `wait` there
+should stay under the host's tool timeout and be called again, and a timeout
+comes back as `{"timeout": true}` rather than an error. Exit 3 comes back as
+`{"match": false}`.
+
 ## Concepts
 
 ### Answer shapes

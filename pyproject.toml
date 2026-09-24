@@ -16,6 +16,7 @@ Repository = "https://github.com/eighteyes/cactus"
 [project.scripts]
 cactus = "cactus.cli:main"
 cac = "cactus.cli:main"
+cactus-mcp = "cactus.mcp:main"
 
 [build-system]
 requires = ["hatchling"]

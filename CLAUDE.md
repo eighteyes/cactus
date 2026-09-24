@@ -39,6 +39,9 @@ Four layers, one direction of dependency:
     monitor.py   plain-stdout event stream (agent): one line per transition
     poke.py      contentless nudge to a row's owning agent via $CACTUS_POKE
     shell.py     clipboard copy, command run, and output spill for the TUI
+    mcp.py       stdio MCP server (agent hosts such as Claude Desktop): each
+                 tool is one `cactus --json` subprocess, so cli.py stays the
+                 only validator; dependency-free JSON-RPC, `cactus-mcp` script
 
 `poke` and `shell` are side leaves, imported lazily at the call site by `cli`
 and `tui`; they never touch the store.
