@@ -3,7 +3,7 @@
     "cactus": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/cactus-mcp",
       "env": {
-        "CACTUS_AGENT": "claude-code-mcp"
+        "CACTUS_AGENT": "claude-desktop"
       }
     }
   }

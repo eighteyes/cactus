@@ -127,8 +127,20 @@ from `claude_desktop_config.json`:
     }
 
 Use an absolute path; the desktop app does not inherit a shell `PATH`. The
-plugin's `.mcp.json` registers the same server for Claude Code under
-`${CLAUDE_PLUGIN_ROOT}`. `CACTUS_AGENT` is the `--agent` stamped on every row
+plugin's `.mcp.json` registers the same server under `${CLAUDE_PLUGIN_ROOT}`
+for any host that installs the plugin.
+
+Claude Desktop can instead install the whole plugin as one file. It accepts a
+`.plugin` archive: a zip with `.claude-plugin/plugin.json` at its root, plus
+the skill, hooks, launchers, `.mcp.json` and source. Build it with
+
+    scripts/package-plugin.sh          # writes dist/cactus-<version>.plugin
+
+and install it from Claude Desktop under Settings > Plugins, or by dropping
+the file on the window. Desktop extracts it into its local-uploads
+marketplace, enables it, and starts the MCP server from `.mcp.json`; the
+launcher finds a Python 3.11+ interpreter on its own, since Desktop starts
+servers with the bare system `PATH`. `CACTUS_AGENT` is the `--agent` stamped on every row
 the client posts, `CACTUS_PROJECT` is the project rows file under when a call
 gives no `project`, and defaults to the home directory. `CACTUS_DB` is honored
 the same way as at the CLI.
