@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# cactus — launcher the Claude Code plugin puts on PATH (q251).
+#
+# Responsibilities:
+# - Run the plugin's own copy of cactus (../src) with python3 >= 3.11, so
+#   agent verbs work with no install step; they need only the standard library.
+# - For --tui and --watch, which need textual: use it when importable, else
+#   run through `uv` with textual added, else say how to install it.
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}"
+
+py=$(command -v python3) || { echo "cactus: python3 not found on PATH" >&2; exit 1; }
+"$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' \
+  || { echo "cactus: needs python3 >= 3.11 ($("$py" --version 2>&1))" >&2; exit 1; }
+
+needs_textual=0
+for arg in "$@"; do
+  case "$arg" in --tui|--watch) needs_textual=1 ;; esac
+done
+
+if [ "$needs_textual" = 1 ] && ! "$py" -c 'import textual' 2>/dev/null; then
+  if command -v uv >/dev/null 2>&1; then
+    exec uv run --quiet --no-project --python ">=3.11" --with "textual>=0.80" \
+      python -m cactus "$@"
+  fi
+  echo "cactus: --tui and --watch need textual; install uv, or run:" >&2
+  echo "  uv tool install git+https://github.com/eighteyes/cactus" >&2
+  exit 1
+fi
+
+exec "$py" -m cactus "$@"

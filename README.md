@@ -27,11 +27,17 @@ This provides the `cactus` command and the `cac` alias. From a checkout:
 
 The repository is also a Claude Code plugin marketplace. The plugin adds a
 skill that teaches agents the workflow, a courier agent that waits on answers,
-and the hooks described under [Plugin hooks](#plugin-hooks). The CLI must be
-installed separately; every hook exits silently when `cactus` is not on `PATH`.
+and the hooks described under [Plugin hooks](#plugin-hooks).
 
     /plugin marketplace add eighteyes/cactus
     /plugin install cactus@cactus
+
+The plugin puts its own `cactus` launcher on `PATH`, so agents need no separate
+install; the agent commands require only `python3` 3.11 or later. `--tui` and
+`--watch` also need textual: the launcher uses it when installed, otherwise
+runs through `uv` with textual added, otherwise prints the install command.
+When cactus is also installed with `uv tool install`, both copies read the
+same database; keep them at the same version.
 
 ## Quick start
 
