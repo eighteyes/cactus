@@ -13,9 +13,13 @@ on an automatic wake-up, read the instructions for the host running you:
 - [Claude Code](CLAUDE.md) — Claude plugin hooks, Herdr identity, and courier.
 - [Codex](CODEX.md) — Codex plugin hooks and the Codex session identity.
 - [Grok](GROK.md) — webhook wake-up rather than a persistent local monitor.
+- [Claude Desktop and other MCP hosts](DESKTOP.md) — the verbs are
+  `cactus_*` tools, there is no monitor, and answers are read at the fork.
 
 The host-specific file changes only identity and wake-up mechanics. The row
-semantics, authoring rules, and ownership rules below apply everywhere.
+semantics, authoring rules, and ownership rules below apply everywhere. A
+host with no Monitor tool and no webhook must never run `cactus --monitor`
+in the foreground: it is a stream that returns only when killed.
 
 cactus is a SQLite inbox. You post a row, get a key back, and keep working. The
 human answers in `cactus --tui` on their own schedule, from any project, and you
