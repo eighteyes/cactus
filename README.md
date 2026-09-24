@@ -1,43 +1,36 @@
 # cactus
 
-A durable question inbox between coding agents and a human.
+"All the spines without the ouch"
 
-An agent posts a question, receives a key, and continues working. The human
-answers from a terminal UI on their own schedule. The agent reads the answer
-when it reaches the point that depends on it. Questions persist in SQLite, so
-they survive the agent's session and remain readable by the next agent working
-in the same repository.
+**Ask the human without stopping work.** An agent posts a question, gets a key,
+and keeps going; the human answers from a terminal UI on their own schedule;
+the agent collects the answer at the step that needs it.
 
-cactus replaces a blocking prompt with an inbox. A question that does not gate
-the next action is posted and collected later; only a question with no safe
-default blocks.
+Questions persist in SQLite: they outlive the session and stay readable by the
+next agent in the same repository. Block only when no default is safe.
 
 ## Install
 
-The CLI requires Python 3.11 or later and installs with [uv](https://docs.astral.sh/uv/):
-
     uv tool install git+https://github.com/eighteyes/cactus
 
-This provides the `cactus` command and the `cac` alias. From a checkout:
+Python 3.11+. Installs `cactus` and the alias `cac`. From a checkout:
 
     uv tool install --editable .
     PYTHONPATH=src python3 -m cactus --help
 
 ### Claude Code plugin
 
-The repository is also a Claude Code plugin marketplace. The plugin adds a
-skill that teaches agents the workflow, a courier agent that waits on answers,
-and the hooks described under [Plugin hooks](#plugin-hooks).
-
     /plugin marketplace add eighteyes/cactus
     /plugin install cactus@cactus
 
-The plugin puts its own `cactus` launcher on `PATH`, so agents need no separate
-install; the agent commands require only `python3` 3.11 or later. `--tui` and
-`--watch` also need textual: the launcher uses it when installed, otherwise
-runs through `uv` with textual added, otherwise prints the install command.
-When cactus is also installed with `uv tool install`, both copies read the
-same database; keep them at the same version.
+Adds a skill that teaches the workflow, a courier agent that waits on answers,
+the [hooks](#plugin-hooks), and a `cactus` launcher on `PATH`. Agent commands
+need only `python3` 3.11+. `--tui` and `--watch` need textual: the launcher
+uses it when installed, else runs through `uv` with textual added, else prints
+the install command.
+
+Keep a `uv`-installed cactus and the plugin's copy at the same version; both
+read one database.
 
 ## Quick start
 
@@ -54,65 +47,62 @@ Agent:
       --context "Staging tenant exists. Local means owning password reset."
     q7
 
-The TUI shows the question with the recommended option marked and preselected.
-When the human answers, the monitor prints `q7  answered  [oidc]`, and the agent
-reads the full answer with `cactus get q7 --json`.
+The TUI marks `oidc` as recommended and preselects it. On the answer the
+monitor prints `q7  answered  [oidc]`; read the rest with `cactus get q7 --json`.
 
-`cactus --agent-help` prints the complete agent reference as a man page.
+Full agent reference: `cactus --agent-help`.
 
 ## Agent workflow
 
-1. Start `cactus --monitor --agent ID` before the first question and keep it
-   running while any of the agent's rows are open.
-2. Post each decision the human must make with `cactus ask … --agent ID`,
-   adding `--recommend` and `--confidence` when the agent has a preferred
-   option.
-3. Continue with work the answer does not block, and act on each monitor event
-   as it arrives.
-4. Retire rows the agent has acted on with `cactus clear KEY --agent ID`.
+1. Start `cactus --monitor --agent ID` before the first question; keep it
+   running while any of your rows are open
+2. Post every decision the human makes with `cactus ask … --agent ID`; add
+   `--recommend` and `--confidence` when you have a pick
+3. Work on whatever the answer does not block; act on each event as it lands
+4. Retire acted-on rows with `cactus clear KEY --agent ID`
 
-`--agent` is required on `ask` and `--monitor`. It should be the agent's
-declared session identity rather than a terminal pane id, because a pane id
-outlives the conversation that used it.
+`--agent` is required on `ask` and `--monitor`. Use the session identity, not a
+terminal pane id: a pane id outlives the conversation that used it.
 
-When a tool's time limit ends a foreground monitor while the human is away,
-`cactus --monitor --agent ID --once` runs in the background and exits on the
-first event other than `asked`.
+When a tool's time cap ends the foreground monitor and the human is away, run
+`cactus --monitor --agent ID --once` in the background; it exits on the first
+event other than `asked`.
 
 ## Human surfaces
 
     cactus --tui       answer the inbox
     cactus --watch     read-only live feed
-    cactus --www       localhost web answering surface (no textual needed)
+    cactus --www       localhost web answering surface; no textual needed
 
-Both span every project; `--here` limits them to the current one. The TUI is
-keyboard-driven:
+All span every project; `--here` limits them to the current one.
+
+TUI keys:
 
     j / k        move between questions
     1-9          pick or toggle an option; tick a plan step
-    enter        submit (a recommended option is preselected)
+    enter        submit; a recommended option is preselected
     y / n        answer a confirm row
     i            type free text
-    e            ask the agent to elaborate, with an optional hint
-    s            skip (answers with no decision)
-    c            clear (retire without answering)
-    u            undo, walking back through the session's actions
-    R            run a row's command;  C copy it;  O open its full output
+    e            ask the agent to elaborate, optional hint
+    s            skip: answered, no decision
+    c            clear: retired, unanswered
+    u            undo, back through the session's actions
+    R  C  O      run a row's command, copy it, open its full output
     d            dismiss a notice
     p            poke the row's agent
     [ / ]        switch project
     q            quit
 
-A mouse click moves the highlight and never submits.
+A click moves the highlight; only a key submits.
 
 ## MCP server
 
-`server/cactus-mcp` exposes the agent verbs to any Model Context Protocol client
-over stdio. It runs from the checkout or the installed plugin with `python3`
-alone, the same way `bin/cactus` does: no install step, no dependency beyond
-the standard library. Each tool runs one `cactus` verb with `--json`, so
-validation, ownership and exit codes are the CLI's. Claude Desktop reads it
-from `claude_desktop_config.json`:
+**`server/cactus-mcp` exposes the agent verbs to any MCP client over stdio.**
+It runs from the checkout or the installed plugin with `python3` and the
+standard library alone. Each tool runs one `cactus` verb with `--json`, so
+validation, ownership and exit codes are the CLI's.
+
+Claude Desktop, in `claude_desktop_config.json`:
 
     {
       "mcpServers": {
@@ -127,147 +117,145 @@ from `claude_desktop_config.json`:
     }
 
 Use an absolute path; the desktop app does not inherit a shell `PATH`. The
-plugin's `.mcp.json` registers the same server under `${CLAUDE_PLUGIN_ROOT}`
-for any host that installs the plugin.
+plugin's `.mcp.json` registers the same server under `${CLAUDE_PLUGIN_ROOT}`.
 
-Claude Desktop can instead install the whole plugin as one file. It accepts a
-`.plugin` archive: a zip with `.claude-plugin/plugin.json` at its root, plus
-the skill, hooks, the server launcher, `.mcp.json` and source. It leaves
-`bin/` out: Desktop refuses a plugin with a top-level `bin/`, since those
-executables would join `PATH` without appearing on the admin approval
-surface. The hooks exit quietly when no `cactus` is on `PATH`. Build it with
-
-    scripts/package-plugin.sh          # writes dist/cactus-<version>.plugin
-
-and install it from Claude Desktop under Settings > Plugins, or by dropping
-the file on the window. Desktop extracts it into its local-uploads
-marketplace, enables it, and starts the MCP server from `.mcp.json`; the
-launcher finds a Python 3.11+ interpreter on its own, since Desktop starts
-servers with the bare system `PATH`. `CACTUS_AGENT` is the `--agent` stamped on every row
-the client posts, `CACTUS_PROJECT` is the project rows file under when a call
-gives no `project`, and defaults to the home directory. `CACTUS_DB` is honored
-the same way as at the CLI.
+    CACTUS_AGENT     the --agent stamped on every row the client posts
+    CACTUS_PROJECT   project for calls that pass no `project`; default $HOME
+    CACTUS_DB        as at the CLI
 
 Tools: `cactus_ask`, `cactus_run`, `cactus_get`, `cactus_list`, `cactus_feed`,
 `cactus_answer`, `cactus_edit`, `cactus_review`, `cactus_plan`,
 `cactus_clear`, `cactus_reopen`, `cactus_threads`, `cactus_projects`,
-`cactus_where`, `cactus_help`. Every tool takes an optional `project` (absolute
-path) so one server can file rows under any repository. An MCP host cannot
-hold a monitor, so a client reads answers with `cactus_get`; a `wait` there
-is clamped to `CACTUS_MCP_MAX_WAIT` seconds (default 50, under a host's tool
-cap) and comes back as `{"timeout": true}` rather than an error, so the
-client calls again. Exit 3 comes back as `{"match": false}`.
+`cactus_where`, `cactus_help`. Each takes an optional absolute `project`, so
+one server files rows under any repository.
 
-The server appends one line per request and per verb run to `mcp.log` beside
-the database (`~/.local/share/cactus/mcp.log`); `CACTUS_MCP_LOG` moves it,
-`CACTUS_MCP_LOG=0` turns it off. A host shows no server stderr, so that file
-is the only trace of what reached the server when a call appears to hang.
+An MCP host cannot hold a monitor: poll with `cactus_get`. Its `wait` is
+clamped to `CACTUS_MCP_MAX_WAIT` seconds (default 50, under a host's tool cap)
+and returns `{"timeout": true}`; call again. Exit 3 returns `{"match": false}`.
+
+The server logs one line per request and per verb to `mcp.log` beside the
+database. `CACTUS_MCP_LOG` moves it; `CACTUS_MCP_LOG=0` disables it. A host
+shows no server stderr, so read this file when a call appears to hang.
+
+### Claude Desktop plugin file
+
+    scripts/package-plugin.sh          # writes dist/cactus-<version>.plugin
+
+Install from Settings > Plugins, or drop the file on the window. Desktop
+extracts it, enables it, and starts the MCP server from `.mcp.json`; the
+launcher finds a Python 3.11+ on its own, since Desktop starts servers with the
+bare system `PATH`.
+
+The archive leaves out `bin/`: Desktop refuses a plugin with a top-level
+`bin/`, whose executables would join `PATH` without passing admin approval.
+The hooks exit quietly when no `cactus` is on `PATH`.
 
 ## Concepts
 
 ### Answer shapes
 
-    choice    one label           -c a -c b
-    multi     several labels      -c a -c b --multi
-    confirm   yes / no            --confirm
-    text      free entry          no -c
+    choice    one label          -c a -c b
+    multi     several labels     -c a -c b --multi
+    confirm   yes / no           --confirm
+    text      free entry         no -c
 
-Each `-c` is one option, split on its first colon into label and description.
-Free text is accepted alongside a pick unless `--no-free` is given.
+One `-c` per option, split on the first colon into label and description.
+Free text rides alongside a pick unless `--no-free`.
 
 ### Acts
 
-The act states what the reply is for; the shape states how it is collected.
+**The act is what the reply is for; the shape is how it is collected.**
 
-    act      blocks by default   shape                  use
-    ask      yes                 any                    a decision the agent needs
-    run      yes                 confirm (approve/deny) approval to run a command
-    steer    no                  choice                 what the agent will do unless redirected
-    seen     no                  text                   a notice the human dismisses
-    review   no                  confirm (pass/fail)    a verification block, re-checked over time
-    plan     no                  text                   an ordered checklist both sides tick
+    act      blocks   shape                   use
+    ask      yes      any                     a decision the agent needs
+    run      yes      confirm: approve/deny   approval to run a command
+    steer    no       choice                  what the agent does unless redirected
+    seen     no       text                    a notice the human dismisses
+    review   no       confirm: pass/fail      a verify block, re-checked over time
+    plan     no       text                    a checklist both sides tick
 
-`--blocked` and `--no-block` override the default on any row. `review` and
-`plan` rows are persistent: they stay live until cleared and keep every verdict.
+`--blocked` / `--no-block` override the default on any row. `review` and `plan`
+stay live until cleared and keep every verdict.
 
 ### Recommendations
 
-`--recommend LABEL --confidence low|med|high [--why TEXT]` marks an option as
-the agent's pick. The TUI shows it with ○ ◐ ● and preselects it; the row still
-waits for the human. A steer's `--chosen` differs: the agent proceeds with it
-and a tap redirects.
+**A recommendation waits; a steer proceeds.** `--recommend LABEL --confidence
+low|med|high [--why TEXT]` marks the agent's pick, shown ○ ◐ ● and preselected
+in the TUI; the row still waits for the human. A steer's `--chosen` is what the
+agent does unless a tap redirects it.
 
-### Commands the agent cannot run
+### Blocked commands
 
-When a permission check blocks a command, the agent posts it for the human:
+**When a permission check blocks a command, post it to the human:**
 
     cactus run "make deploy-staging" --agent ID --why "needs production credentials"
 
-The human reviews the command in the TUI and presses `R` to run it in the
-row's working directory, or `n` to deny. The exit code, the last 50 lines of
-output and the path to the full log are stored on the row, and the agent reads
+`R` in the TUI runs it in the row's working directory; `n` denies. The row
+stores the exit code, the last 50 lines of output and the full log's path; read
 them with `cactus get KEY --json`.
 
 ### Elaborate and edit
 
-`e` in the TUI asks the agent to rewrite a question, with an optional hint. The
-monitor emits an `elaborate` event carrying the hint, or a default instruction
-to restate the context plainly and add missing facts. The agent responds with
+`e` in the TUI asks the agent to rewrite a question, optionally with a hint.
+The monitor emits `elaborate` with the hint, or a default instruction: restate
+the context plainly and add what is missing. Answer with
 `cactus edit KEY --agent ID --context …`; the row returns to the inbox.
-`cactus edit` also works as a plain in-place edit of an open row.
+`cactus edit` also edits any open row in place.
 
 ### Keys, threads and scope
 
-Every question records its project: the git toplevel of the working
-directory, or the directory itself. Agent commands see the current project;
-the human surfaces see all projects. Keys number per project (`q1`, `q2`, …);
-another project's row is addressed as `LABEL:qN`.
+A question files under its project: the git toplevel of its working directory,
+else the directory. Agent commands see the current project; human surfaces see
+all.
 
-`-t THREAD` groups related questions and `-p KEY` attaches a follow-up. Thread
-names are scoped to the agent that uses them.
+    q7                  key in the current project
+    LABEL:q7            key in another project
+    -t THREAD           group related questions; names are per agent
+    -p KEY              attach a follow-up
 
 ### Ownership
 
-A row belongs to the agent named by `--agent`. Bulk clears (`-t`, `--here`,
-`--all`) require `--agent` and affect only that agent's rows; clearing or
-reopening another agent's row by key is refused. After `/clear` gives an
-agent a new identity, `cactus rehome --agent NEW` reassigns the rows stamped
-with the same terminal pane and session.
+**An agent clears only its own rows.** Bulk clears (`-t`, `--here`, `--all`)
+require `--agent` and touch only that agent's rows; clearing or reopening
+another agent's row by key is refused. After `/clear` assigns a new identity,
+`cactus rehome --agent NEW` reclaims the rows stamped with the same pane and
+session.
 
 ### Decision records
 
-Each answer, undo, verdict, elaboration and human clear rewrites
-`<project>/.ai/cactus/qN-slug.md`: the question, its context and options, the
-recommendation, and the answer or verdict log. The records are intended to be
-committed with the work they decide. cactus writes the files and never runs
-git. An agent clearing its own row does not write a record.
+**Every human decision lands in `<project>/.ai/cactus/qN-slug.md`**: question,
+context, options, recommendation, and the answer or verdict log, rewritten on
+each answer, undo, verdict, elaboration and human clear. Commit the records
+with the work they decide; cactus never runs git. An agent clearing its own
+row writes none.
 
 ## Plugin hooks
 
-    SessionStart       resolves the agent identity, rehomes rows after /clear,
-                       and lists the project's open rows
-    UserPromptSubmit   injects a short summary of the agent's open and
-                       answered-but-unacted rows
-    Stop               blocks a turn that ends without posting a question, so
-                       the agent offers its next directions; turns started by
-                       background events are exempt
-    PermissionDenied   posts a command that auto mode denied as a `cactus run`
-                       row
+    SessionStart       resolve identity; rehome rows after /clear; when no
+                       monitor runs, open with a ready-to-run Monitor command;
+                       list the project's open rows
+    UserPromptSubmit   inject the agent's open and answered-but-unacted rows;
+                       name the Monitor command when rows are open and no
+                       monitor runs
+    Stop               hold a turn that ends with open rows and no monitor;
+                       hold a turn that ends without posting a question, so
+                       the agent offers its next directions; turns opened by
+                       background events are exempt from the second rule
+    PermissionDenied   post a command auto mode denied as a `cactus run` row
 
 ## Configuration
 
-    CACTUS_DB             database path; default ~/.local/share/cactus/cactus.db
-    CACTUS_POKE           override poke transport for *every* agent; {agent} and
-                         {message} are substituted (tests / forced transport)
+    CACTUS_DB             database; default ~/.local/share/cactus/cactus.db
+    CACTUS_POKE           poke transport for every agent; {agent} and
+                          {message} substituted; tests and forced transport
     CACTUS_POKE_WEBHOOKS  JSON map of agent id → webhook; default
-                         ~/.config/cactus/poke-webhooks.json
-    CACTUS_AGENT          default for --by
+                          ~/.config/cactus/poke-webhooks.json
+    CACTUS_AGENT          default --by
     CACTUS_RECORDS        0 disables decision records
-    HERDR_*               workspace, tab, pane and session stamps recorded at ask time
+    HERDR_*               workspace, tab, pane and session stamped at ask
 
-Poke is question-level: it targets the row's `--agent`. Resolution order is
-`CACTUS_POKE` (if set), else a webhook map entry for that agent id, else
-`herdr agent prompt`. Webhook map entries look like:
+**A poke targets the row's `--agent`.** Resolution: `CACTUS_POKE` when set,
+else the agent's webhook map entry, else `herdr agent prompt`. A map entry:
 
     {
       "AGENT_ID": {
@@ -276,29 +264,26 @@ Poke is question-level: it targets the row's `--agent`. Resolution order is
       }
     }
 
-The TUI's `p` binding is offered whenever the row has an agent, including
-agents outside herdr. Answering a row auto-pokes when that agent is in the
-webhook map; herdr/monitor agents are not auto-poked.
-
-Full checklist, smoke test, and gotchas:
+The TUI offers `p` on any row with an agent. Answering a row auto-pokes agents
+in the webhook map; herdr and monitor agents are not auto-poked. Checklist,
+smoke test and gotchas:
 [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md).
 
 ## Testing against cactus
 
-Point `CACTUS_DB` at a scratch file and set `CACTUS_POKE` to an inert command
-before exercising cactus from scripts; the defaults are the user's live inbox
-and a live agent. An empty `CACTUS_DB` is refused rather than falling back to
-the default. Scripts run from inside a repository should also set
-`CACTUS_RECORDS=0`, since records are written to the row's project.
+**Set `CACTUS_DB` to a scratch file and `CACTUS_POKE` to an inert command before
+scripting cactus.** The defaults are the user's live inbox and a live agent; an
+empty `CACTUS_DB` is refused. Set `CACTUS_RECORDS=0` in scripts run inside a
+repository: records write to the row's project.
 
 ## Maintenance
 
     cactus migrate            report pending schema rebuilds
     cactus migrate --yes      apply them
 
-Additive schema changes apply automatically. Rebuilds that change constraints
-run only through `migrate --yes`; back up the database first and restart any
-running cactus process afterwards.
+Additive changes apply on open. Constraint rebuilds run only through
+`migrate --yes`: back up the database first, restart every running cactus
+process after.
 
 ## Exit status
 
