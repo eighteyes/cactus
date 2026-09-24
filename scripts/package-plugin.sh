@@ -2,11 +2,12 @@
 # package-plugin.sh — build the Claude Desktop plugin bundle.
 #
 # Responsibilities:
-# - Zip the plugin tree (.claude-plugin manifest, .mcp.json, bin launchers,
+# - Zip the plugin tree (.claude-plugin manifest, .mcp.json, server launcher,
 #   hooks, skills, src) with the manifest at the archive root, which is what
 #   Claude Desktop's plugin installer requires.
 # - Name the archive dist/cactus-<version>.plugin from plugin.json's version.
-# - Leave out everything that is not part of the plugin: caches, the Codex
+# - Leave out bin/: Claude Desktop refuses a plugin with a top-level bin/.
+# - Leave out everything else that is not part of the plugin: caches, the Codex
 #   plugin copy, demo assets, working notes, git metadata.
 set -euo pipefail
 
@@ -21,7 +22,7 @@ rm -f "$out"
 zip -q -r "$out" \
   .claude-plugin/plugin.json \
   .mcp.json \
-  bin \
+  server \
   hooks \
   skills \
   src/cactus \

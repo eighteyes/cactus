@@ -42,7 +42,7 @@ Four layers, one direction of dependency:
     mcp.py       stdio MCP server (agent hosts such as Claude Desktop): each
                  tool is one `cactus --json` subprocess, so cli.py stays the
                  only validator; dependency-free JSON-RPC. Launched from
-                 source by bin/cactus-mcp (plugin .mcp.json, Desktop config)
+                 source by server/cactus-mcp (plugin .mcp.json, Desktop config)
 
 `poke` and `shell` are side leaves, imported lazily at the call site by `cli`
 and `tui`; they never touch the store.

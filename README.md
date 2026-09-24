@@ -107,7 +107,7 @@ A mouse click moves the highlight and never submits.
 
 ## MCP server
 
-`bin/cactus-mcp` exposes the agent verbs to any Model Context Protocol client
+`server/cactus-mcp` exposes the agent verbs to any Model Context Protocol client
 over stdio. It runs from the checkout or the installed plugin with `python3`
 alone, the same way `bin/cactus` does: no install step, no dependency beyond
 the standard library. Each tool runs one `cactus` verb with `--json`, so
@@ -117,7 +117,7 @@ from `claude_desktop_config.json`:
     {
       "mcpServers": {
         "cactus": {
-          "command": "/Users/you/projects/cactus/bin/cactus-mcp",
+          "command": "/Users/you/projects/cactus/server/cactus-mcp",
           "env": {
             "CACTUS_AGENT": "claude-desktop",
             "CACTUS_PROJECT": "/Users/you/projects/repo"
@@ -132,7 +132,10 @@ for any host that installs the plugin.
 
 Claude Desktop can instead install the whole plugin as one file. It accepts a
 `.plugin` archive: a zip with `.claude-plugin/plugin.json` at its root, plus
-the skill, hooks, launchers, `.mcp.json` and source. Build it with
+the skill, hooks, the server launcher, `.mcp.json` and source. It leaves
+`bin/` out: Desktop refuses a plugin with a top-level `bin/`, since those
+executables would join `PATH` without appearing on the admin approval
+surface. The hooks exit quietly when no `cactus` is on `PATH`. Build it with
 
     scripts/package-plugin.sh          # writes dist/cactus-<version>.plugin
 

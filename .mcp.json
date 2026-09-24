@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "cactus": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/cactus-mcp",
+      "command": "${CLAUDE_PLUGIN_ROOT}/server/cactus-mcp",
       "env": {
         "CACTUS_AGENT": "claude-desktop"
       }
