@@ -1010,6 +1010,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", help=f"database path (default: {default_db_path()})")
     p.add_argument("--tui", action="store_true", help="open the interactive answering TUI")
     p.add_argument("--watch", action="store_true", help="open the live read-only feed")
+    p.add_argument("--www", action="store_true",
+                   help="serve a localhost web answering surface (human)")
+    p.add_argument("--port", type=int, default=8642, help="with --www, port to bind (default: 8642)")
+    p.add_argument("--host", default="127.0.0.1", help="with --www, host to bind (default: 127.0.0.1)")
+    p.add_argument("--open", action="store_true", help="with --www, open the browser once bound")
     p.add_argument("--monitor", action="store_true",
                    help="stream inbox events as plain lines, one per change")
     p.add_argument("--all", action="store_true",
@@ -1025,7 +1030,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tab", help="with --monitor, only events for this tab id")
     p.add_argument("--pane", help="with --monitor, only events for this pane id")
     p.add_argument("--here", action="store_true",
-                   help="with --tui/--watch, scope to the current project (git toplevel of pwd)")
+                   help="with --tui/--watch/--www, scope to the current project (git toplevel of pwd)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--agent-help", action="store_true",
                    help="how an agent should use cactus, end to end")
@@ -1235,7 +1240,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_OK
 
     surfaces = [name for name, on in
-                (("--tui", args.tui), ("--watch", args.watch), ("--monitor", args.monitor))
+                (("--tui", args.tui), ("--watch", args.watch), ("--www", args.www),
+                 ("--monitor", args.monitor))
                 if on]
     if len(surfaces) > 1:
         print(f"cactus: {' and '.join(surfaces)} are mutually exclusive", file=sys.stderr)
@@ -1279,6 +1285,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return EXIT_ERROR
             return run_watch(store, project=None if not args.here else project)
+        if args.www:
+            from .www import run_www
+            return run_www(
+                store,
+                project=None if not args.here else project,
+                host=args.host,
+                port=args.port,
+                open_browser=args.open,
+            )
         if args.monitor:
             if not (args.agent or "").strip():
                 print(

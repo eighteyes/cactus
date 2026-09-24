@@ -83,6 +83,7 @@ first event other than `asked`.
 
     cactus --tui       answer the inbox
     cactus --watch     read-only live feed
+    cactus --www       localhost web answering surface (no textual needed)
 
 Both span every project; `--here` limits them to the current one. The TUI is
 keyboard-driven:
