@@ -150,6 +150,48 @@ The archive leaves out `bin/`: Desktop refuses a plugin with a top-level
 `bin/`, whose executables would join `PATH` without passing admin approval.
 The hooks exit quietly when no `cactus` is on `PATH`.
 
+## Other agents: Codex, Grok, Gemini
+
+**Any agent with a shell uses the CLI; any MCP client uses the server.** The
+skill and hooks are Claude Code only, so teach the workflow through the
+instruction file these agents read: `AGENTS.md` at the repository root
+(Codex, Grok and Gemini all load it).
+
+    ## cactus
+    Every decision the human makes goes to cactus, not chat.
+    - Identity: choose one --agent value for this session; pass it on every call
+    - Ask: cactus ask "…" --agent ID -c "a: …" -c "b: …" --context "…"
+      add --recommend a --confidence med when you have a pick
+    - Collect: cactus get KEY --json at the step that needs the answer;
+      cactus get KEY --wait --timeout 50 only when blocked
+    - Blocked by a permission prompt: cactus run "CMD" --agent ID
+    - Clear acted-on rows: cactus clear KEY --agent ID
+    - Reference: cactus --agent-help
+
+**Identity.** These agents have no Claude session id; choose a stable value per
+session, such as `codex-<repo>-<date>`. A new value strands earlier rows;
+`cactus rehome` recovers them only inside herdr, where rows carry pane and
+session stamps.
+
+**Waiting.** Only an agent that can hold a background process and be woken on
+its exit keeps a monitor: run `cactus --monitor --agent ID --once` in the
+background (Grok documents this). Otherwise poll with `cactus get` or
+`cactus list -s answered --agent ID` between steps, and keep each `--wait`
+under the agent's command timeout.
+
+**MCP.** Point the client at `server/cactus-mcp` by absolute path, with
+`CACTUS_AGENT` and `CACTUS_PROJECT` in its environment:
+
+    Codex    ~/.codex/config.toml, or: codex mcp add
+             [mcp_servers.cactus]
+             command = "/abs/path/cactus/server/cactus-mcp"
+             env = { CACTUS_AGENT = "codex", CACTUS_PROJECT = "/abs/path/repo" }
+    Gemini   ~/.gemini/settings.json, "mcpServers" — same shape as the
+             Claude Desktop block above
+    Grok     grok mcp add, or .grok/config.toml; Grok also imports .mcp.json
+
+Keep `CACTUS_MCP_MAX_WAIT` below the client's tool timeout.
+
 ## Concepts
 
 ### Answer shapes
