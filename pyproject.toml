@@ -1,9 +1,17 @@
 [project]
 name = "cactus"
 version = "0.1.0"
-description = "Transitory question/answer interface between coding agents and a human"
+description = "Durable question inbox between coding agents and a human"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "eighteyes" }]
 requires-python = ">=3.11"
 dependencies = ["textual>=0.80"]
+
+[project.urls]
+Homepage = "https://github.com/eighteyes/cactus"
+Repository = "https://github.com/eighteyes/cactus"
 
 [project.scripts]
 cactus = "cactus.cli:main"
