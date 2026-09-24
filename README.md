@@ -169,9 +169,15 @@ page in the skill, and two hosts have a plugin of their own:
 - [skills/cactus/GROK.md](skills/cactus/GROK.md)
 - [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md)
 
-An agent with no plugin learns the workflow from the instruction file it
-reads, `AGENTS.md` at the repository root (Codex, Grok and Gemini all load
-it):
+**Codex with the plugin.** Identity, monitor and approval flow come from the
+plugin's hooks: the SessionStart hook prints the `--agent` value to use, the
+Codex session id, and the workflow is [CODEX.md](skills/cactus/CODEX.md).
+Nothing below this line applies to it.
+
+### Agents without a plugin
+
+Grok, Gemini, or Codex without the plugin learn the workflow from the
+instruction file they read, `AGENTS.md` at the repository root:
 
     ## cactus
     Every decision the human makes goes to cactus, not chat.
@@ -184,19 +190,24 @@ it):
     - Clear acted-on rows: cactus clear KEY --agent ID
     - Reference: cactus --agent-help
 
-**Identity.** These agents have no Claude session id; choose a stable value per
-session, such as `codex-<repo>-<date>`. A new value strands earlier rows;
-`cactus rehome` recovers them only inside herdr, where rows carry pane and
-session stamps.
+**Identity.** Without a plugin there is no hook to hand the agent a session
+id, so it chooses one stable value per session, such as `grok-<repo>-<date>`,
+and passes it on every call. A new value strands earlier rows; `cactus
+rehome` recovers them only inside herdr, where rows carry pane and session
+stamps.
 
 **Waiting.** Only an agent that can hold a background process and be woken on
 its exit keeps a monitor: run `cactus --monitor --agent ID --once` in the
-background (Grok documents this). Otherwise poll with `cactus get` or
-`cactus list -s answered --agent ID` between steps, and keep each `--wait`
-under the agent's command timeout.
+background. Grok cannot, and uses the webhook wake-up in
+[GROK.md](skills/cactus/GROK.md) instead. Otherwise poll with `cactus get`
+or `cactus list -s answered --agent ID` between steps, and keep each
+`--wait` under the agent's command timeout.
 
-**MCP.** Point the client at `server/cactus-mcp` by absolute path, with
-`CACTUS_AGENT` and `CACTUS_PROJECT` in its environment:
+**MCP.** Any of these hosts can use the server instead of the CLI. Point the
+client at `server/cactus-mcp` by absolute path, with `CACTUS_AGENT` and
+`CACTUS_PROJECT` in its environment; on Codex with the plugin, set
+`CACTUS_AGENT` to the session id the hook printed so MCP rows and hook rows
+share one owner:
 
     Codex    ~/.codex/config.toml, or: codex mcp add
              [mcp_servers.cactus]
