@@ -227,7 +227,7 @@ TOOLS: list[dict[str, Any]] = [
         "cactus_list",
         "List rows in the project, filtered by status, thread, act or agent.",
         {
-            "status": _prop("string", "Comma-separated statuses. Default open."),
+            "status": _prop("string", "Comma-separated statuses. Default open,live,elaborate."),
             "thread": _prop("string", "Only this thread."),
             "act": {**_STR_LIST, "description": "Only these acts."},
             "agent": _prop("string", "Only rows owned by this agent."),

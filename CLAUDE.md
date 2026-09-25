@@ -325,3 +325,38 @@ scope.
   (label: body, body may be multi-line); a copy in the TUI appends a verdict
   naming the chunk's label via the ordinary `Store.answer` path. `d`/`c`
   close it the same as any other persistent row.
+- `Store.answer` refuses a `selected` label on a choiceless row (`plan`,
+  `notify`) — "has no choices; answer with text" — the same off-menu-label
+  refusal a row with real choices already gets.
+- `cactus list -s` (default `open,live,elaborate`, matching `feed`) accepts
+  any comma-separated `status` list, including `live` and `elaborate`, or
+  `any`; `-s open` alone still means only `open`. `cactus threads`'
+  `open_count` counts `open`+`live`+`elaborate` the same way, so a thread
+  holding only a live plan/review no longer reads as drained.
+- The text renderer's verdict history (`_print_questions`) shows each past
+  verdict as `label — text` when an answer carries both, not just the label.
+- `cactus plan`: `--reset-steps` with no `--step` refuses, exit 1 — the old
+  behavior silently deleted every step. The same step number in both
+  `--done` and `--undone` refuses, exit 1, rather than letting undone win
+  silently. `--done`/`--undone` on a non-plan row refuse with the same
+  `{key} is act={q.act!r}, not 'plan'` message `--step` already gives,
+  checked before any step-range error. `Store.set_steps` refuses
+  empty/whitespace-only step text, `ValueError`.
+- `Store.set_steps`, `Store.set_step_done`, and `Store.set_review` all refuse
+  a `cleared` row with the same message `Store.answer` uses — pointing at
+  `cactus reopen KEY --agent ID` — so a retired plan/review row is frozen for
+  steps and the verify block the same way it already was for verdicts.
+- Enter on a plan row with no draft opens the input, same as `i`; with a
+  draft it records the verdict. Typed text plus enter on a review row
+  (`_submit_review`) records a text-only verdict in one keystroke, same as
+  plan and data rows. None of the three park text for a second enter.
+- A plan step toggle pushes a `kind: "step"` undo entry; `u` reverts it via
+  `Store.set_step_done`, not `Store.reopen`. Every undo flashes what it
+  undid (`_undo_flash`), never silent.
+- The card's pending-text block reads `draft:` on a text-kind row; it is not
+  recorded yet, whether typed or restored by undo. `_verdict_repr` renders
+  `label — text` when a verdict carries both.
+- Footer binding labels are static per `Binding` (Textual never reads a
+  description from `check_action`), so a key whose meaning varies by row
+  (`1-9`, `y`/`n`) gets one neutral footer label; the card's per-row hint
+  carries the row-specific wording.

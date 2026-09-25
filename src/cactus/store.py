@@ -867,6 +867,8 @@ class Store:
                 f" — undo it first if that verdict should change".replace("  ", " ")
             )
         selected = list(selected or [])
+        if selected and not q.choices:
+            raise ValueError(f"{key} has no choices; answer with text")
         if q.choices and selected:
             valid = [c.label for c in q.choices]
             for label in selected:
@@ -1074,6 +1076,10 @@ class Store:
         # the human decides whether it should be.
         if q.act not in ("review", "run"):
             raise ValueError(f"{key} is act={q.act!r}, not 'review' or 'run'")
+        if q.status == "cleared":
+            raise ValueError(
+                f"{key} is cleared; cactus reopen {key} --agent ID first"
+            )
         existing = q.review or Review()
         merged = Review(
             look_at=existing.look_at if look_at is None else look_at,
@@ -1135,6 +1141,13 @@ class Store:
             raise KeyError(f"no such question: {key}")
         if q.act != "plan":
             raise ValueError(f"{key} is act={q.act!r}, not 'plan'")
+        if q.status == "cleared":
+            raise ValueError(
+                f"{key} is cleared; cactus reopen {key} --agent ID first"
+            )
+        for t in steps:
+            if not t or not t.strip():
+                raise ValueError("a step's text cannot be empty or whitespace-only")
         if reset:
             self.conn.execute("DELETE FROM steps WHERE question_id = ?", (q.id,))
             self.conn.executemany(
@@ -1161,6 +1174,10 @@ class Store:
         q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
+        if q.status == "cleared":
+            raise ValueError(
+                f"{key} is cleared; cactus reopen {key} --agent ID first"
+            )
         cur = self.conn.execute(
             "UPDATE steps SET done = ? WHERE question_id = ? AND idx = ?",
             (1 if done else 0, q.id, idx),
@@ -1533,7 +1550,8 @@ class Store:
         where.append("status != 'cleared'")
         rows = self.conn.execute(
             "SELECT thread, project, COUNT(*) AS total, "
-            "SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open_count, "
+            "SUM(CASE WHEN status IN ('open', 'live', 'elaborate') THEN 1 ELSE 0 END) "
+            "AS open_count, "
             "MAX(updated_at) AS last_activity "
             "FROM questions WHERE " + " AND ".join(where) +
             " GROUP BY project, thread ORDER BY last_activity DESC",

@@ -234,6 +234,8 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
             # The verdict log: a persistent row is answered more than once,
             # so `get`/`list` show every verdict, not just the latest.
             def _verdict(a: Answer) -> str:
+                if a.selected and a.text:
+                    return f"{', '.join(a.selected)} — {a.text}"
                 if a.selected:
                     return ", ".join(a.selected)
                 if a.text:
@@ -558,6 +560,8 @@ def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
 
 def cmd_list(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     status: Any = None if args.status == "any" else args.status
+    if isinstance(status, str) and "," in status:
+        status = [x.strip() for x in status.split(",") if x.strip()]
     questions = store.tree(
         project=project,
         thread=args.thread,
@@ -715,6 +719,13 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     Steps are numbered from 1 here, matching what a human reads off the card
     and the rail; the store keeps them 0-based internally.
     """
+    if args.reset_steps and not args.step:
+        print("cactus: --reset-steps needs at least one --step", file=sys.stderr)
+        return EXIT_ERROR
+    clash = sorted(set(args.done or []) & set(args.undone or []))
+    if clash:
+        print(f"cactus: --done and --undone both name step {clash}", file=sys.stderr)
+        return EXIT_ERROR
     try:
         rproj, rkey = store.resolve_ref(args.key, project)
         if args.step or args.reset_steps:
@@ -722,6 +733,8 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         q = store.get(rkey, project=rproj)
         if q is None:
             raise KeyError(f"no such question: {args.key}")
+        if (args.done or args.undone) and q.act != "plan":
+            raise ValueError(f"{args.key} is act={q.act!r}, not 'plan'")
         for n in args.done or []:
             store.set_step_done(rkey, _plan_index(n, len(q.steps)), project=rproj)
         for n in args.undone or []:
@@ -1181,8 +1194,9 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--workspace", help="only rows stamped with this workspace id")
     ls.add_argument("--tab", help="only rows stamped with this tab id")
     ls.add_argument("--pane", help="only rows stamped with this pane id")
-    ls.add_argument("-s", "--status", default="open",
-                    choices=["open", "answered", "cleared", "any"])
+    ls.add_argument("-s", "--status", default="open,live,elaborate",
+                    help="statuses to include, comma-separated ('open', 'live', "
+                         "'elaborate', 'answered', 'cleared'), or 'any'")
     ls.add_argument("--all", action="store_true", help="every project, not just this one")
     ls.set_defaults(fn=cmd_list)
 
@@ -1272,8 +1286,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="one step, repeatable; appends to the existing steps")
     pl.add_argument("--reset-steps", action="store_true",
                     help="replace the step list with this call's --step values, clearing done flags")
-    pl.add_argument("--done", action="append", type=int, help="tick this step index")
-    pl.add_argument("--undone", action="append", type=int, help="untick this step index")
+    pl.add_argument("--done", action="append", type=int, help="tick this step, 1-based")
+    pl.add_argument("--undone", action="append", type=int, help="untick this step, 1-based")
     pl.set_defaults(fn=cmd_plan)
 
     th = verb("threads", help="list threads")

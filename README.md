@@ -130,6 +130,8 @@ cactus ask "Which auth backend?" --agent ID \
 cactus get q7 --json                                   # at the step that needs the answer
 cactus run "make deploy" --agent ID --why "needs prod credentials"
 cactus edit q7 --agent ID --context "…"                # answer an elaborate request
+cactus plan q9 --step "write code" --step "test it" --done 1   # steps are 1-based
+cactus review q9 --look-at "login form" --run "echo OK" --pass "prints OK" --fail "anything else"
 cactus clear q7 --agent ID                             # once acted on
 ```
 

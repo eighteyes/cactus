@@ -83,11 +83,19 @@ def _confirm_hint(q: Question) -> str:
 
 def _verdict_repr(a: Answer) -> str:
     """One answer from the log, as a short label for the verdicts line."""
-    if a.selected:
-        return ", ".join(a.selected)
+    text = ""
     if a.text:
         text = a.text.strip()
-        return text if len(text) <= 24 else text[:23] + "…"
+        text = text if len(text) <= 24 else text[:23] + "…"
+    if a.selected and text:
+        # A labeled verdict can still carry a note (`cactus answer -s fail
+        # "button missing"`) — dropping it here is the only place a human
+        # would ever see it again once a later verdict lands.
+        return f"{', '.join(a.selected)} — {text}"
+    if a.selected:
+        return ", ".join(a.selected)
+    if text:
+        return text
     if a.skipped:
         return "skipped"
     return "—"
@@ -194,7 +202,10 @@ def _card_lines(
 
     if pending:
         lines.append("")
-        label = "answer" if q.kind == "text" else "free text"
+        # "draft", not "answer": this text has not been sent yet, whether it
+        # was just typed or restored by `u` — either way it still needs
+        # enter (or a pick) to record it.
+        label = "draft" if q.kind == "text" else "free text"
         lines.append(f"{label}: {pending}")
         if q.kind != "text":
             lines.append("enter submits this text alone, or pick above to send both")
@@ -269,7 +280,11 @@ class QuestionBlock(ListItem):
         elif q.kind == "multi":
             shape = f"{len(q.choices)} choices · multi"
         elif q.kind == "confirm":
-            shape = "yes / no"
+            # The row's own choice labels (a review reads pass / fail, a run
+            # reads approve / deny) — a fixed "yes / no" would lie about what
+            # the keys send, same reasoning as `_confirm_hint` on the card.
+            labels = [c.label for c in q.choices] or ["yes", "no"]
+            shape = " / ".join(labels)
         else:
             shape = "text"
         # The act leads, because it says what is being asked of the reader; a
@@ -325,6 +340,8 @@ class CactusApp(App[int]):
         padding: 0 1;
         background: $panel;
         color: $text;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     #rail-list {
         height: 1fr;
@@ -397,7 +414,10 @@ class CactusApp(App[int]):
         Binding("r", "refresh_view", "Refresh"),
         Binding("q", "quit_app", "Quit"),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
-        Binding("1", "select_choice(1)", "1-9 pick", show=True),
+        # Neutral label: the digits pick a choice on an ask row but toggle a
+        # step on a plan row, and a single static Binding cannot read the
+        # focused row's act to say which (see check_action/footer notes).
+        Binding("1", "select_choice(1)", "1-9", show=True),
         Binding("2", "select_choice(2)", "2", show=False),
         Binding("3", "select_choice(3)", "3", show=False),
         Binding("4", "select_choice(4)", "4", show=False),
@@ -1046,7 +1066,22 @@ class CactusApp(App[int]):
             # a plan or text row otherwise ate the key in silence.
             q = self._current_question()
             if q is not None and q.kind != "confirm":
-                self.flash = f"y/n only answer a confirm row — {q.key} is {q.kind}"
+                # The act, not the kind — "q1 is act='plan'" says what the row
+                # is for; "q1 is text" only names the shape of its answer.
+                self.flash = f"y/n only answer a confirm row — {q.key} is act='{q.act}'"
+                self._rebuild_status_bar()
+                event.stop()
+            return
+        if event.key.isdigit():
+            # `0` has no binding at all, and 1-9 fall through here only when
+            # check_action disabled select_choice (a plan with no steps yet) —
+            # an enabled digit never reaches this handler at all.
+            q = self._current_question()
+            if q is not None and q.act == "plan":
+                self.flash = (
+                    f"{q.key} has no steps yet" if not q.steps
+                    else f"{q.key} has no step {event.key}"
+                )
                 self._rebuild_status_bar()
                 event.stop()
             return
@@ -1140,12 +1175,14 @@ class CactusApp(App[int]):
             if not inp.display:
                 inp.value = self.pending_text
             self.free_text_mode = True
+            self._clear_flash()
             self._focus_input()
             return
         self.free_text_mode = not self.free_text_mode
         if self.free_text_mode:
             inp = self.query_one("#answer-input", Input)
             inp.value = self.pending_text
+            self._clear_flash()
             self._focus_input()
         else:
             self._hide_input()
@@ -1229,6 +1266,9 @@ class CactusApp(App[int]):
         if q.act == "data":
             await self._submit_data(q, typed=value)
             return
+        if q.act == "review":
+            await self._submit_review(q, typed=value)
+            return
         if q.kind == "text":
             if not value:
                 self.flash = "empty — type an answer, or esc then s to skip"
@@ -1255,8 +1295,10 @@ class CactusApp(App[int]):
             if step is None:
                 self.flash = f"{plan.key} has no step {n}"
             else:
-                self.store.set_step_done(plan.key, idx, not step.done, project=plan.project)
-                self.flash = f"step {n} {'done' if not step.done else 'reopened'}"
+                prior_done = step.done
+                self.store.set_step_done(plan.key, idx, not prior_done, project=plan.project)
+                self._push_step_undo(plan.key, idx, prior_done, project=plan.project)
+                self.flash = f"step {n} {'done' if not prior_done else 'reopened'}"
             await self.action_refresh_view()
             self._rebuild_status_bar()
             return
@@ -1312,7 +1354,13 @@ class CactusApp(App[int]):
         if q is None:
             return
         if q.act == "plan":
-            await self._submit_plan(q)
+            if self.pending_text:
+                await self._submit_plan(q)
+            else:
+                # No draft yet: enter opens typing, same as `i` — so the
+                # card's "enter to type" hint is true and the first
+                # keystrokes are never lost to a flash instead.
+                self.action_toggle_free_text()
             return
         if q.act == "data":
             await self._submit_data(q)
@@ -1345,36 +1393,64 @@ class CactusApp(App[int]):
             self._rebuild_status_bar()
 
     async def _submit_plan(self, q: Question, typed: str | None = None) -> None:
-        """Enter on a plan row records typed text as a verdict; it never closes the row.
+        """Typed text plus enter records a verdict; it never closes the row.
 
         `typed` carries the Input widget's own value when this fires from
         `on_input_submitted` (the row wasn't focused there yet, so the pending
-        draft cannot be trusted); the rail's enter falls back to the draft.
-        Closing is `c`'s job — see the CLAUDE.md invariant this file keeps.
+        draft cannot be trusted); the rail's enter falls back to the draft — and
+        only reaches here with a draft already set (see `action_submit`, which
+        opens the input instead of calling this on an empty one). Closing is
+        `c`'s job — see the CLAUDE.md invariant this file keeps.
         """
         text = (typed if typed is not None else self.pending_text).strip()
-        if text:
-            try:
-                self.store.answer(q.key, project=q.project, selected=[], text=text, skipped=False)
-            except (KeyError, ValueError) as exc:
-                await self._refuse(exc)
-                return
-            self._auto_poke_webhook(q.agent)
-            self._push_undo(q.key, "noted", [], text, project=q.project)
-            self.pending_text = ""
-            self.free_text_mode = False
-            self._hide_input()
-            self.flash = "noted"
-            self._redraw_active()
+        if not text:
+            self.flash = "empty — type an answer, or esc then s to skip"
             self._rebuild_status_bar()
-            self.query_one("#rail-list", ListView).focus()
             return
-        open_count = sum(1 for st in q.steps if not st.done)
-        self.flash = (
-            f"{open_count} step{'' if open_count == 1 else 's'} open — i to type" if open_count
-            else "all steps done — c to clear"
-        )
+        try:
+            self.store.answer(q.key, project=q.project, selected=[], text=text, skipped=False)
+        except (KeyError, ValueError) as exc:
+            await self._refuse(exc)
+            return
+        self._auto_poke_webhook(q.agent)
+        self._push_undo(q.key, "noted", [], text, project=q.project)
+        self.pending_text = ""
+        self.free_text_mode = False
+        self._hide_input()
+        # Distinct from the undo indicator's own "noted" label, so the status
+        # bar never doubles the same word.
+        self.flash = "verdict recorded"
+        self._redraw_active()
         self._rebuild_status_bar()
+        self.query_one("#rail-list", ListView).focus()
+
+    async def _submit_review(self, q: Question, typed: str | None = None) -> None:
+        """Typed text plus enter records a text-only verdict, same as a plan row's.
+
+        A review's kind is `confirm` (pass/fail), so without this it fell
+        through `on_input_submitted`'s generic park-then-second-enter path —
+        `cactus answer qN "text"` already accepts text alone on a review row;
+        this makes the TUI's enter do the same in one keystroke.
+        """
+        text = (typed if typed is not None else self.pending_text).strip()
+        if not text:
+            self.flash = "empty — type an answer, or esc then s to skip"
+            self._rebuild_status_bar()
+            return
+        try:
+            self.store.answer(q.key, project=q.project, selected=[], text=text, skipped=False)
+        except (KeyError, ValueError) as exc:
+            await self._refuse(exc)
+            return
+        self._auto_poke_webhook(q.agent)
+        self._push_undo(q.key, "noted", [], text, project=q.project)
+        self.pending_text = ""
+        self.free_text_mode = False
+        self._hide_input()
+        self.flash = "verdict recorded"
+        self._redraw_active()
+        self._rebuild_status_bar()
+        self.query_one("#rail-list", ListView).focus()
 
     async def _submit_data(self, q: Question, typed: str | None = None) -> None:
         """Enter on a data row: typed text is a verdict, same as a plan row's.
@@ -1394,7 +1470,9 @@ class CactusApp(App[int]):
             self.pending_text = ""
             self.free_text_mode = False
             self._hide_input()
-            self.flash = "noted"
+            # Distinct from the undo indicator's own "noted" label, so the
+            # status bar never doubles the same word.
+            self.flash = "verdict recorded"
             self._redraw_active()
             self._rebuild_status_bar()
             self.query_one("#rail-list", ListView).focus()
@@ -1509,9 +1587,30 @@ class CactusApp(App[int]):
         *, project: str,
     ) -> None:
         self.undo_stack.append(
-            {"key": key, "project": project, "label": label,
+            {"key": key, "project": project, "label": label, "kind": "answer",
              "selected": list(selected), "text": text or ""}
         )
+
+    def _push_step_undo(self, key: str, idx: int, prior_done: bool, *, project: str) -> None:
+        """Record a step toggle so `u` can flip it back without touching the verdict log."""
+        self.undo_stack.append(
+            {"key": key, "project": project, "label": "toggled", "kind": "step",
+             "idx": idx, "prior_done": prior_done, "selected": [], "text": ""}
+        )
+
+    @staticmethod
+    def _undo_flash(entry: dict[str, Any]) -> str:
+        """What `u` says it just undid, in the entry's own terms."""
+        if entry["kind"] == "step":
+            return f"step {entry['idx'] + 1} undone"
+        label = entry["label"]
+        if label == "cleared":
+            return "clear undone"
+        if label == "skipped":
+            return "skip undone"
+        if label == "noted":
+            return "verdict withdrawn"
+        return "answer undone"
 
     async def action_undo(self) -> None:
         """Put the last resolved question back, with what was typed and picked.
@@ -1534,20 +1633,31 @@ class CactusApp(App[int]):
             return
         while self.undo_stack:
             entry = self.undo_stack.pop()
+            is_step = entry["kind"] == "step"
             try:
-                self.store.reopen(entry["key"], project=entry["project"])
-            except KeyError:
-                # Purged out from under us; the next entry down is still good.
+                if is_step:
+                    self.store.set_step_done(
+                        entry["key"], entry["idx"], entry["prior_done"], project=entry["project"]
+                    )
+                else:
+                    self.store.reopen(entry["key"], project=entry["project"])
+            except (KeyError, ValueError):
+                # Purged (or, for a step, cleared) out from under us; the next
+                # entry down is still good.
                 continue
-            self.drafts[entry["key"]] = entry["text"]
-            if not entry["text"]:
-                self.drafts.pop(entry["key"], None)
+            if not is_step:
+                self.drafts[entry["key"]] = entry["text"]
+                if not entry["text"]:
+                    self.drafts.pop(entry["key"], None)
+                self.multi_selected = set(entry["selected"])
             self.focused_key = entry["key"]
-            self.multi_selected = set(entry["selected"])
             self.free_text_mode = False
             self._hide_input()
             self.current_project = entry["project"] \
                 if self.scoped_project is None else self.current_project
+            # Every undo names what it just undid — a silent `u` otherwise
+            # looks identical to a no-op.
+            self.flash = self._undo_flash(entry)
             await self._reload(force=True)
             self._synced_key = self.focused_key
             self.query_one("#rail-list", ListView).focus()
