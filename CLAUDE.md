@@ -360,3 +360,9 @@ scope.
   description from `check_action`), so a key whose meaning varies by row
   (`1-9`, `y`/`n`) gets one neutral footer label; the card's per-row hint
   carries the row-specific wording.
+- On a plan row past 9 steps, a digit buffers (~0.5s, `set_timer`) rather
+  than firing at once, so "1" then "2" reaches step 12 instead of toggling
+  step 1 (q16); a plan with 9 or fewer steps still fires every digit
+  instantly. Any non-digit key, row move, or a digit that cannot extend to a
+  valid step number (`0` as the first digit, or a two-digit buffer) fires or
+  cancels immediately — `_handle_step_digit`/`_resolve_step_buffer`.

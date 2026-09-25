@@ -15,6 +15,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 from textual import events, work
@@ -231,7 +232,10 @@ def _card_lines(
         if _pokeable(q):
             extras.append("p poke")
         if q.act == "plan" and q.steps:
-            extras.append("1-9 toggle step")
+            # Past 9 steps a single digit can't reach the rest, so the hint
+            # says what actually happens: type both digits, buffered briefly
+            # so "1" then "2" reaches step 12 instead of toggling step 1.
+            extras.append("1-99 toggle step" if len(q.steps) > 9 else "1-9 toggle step")
         if q.act == "notify":
             extras.append("d dismiss")
         if run_output:
@@ -455,6 +459,11 @@ class CactusApp(App[int]):
         # Plan keys already seen fully done, so the "all done" flash fires
         # once per completion rather than on every poll.
         self._plan_all_done: set[str] = set()
+        # Digit buffer for a plan step past 9 (q16): "1" then "2" reaches
+        # step 12 instead of toggling step 1 immediately. Empty when idle.
+        self._step_buffer = ""
+        self._step_buffer_key: str | None = None
+        self._step_buffer_timer = None
 
     @property
     def pending_text(self) -> str:
@@ -1010,6 +1019,7 @@ class CactusApp(App[int]):
         self.focused_key = new_key
         self.multi_selected = self._default_multi_selection(new_key)
         self.free_text_mode = False
+        self._cancel_step_buffer()
         self._hide_input()
         for key in (prior_key, new_key):
             if key is None:
@@ -1042,8 +1052,14 @@ class CactusApp(App[int]):
         # completely unrelated action until the next j/k. Runs ahead of
         # binding dispatch, so an action fired by this same key still gets
         # to set its own fresh flash afterwards.
-        if isinstance(event, events.Key) and not self.free_text_mode and not self.elaborating:
-            self._clear_flash()
+        if isinstance(event, events.Key):
+            # Any key that is not itself extending the buffer abandons it —
+            # a row move, a mode switch, or an unrelated action must not
+            # leave a stale digit waiting to fire against a different row.
+            if self._step_buffer and not (len(event.key) == 1 and event.key.isdigit()):
+                self._cancel_step_buffer()
+            if not self.free_text_mode and not self.elaborating:
+                self._clear_flash()
         await super().on_event(event)
 
     async def on_key(self, event: events.Key) -> None:
@@ -1078,6 +1094,20 @@ class CactusApp(App[int]):
             # an enabled digit never reaches this handler at all.
             q = self._current_question()
             if q is not None and q.act == "plan":
+                if q.steps and event.key == "0":
+                    # `0` never starts a buffer (no step is numbered 0), but
+                    # it can still be the second digit of a buffered ten,
+                    # twenty, etc. — same two-digit resolution as any other
+                    # second digit.
+                    if self._step_buffer and self._step_buffer_key == q.key:
+                        buffer = self._step_buffer + "0"
+                        self._cancel_step_buffer()
+                        await self._resolve_step_buffer(q, buffer)
+                    else:
+                        self.flash = f"{q.key} has no step 0"
+                        self._rebuild_status_bar()
+                    event.stop()
+                    return
                 self.flash = (
                     f"{q.key} has no steps yet" if not q.steps
                     else f"{q.key} has no step {event.key}"
@@ -1290,17 +1320,7 @@ class CactusApp(App[int]):
     async def action_select_choice(self, n: int) -> None:
         plan = self._current_question()
         if plan is not None and plan.act == "plan" and plan.steps:
-            idx = n - 1
-            step = next((st for st in plan.steps if st.idx == idx), None)
-            if step is None:
-                self.flash = f"{plan.key} has no step {n}"
-            else:
-                prior_done = step.done
-                self.store.set_step_done(plan.key, idx, not prior_done, project=plan.project)
-                self._push_step_undo(plan.key, idx, prior_done, project=plan.project)
-                self.flash = f"step {n} {'done' if not prior_done else 'reopened'}"
-            await self.action_refresh_view()
-            self._rebuild_status_bar()
+            await self._handle_step_digit(plan, n)
             return
         q = self._current_question()
         if q is None:
@@ -1348,6 +1368,73 @@ class CactusApp(App[int]):
             else:
                 self.multi_selected.add(label)
             self._redraw_active()
+
+    def _cancel_step_buffer(self) -> None:
+        """Drop a pending step digit without firing it — no flash of its own.
+
+        The caller (a cancelling keypress, a row move, undo) is the one that
+        knows what flash — if any — belongs on screen next.
+        """
+        if self._step_buffer_timer is not None:
+            self._step_buffer_timer.stop()
+            self._step_buffer_timer = None
+        self._step_buffer = ""
+        self._step_buffer_key = None
+
+    async def _handle_step_digit(self, plan: Question, n: int) -> None:
+        """Buffer a plan-row digit so a step past 9 is still reachable (q16).
+
+        A plan with 9 or fewer steps can never have a two-digit step number,
+        so every digit is unambiguous and fires the same instant it always
+        did. Past 9 steps, "1" might be step 1 or the start of "12" — so it
+        waits ~0.5s for a possible second digit, unless no second digit could
+        keep it in range (or one is already buffered, since a step number is
+        never more than two digits here), in which case it fires at once.
+        """
+        max_step = len(plan.steps)
+        d = str(n)
+        if self._step_buffer and self._step_buffer_key == plan.key:
+            # Second digit: always final, matching the two-digit cap.
+            buffer = self._step_buffer + d
+            self._cancel_step_buffer()
+            await self._resolve_step_buffer(plan, buffer)
+            return
+        if int(d + "0") <= max_step:
+            self._step_buffer = d
+            self._step_buffer_key = plan.key
+            self.flash = f"step {d}…"
+            self._step_buffer_timer = self.set_timer(
+                0.5, partial(self._fire_step_buffer, plan.key)
+            )
+            self._rebuild_status_bar()
+            return
+        await self._resolve_step_buffer(plan, d)
+
+    async def _fire_step_buffer(self, key: str) -> None:
+        """Timer callback: the human stopped at one digit — resolve it."""
+        if self._step_buffer_key != key or not self._step_buffer:
+            return
+        buffer = self._step_buffer
+        self._cancel_step_buffer()
+        plan = self._current_question()
+        if plan is None or plan.key != key or plan.act != "plan":
+            return
+        await self._resolve_step_buffer(plan, buffer)
+
+    async def _resolve_step_buffer(self, plan: Question, buffer: str) -> None:
+        """Toggle the step the buffered digits name, or flash why not."""
+        n = int(buffer)
+        idx = n - 1
+        step = next((st for st in plan.steps if st.idx == idx), None)
+        if step is None:
+            self.flash = f"{plan.key} has no step {n}"
+        else:
+            prior_done = step.done
+            self.store.set_step_done(plan.key, idx, not prior_done, project=plan.project)
+            self._push_step_undo(plan.key, idx, prior_done, project=plan.project)
+            self.flash = f"step {n} {'done' if not prior_done else 'reopened'}"
+        await self.action_refresh_view()
+        self._rebuild_status_bar()
 
     async def action_submit(self) -> None:
         q = self._current_question()
