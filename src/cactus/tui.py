@@ -63,6 +63,17 @@ def _flatten(text: str) -> str:
     return " ".join(text.split())
 
 
+def _revised(q: Question) -> bool:
+    """Whether the agent touched a persistent row after the human's latest verdict.
+
+    `set_review`, `set_steps`/`set_step_done`, and `edit` all bump `updated_at`
+    (q311) — the two ISO-with-microsecond UTC strings compare lexically, so a
+    row the agent revised after its last verdict reads `updated_at` past the
+    newest answer's `created_at`.
+    """
+    return bool(q.answers) and q.updated_at > q.answers[-1].created_at
+
+
 def _pokeable(q: Question) -> bool:
     """A row can be poked when it names an owning agent.
 
@@ -141,6 +152,8 @@ def _card_lines(
         reprs = [_verdict_repr(a) for a in q.answers]
         lines.append("")
         lines.append(f"verdicts: {', '.join(reprs)}  (latest: {reprs[-1]})")
+        if _revised(q):
+            lines.append("revised after last verdict")
 
     if q.chosen:
         lines.append("")
@@ -299,6 +312,8 @@ class QuestionBlock(ListItem):
             parts.append("not blocking")
         if draft:
             parts.append("draft")
+        if _revised(q):
+            parts.append("revised")
         return " · ".join(parts)
 
     @classmethod
@@ -514,20 +529,43 @@ class CactusApp(App[int]):
         """
         return [r["project"] for r in self._live_projects_rows()]
 
+    @staticmethod
+    def _reorder_revised(questions: list[Question]) -> list[Question]:
+        """Stable-partition so a revised row's subtree moves to the rail's end.
+
+        `store.tree()` already lays out each top-level row's subtree as a
+        contiguous run (parent, then its children, depth-first) — only
+        top-level revised-ness decides the move (q311), so a run travels
+        whole rather than splitting a row from its own follow-ups.
+        """
+        runs: list[list[Question]] = []
+        for q in questions:
+            if q.depth == 0:
+                runs.append([q])
+            elif runs:
+                runs[-1].append(q)
+            else:
+                # Defensive: a child promoted to depth 0 out-of-order should
+                # not happen, but never drop a row if it does.
+                runs.append([q])
+        kept = [run for run in runs if not _revised(run[0])]
+        moved = [run for run in runs if _revised(run[0])]
+        return [q for run in (*kept, *moved) for q in run]
+
     def _load_questions(self) -> None:
-        self.questions = self.store.tree(
+        self.questions = self._reorder_revised(self.store.tree(
             project=self.current_project,
             status=list(ACTIONABLE),
             all_projects=self.current_project is None,
-        )
+        ))
         if self.questions or self.scoped_project is not None:
             return
         live = self._live_projects()
         if live and self.current_project not in live:
             self.current_project = live[0]
-            self.questions = self.store.tree(
+            self.questions = self._reorder_revised(self.store.tree(
                 project=self.current_project, status=list(ACTIONABLE)
-            )
+            ))
 
     async def _reload(self, *, force: bool = False) -> None:
         cursor = self.store.cursor()

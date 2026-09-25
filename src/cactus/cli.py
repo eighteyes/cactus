@@ -185,6 +185,16 @@ def _fmt_answer(q: Question) -> str:
     return " — ".join(parts) if parts else "(empty)"
 
 
+def _revised(q: Question) -> bool:
+    """Whether the agent touched a persistent row after the human's latest verdict.
+
+    Mirrors `tui._revised` (q311): `set_review`, `set_steps`/`set_step_done`,
+    and `edit` all bump `updated_at`, so the two ISO-with-microsecond UTC
+    strings compare lexically against the newest answer's `created_at`.
+    """
+    return bool(q.answers) and q.updated_at > q.answers[-1].created_at
+
+
 def _print_questions(questions: Sequence[Question], *, as_json: bool, show_project: bool) -> None:
     if as_json:
         json.dump([q.as_dict() for q in questions], sys.stdout, indent=2)
@@ -243,6 +253,8 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
                 return "(skipped)" if a.skipped else "(empty)"
             reprs = ", ".join(_verdict(a) for a in q.answers)
             print(f"\t\t{indent}  verdicts: {reprs}")
+        if _revised(q):
+            print(f"\t\t{indent}  revised after last verdict")
         if q.act == "plan" and q.steps:
             for st in q.steps:
                 mark = "x" if st.done else " "
