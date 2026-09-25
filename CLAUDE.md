@@ -360,3 +360,7 @@ scope.
   description from `check_action`), so a key whose meaning varies by row
   (`1-9`, `y`/`n`) gets one neutral footer label; the card's per-row hint
   carries the row-specific wording.
+- `cactus plan`/`cactus review` take an optional `--agent`, gated in `cli.py`
+  (not `Store`), same split as `clear`/`reopen`/`edit`: given and the row is
+  owned by someone else, refuse exit 1; omitted, or the row unowned, behave
+  as before.

@@ -279,6 +279,7 @@ TOOLS: list[dict[str, Any]] = [
             "pass_when": _prop("string", "What a good result looks like."),
             "fail_when": _prop("string", "What disqualifies it."),
             "then": _prop("string", "What to set up next."),
+            "agent": _prop("string", "If given, refuses when the row is owned by a different agent."),
         },
         ["key"],
     ),
@@ -291,6 +292,7 @@ TOOLS: list[dict[str, Any]] = [
             "reset_steps": _prop("boolean", "Replace the list with `steps` and clear every done flag."),
             "done": _prop("integer", "1-based step number to tick."),
             "undone": _prop("integer", "1-based step number to untick."),
+            "agent": _prop("string", "If given, refuses when the row is owned by a different agent."),
         },
         ["key"],
     ),
@@ -424,12 +426,14 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         _flag(argv, "--pass", a.get("pass_when"))
         _flag(argv, "--fail", a.get("fail_when"))
         _flag(argv, "--then", a.get("then"))
+        _flag(argv, "--agent", a.get("agent"))
     elif name == "cactus_plan":
         argv = ["plan", a["key"]]
         _repeat(argv, "--step", a.get("steps"))
         _flag(argv, "--reset-steps", a.get("reset_steps"))
         _flag(argv, "--done", a.get("done"))
         _flag(argv, "--undone", a.get("undone"))
+        _flag(argv, "--agent", a.get("agent"))
     elif name == "cactus_clear":
         argv = ["clear", *(a.get("keys") or []), "--agent", a.get("agent") or _default_agent()]
         _flag(argv, "-t", a.get("thread"))
