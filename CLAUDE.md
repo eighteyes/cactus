@@ -364,3 +364,12 @@ scope.
   (not `Store`), same split as `clear`/`reopen`/`edit`: given and the row is
   owned by someone else, refuse exit 1; omitted, or the row unowned, behave
   as before.
+- A persistent row (review/plan) reads `revised` when `q.updated_at >
+  q.answers[-1].created_at` (q311) — `set_review`, `set_steps`/
+  `set_step_done`, and `edit` all bump `updated_at` via `_touch`, so an agent
+  changing the row after the human's latest verdict is visible without a diff.
+  `tui._revised`/`cli._revised` compute it independently (no store change);
+  the rail marks it `· revised`, the card adds a line under the verdicts
+  line, `_print_questions` matches it in text, and `CactusApp._load_questions`
+  stable-partitions revised top-level rows (with their subtree) to the end of
+  the rail so an unaddressed revision surfaces without hunting for it.
