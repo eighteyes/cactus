@@ -841,9 +841,10 @@ class CactusApp(App[int]):
     def _finish_run_row(self, key: str) -> None:
         """Spill the full capture, record the result, and record approve.
 
-        Always spills — unlike a plain review run, a `run` row's result has to
-        outlive this process for `get --json`/`feed`/the monitor to read it
-        back, not just the card's tail.
+        A `run` row's result has to outlive this process for `get
+        --json`/`feed`/the monitor to read it back, not just the card's tail
+        — same reason `_finish_output` spills and persists a review row's
+        result (q20), but that path stops short of recording an answer.
         """
         from .shell import spill
 
@@ -874,12 +875,32 @@ class CactusApp(App[int]):
             self._rebuild_card()
 
     def _finish_output(self, key: str) -> None:
-        tail = self.run_output.get(key) or []
-        last = tail[-1] if tail else ""
+        """A review row's `R`: spill, persist the result (q20), never answer it.
+
+        Unlike `_finish_run_row`, this never touches `answer()` — a review's
+        pass/fail stays the human's verdict, not something running the
+        command decides. The result still has to outlive this process for
+        the asking agent's `get --json`/`feed` to read it back, so it is
+        spilled and recorded exactly like a `run` row's.
+        """
+        from .shell import spill
+
+        lines = self.run_output.get(key) or []
+        exit_code = _parse_exit_code(lines)
+        last = lines[-1] if lines else ""
         self.run_state[key] = last.strip("— ") if last.startswith("—") else "done"
+        log_path = spill(lines, key=key)
+        try:
+            project = self.run_projects.get(key)
+            self.store.set_run_result(
+                key, project=project, exit_code=exit_code, tail=lines[-50:], log=str(log_path)
+            )
+        except Exception as exc:
+            self.flash = f"{key}: result not recorded: {exc}"
         if self.focused_key == key:
             self._rebuild_card()
-            self.flash = f"{key}: {self.run_state[key]}"
+            if not (self.flash or "").startswith(f"{key}: result not recorded"):
+                self.flash = f"{key}: {self.run_state[key]}"
             self._rebuild_status_bar()
 
     def action_open_output(self) -> None:

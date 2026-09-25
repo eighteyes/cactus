@@ -265,6 +265,11 @@ scope.
   on a `run` act) always runs the command first and records `approve`
   alongside the result once it finishes, killed or not; `n`/deny records
   without running. `get --json`/`feed` expose it as `"result"`.
+  `Store.set_run_result` also accepts a `review` row (q20): the TUI's `R`
+  there spills and persists the same `run_exit`/`run_tail`/`run_log` so the
+  asking agent's `get --json` sees `"result"` too, but never calls
+  `answer()` — a review's pass/fail stays the human's verdict, unlike a
+  `run` row's automatic `approve`.
 - `cactus --monitor` requires `--agent ID`; humans use `--tui`/`--watch`
   instead. `--once` returns as soon as it emits the first non-`asked` event
   (or a `gone`) — inside the same tick, not after a further poll — for an

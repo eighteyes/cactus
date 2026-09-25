@@ -1107,18 +1107,22 @@ class Store:
     def set_run_result(
         self, key: str, *, project: str | None = None, exit_code: int, tail: Sequence[str], log: str
     ) -> Question:
-        """Attach the captured outcome of running a `run` row's command.
+        """Attach the captured outcome of running a row's command.
 
-        Written once the command finishes (or is killed, or fails to start),
-        alongside the `answer()` call that records approve/deny — this is the
-        durable place `get --json`, `feed`, and the monitor read the result
-        from, since the answer alone only says approve/deny, not what happened.
+        Written once the command finishes (or is killed, or fails to start).
+        On a `run` row this happens alongside the `answer()` call that records
+        approve/deny — this is the durable place `get --json`, `feed`, and the
+        monitor read the result from, since the answer alone only says
+        approve/deny, not what happened. On a `review` row (q20) the human's
+        `R` still only runs it, never answers it — the pass/fail verdict
+        stays theirs — but the result is written the same way so the asking
+        agent can read it back too.
         """
         q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
-        if q.act != "run":
-            raise ValueError(f"{key} is act={q.act!r}, not 'run'")
+        if q.act not in ("run", "review"):
+            raise ValueError(f"{key} is act={q.act!r}, not 'run' or 'review'")
         self.conn.execute(
             "UPDATE questions SET run_exit = ?, run_tail = ?, run_log = ? WHERE id = ?",
             (exit_code, json.dumps(list(tail)), log, q.id),
