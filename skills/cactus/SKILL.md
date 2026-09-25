@@ -90,7 +90,8 @@ no owner clears by explicit key only.
     cactus run        a command needs a yes before it runs
     cactus review     a verify block the human re-checks as the work changes
     cactus plan       an ordered checklist both sides tick
-    cactus seen       an FYI the human dismisses; no answer expected
+    cactus notify     an FYI the human dismisses; no answer expected
+    cactus data       chunks the human copies; each copy is a verdict
 
 There is no fork act. A fork in the conversation is an `ask` with two or three
 `-c` options, one per direction, and it becomes a `steer` with `--chosen` the
@@ -177,6 +178,19 @@ update them as it moves.
 The latest verdict is `answer`; the full log is `answers`. Re-read rather than
 cache: a human can undo a verdict and the row reads `open` again.
 
+## Data: hand over chunks
+
+Also persistent. Each `-c` is one chunk — SQL, a command, a snippet — label
+then body, split on the first colon; the body may be multi-line.
+
+    cactus ask "Backfill queries" --act data -t db --agent "$AGENT" \
+      -c "count: SELECT count(*) FROM orders WHERE backfilled IS NULL" \
+      -c "run: UPDATE orders SET backfilled = now() WHERE backfilled IS NULL"
+
+In the TUI, a digit copies that chunk to the clipboard; each copy appends a
+verdict naming the chunk's label, readable with `cactus get`. `d` retires the
+row.
+
 ## Collect without blocking the session
 
 The monitor you started first is the wake-up. When a thread needs its own
@@ -245,8 +259,8 @@ for nothing.
 
     0  ok      1  error      2  --wait timed out      3  nothing matched
 
-`--wait` on a row you posted with `--no-block`, or on a `steer`, `seen`,
-`review`, or `plan`, is exit 1: nothing will ever arrive.
+`--wait` on a row you posted with `--no-block`, or on a `steer`, `notify`,
+`review`, `plan`, or `data`, is exit 1: nothing will ever arrive.
 
 ## Webhook owners
 

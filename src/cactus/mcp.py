@@ -170,11 +170,12 @@ TOOLS: list[dict[str, Any]] = [
     _tool(
         "cactus_ask",
         "Post a decision to the human's inbox and return its key. Does not block unless `wait` is set. "
-        "Give two or three choices, one per direction, each 'label: description'.",
+        "Give two or three choices, one per direction, each 'label: description'. "
+        "act 'data' rows take chunks as choices (label: body) and are copied by the human, not answered.",
         {
             "text": _prop("string", "The question, plainly."),
             "choices": {**_STR_LIST, "description": "Choices as 'label: description'; split on the first colon. Omit for a free-text question."},
-            "act": _prop("string", "What is being asked for.", enum=["ask", "steer", "seen", "review", "plan"]),
+            "act": _prop("string", "What is being asked for.", enum=["ask", "steer", "notify", "review", "plan", "data"]),
             "kind": _prop("string", "Answer shape override; inferred from choices and flags otherwise.", enum=["choice", "multi", "text", "confirm"]),
             "multi": _prop("boolean", "Allow selecting several choices."),
             "confirm": _prop("boolean", "Yes/no question."),
@@ -252,7 +253,7 @@ TOOLS: list[dict[str, Any]] = [
             "select": {**_STR_LIST, "description": "Choice label(s) to select."},
             "text": _prop("string", "Free-text answer."),
             "skip": _prop("boolean", "Mark seen without deciding."),
-            "dismiss": _prop("boolean", "Dismiss a seen/notice row."),
+            "dismiss": _prop("boolean", "Dismiss a notify/notice row."),
         },
         ["key"],
     ),

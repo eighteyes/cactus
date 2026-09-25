@@ -44,11 +44,11 @@ ACTIONABLE = ("open", "live", "elaborate")
 # What the agent is asking for. Orthogonal to KINDS, which is how the answer is
 # collected: a `run` act uses a `confirm` shape, a `steer` act may use either
 # `choice` or `text`.
-ACTS = ("ask", "steer", "run", "seen", "review", "plan")
+ACTS = ("ask", "steer", "run", "notify", "review", "plan", "data")
 
 # Acts whose rows stay answerable. They are created `live`, never transition on
 # their own, and `wait_for_answer` refuses them.
-PERSISTENT_ACTS = ("review", "plan")
+PERSISTENT_ACTS = ("review", "plan", "data")
 
 # Whether a row blocks is the AGENT's call, stored per row in `blocked`, not a
 # property of its act. The act only supplies the default the agent gets when it
@@ -59,19 +59,21 @@ DEFAULT_BLOCKED = {
     "ask": True,
     "run": True,
     "steer": False,
-    "seen": False,
+    "notify": False,
     "review": False,
     "plan": False,
+    "data": False,
 }
 
-# Shapes each act accepts. `seen` and `plan` collect no answer of their own.
+# Shapes each act accepts. `notify` and `plan` collect no answer of their own.
 ACT_SHAPES: dict[str, tuple[str, ...]] = {
     "ask":    ("choice", "multi", "text", "confirm"),
     "steer":  ("choice", "text"),
     "run":    ("confirm",),
-    "seen":   ("text",),
+    "notify": ("text",),
     "review": ("confirm",),
     "plan":   ("text",),
+    "data":   ("choice",),
 }
 
 SCHEMA = """
@@ -478,6 +480,10 @@ class Store:
         # column comment in SCHEMA for why the monitor needs it.
         if "last_change" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN last_change TEXT")
+        # `seen` renamed to `notify`: a data fixup, not a schema change, so it
+        # runs unconditionally on every open like the checks above — idempotent,
+        # since a second pass finds no `seen` rows left to touch.
+        self.conn.execute("UPDATE questions SET act='notify' WHERE act='seen'")
 
         # NOT called here. Rebuilding `answers` — and, for the same reason,
         # `questions` to drop the global UNIQUE(key) that per-project numbering

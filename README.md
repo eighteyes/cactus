@@ -239,12 +239,13 @@ Free text rides alongside a pick unless `--no-free`.
     ask      yes      any                     a decision the agent needs
     run      yes      confirm: approve/deny   approval to run a command
     steer    no       choice                  what the agent does unless redirected
-    seen     no       text                    a notice the human dismisses
+    notify   no       text                    a notice the human dismisses
     review   no       confirm: pass/fail      a verify block, re-checked over time
     plan     no       text                    a checklist both sides tick
+    data     no       choice                  chunks the human copies; each copy is a verdict
 
-`--blocked` / `--no-block` override the default on any row. `review` and `plan`
-stay live until cleared and keep every verdict.
+`--blocked` / `--no-block` override the default on any row. `review`, `plan`,
+and `data` stay live until cleared and keep every verdict.
 
 ### Recommendations
 

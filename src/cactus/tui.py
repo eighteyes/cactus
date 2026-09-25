@@ -164,7 +164,13 @@ def _card_lines(
         for row in run_output[-RUN_TAIL:]:
             lines.append(f"  | {row}")
 
-    if q.kind in ("choice", "multi"):
+    if q.act == "data":
+        lines.append("")
+        for i, choice in enumerate(q.choices, start=1):
+            lines.append(f"  {i})  {choice.label}")
+            for body_line in (choice.description or "").splitlines():
+                lines.append(f"      | {body_line}")
+    elif q.kind in ("choice", "multi"):
         lines.append("")
         for i, choice in enumerate(q.choices, start=1):
             mark = "[x] " if q.kind == "multi" and choice.label in selected else (
@@ -202,7 +208,12 @@ def _card_lines(
         if _pokeable(q):
             extras.append("p poke")
     else:
-        hint = _confirm_hint(q) if q.kind == "confirm" else HINTS.get(q.kind, "")
+        if q.kind == "confirm":
+            hint = _confirm_hint(q)
+        elif q.act == "data":
+            hint = "1-9 copy chunk   d dismiss"
+        else:
+            hint = HINTS.get(q.kind, "")
         extras = []
         if q.review is not None and q.review.run_cmd:
             extras.append("C copy   R run")
@@ -210,7 +221,7 @@ def _card_lines(
             extras.append("p poke")
         if q.act == "plan" and q.steps:
             extras.append("1-9 toggle step")
-        if q.act == "seen":
+        if q.act == "notify":
             extras.append("d dismiss")
         if run_output:
             extras.append("O open full output")
@@ -677,7 +688,7 @@ class CactusApp(App[int]):
         if action == "open_output":
             return bool(self.run_output.get(q.key))
         if action == "dismiss":
-            return q.act == "seen"
+            return q.act in ("notify", "data")
         if action == "poke":
             return _pokeable(q)
         if action == "undo":
@@ -694,6 +705,8 @@ class CactusApp(App[int]):
             # rather than looking like a dead key.
             if q.act == "plan":
                 return bool(q.steps)
+            if q.act == "data":
+                return bool(q.choices)
             return q.kind in ("choice", "multi", "confirm")
         return True
 
@@ -859,11 +872,18 @@ class CactusApp(App[int]):
         self.flash = message
 
     async def action_dismiss(self) -> None:
-        """Dismiss a seen row — it wanted acknowledgement, not an answer."""
+        """Dismiss a notify row — it wanted acknowledgement, not an answer.
+
+        A data row closes the same way `c` does instead: a skipped answer
+        would only append an idle verdict on a persistent row, not retire it.
+        """
         q = self._current_question()
         if q is None:
             return
-        if q.act != "seen":
+        if q.act == "data":
+            await self.action_clear_focused()
+            return
+        if q.act != "notify":
             self.flash = f"{q.key} is act={q.act}, not a dismissable notice"
             self._rebuild_status_bar()
             return
@@ -1206,6 +1226,9 @@ class CactusApp(App[int]):
         if q.act == "plan":
             await self._submit_plan(q, typed=value)
             return
+        if q.act == "data":
+            await self._submit_data(q, typed=value)
+            return
         if q.kind == "text":
             if not value:
                 self.flash = "empty — type an answer, or esc then s to skip"
@@ -1238,7 +1261,27 @@ class CactusApp(App[int]):
             self._rebuild_status_bar()
             return
         q = self._current_question()
-        if q is None or q.kind not in ("choice", "multi", "confirm"):
+        if q is None:
+            return
+        if q.act == "data":
+            if n < 1 or n > len(q.choices):
+                self.flash = f"{q.key} has no chunk {n}"
+                self._rebuild_status_bar()
+                return
+            from .shell import copy, ShellError
+
+            choice = q.choices[n - 1]
+            try:
+                tool = copy(choice.description)
+            except ShellError as exc:
+                self.flash = f"copy failed: {exc}"
+                self._rebuild_status_bar()
+                return
+            await self._submit_answer(q, selected=[choice.label], text=None)
+            self.flash = f"copied {n}) {choice.label} via {tool}"
+            self._rebuild_status_bar()
+            return
+        if q.kind not in ("choice", "multi", "confirm"):
             return
         if q.kind == "confirm":
             # The digits pick a confirm the same way they pick a choice, so the
@@ -1270,6 +1313,9 @@ class CactusApp(App[int]):
             return
         if q.act == "plan":
             await self._submit_plan(q)
+            return
+        if q.act == "data":
+            await self._submit_data(q)
             return
         if q.kind == "multi":
             if not self.multi_selected and not self.pending_text:
@@ -1328,6 +1374,32 @@ class CactusApp(App[int]):
             f"{open_count} step{'' if open_count == 1 else 's'} open — i to type" if open_count
             else "all steps done — c to clear"
         )
+        self._rebuild_status_bar()
+
+    async def _submit_data(self, q: Question, typed: str | None = None) -> None:
+        """Enter on a data row: typed text is a verdict, same as a plan row's.
+
+        Digits are how a data row is normally worked (copy a chunk); enter with
+        no typed text records nothing and just points back at the digits.
+        """
+        text = (typed if typed is not None else self.pending_text).strip()
+        if text:
+            try:
+                self.store.answer(q.key, project=q.project, selected=[], text=text, skipped=False)
+            except (KeyError, ValueError) as exc:
+                await self._refuse(exc)
+                return
+            self._auto_poke_webhook(q.agent)
+            self._push_undo(q.key, "noted", [], text, project=q.project)
+            self.pending_text = ""
+            self.free_text_mode = False
+            self._hide_input()
+            self.flash = "noted"
+            self._redraw_active()
+            self._rebuild_status_bar()
+            self.query_one("#rail-list", ListView).focus()
+            return
+        self.flash = "1-9 copies a chunk"
         self._rebuild_status_bar()
 
     def _pick_hint(self, q: Question) -> str:

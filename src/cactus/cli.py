@@ -70,9 +70,10 @@ ACTS
   ask      yes      choice | multi | text | confirm
   run      yes      confirm   approve / deny
   steer    no       choice    --chosen required
-  seen     no       text
+  notify   no       text
   review   no       confirm   pass / fail; persistent
   plan     no       text      persistent; steps 1-based
+  data     no       choice    chunks via -c 'label: body'; copy appends verdict; persistent
 
 ASK OPTIONS
   -c LABEL[: DESC]           one choice, verbatim; repeat
@@ -153,6 +154,11 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         if q.choices and q.status == "open":
             labels = " | ".join(c.label for c in q.choices)
             print(f"\t\t{indent}  choices: {labels}")
+        if q.act == "data":
+            for i, c in enumerate(q.choices, start=1):
+                print(f"\t\t{indent}  {i}) {c.label}")
+                for body_line in (c.description or "").splitlines():
+                    print(f"\t\t{indent}     {body_line}")
         if q.status == "elaborate":
             print(f"\t\t{indent}  wants: {q.elaborate or '(no hint given)'}")
         if q.recommend:
@@ -233,6 +239,10 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         # 9: --timeout only means something alongside --wait.
         print("cactus: --timeout needs --wait", file=sys.stderr)
         return EXIT_ERROR
+    if args.multi and ACT_SHAPES[args.act] == ("choice",):
+        # A data row hands over one chunk per copy; --multi has nothing to mean.
+        print(f"cactus: --act {args.act} takes a single choice; --multi is not supported", file=sys.stderr)
+        return EXIT_ERROR
 
     # Each -c is exactly one choice, taken verbatim. Splitting on commas here
     # would silently shred any description that contains one.
@@ -252,13 +262,20 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         return EXIT_ERROR
 
     act = args.act
+    if act == "data" and not choices:
+        # A data row hands over chunks; with none, there is nothing to copy.
+        print(
+            "cactus: --act data needs at least one -c 'label: body' chunk",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
     if choices and ACT_SHAPES[act] == ("text",):
-        # seen and plan collect text only; silently forcing kind="text" below
+        # notify and plan collect text only; silently forcing kind="text" below
         # would strand the -c choices on a row that never reads them.
         print(f"cactus: --act {act} takes no choices; it collects text only", file=sys.stderr)
         return EXIT_ERROR
     if args.no_free and not choices:
-        # A no-free text row (kind=text, including seen/plan) could never be
+        # A no-free text row (kind=text, including notify/plan) could never be
         # answered: no choices to pick and free text is refused too.
         print(
             "cactus: --no-free needs choices; a text question with no free "
@@ -1129,7 +1146,7 @@ def build_parser() -> argparse.ArgumentParser:
     skip_grp = ans.add_mutually_exclusive_group()
     skip_grp.add_argument("--skip", action="store_true", help="record a deliberate non-answer")
     skip_grp.add_argument("--dismiss", action="store_true",
-                          help="dismiss a seen row without choosing (alias of --skip)")
+                          help="dismiss a notify row without choosing (alias of --skip)")
     ans.set_defaults(fn=cmd_answer)
 
     ed = verb("edit", help="replace fields on a row; also answers an elaborate request")

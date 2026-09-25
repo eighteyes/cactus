@@ -116,7 +116,7 @@ scope.
   `review`, `plan`) exits 3 on a missing key, one stderr line — a miss, not
   a malformed call.
 - `cactus ask --act A -c ...` refuses when `ACT_SHAPES[A] == ("text",)`
-  (`seen`, `plan`): those acts collect text only, and forcing `kind="text"`
+  (`notify`, `plan`): those acts collect text only, and forcing `kind="text"`
   while keeping the `-c` choices would strand them unread on the row.
 - `Store(path)` raises `ValueError` — never lets an exception escape as a
   traceback — for `path=""` (same rule as an empty `CACTUS_DB`) and for a
@@ -320,3 +320,8 @@ scope.
   on entry so a later cycle never reads a stale value. Additive column,
   included in `monitor._signature`; a leaving-`elaborate` transition reads
   `withdrawn` or `edited` from it instead of collapsing both to `edited`.
+- `data` (q293/q294) is persistent like review/plan, shape `choice` only, and
+  `Store.ask` refuses one with no choices. Each `-c` is a copyable chunk
+  (label: body, body may be multi-line); a copy in the TUI appends a verdict
+  naming the chunk's label via the ordinary `Store.answer` path. `d`/`c`
+  close it the same as any other persistent row.
