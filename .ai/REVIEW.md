@@ -1,27 +1,32 @@
-# Review: cactus-mac spike (branch macapp)
+# Review: footer keys follow the focused row
 
-1. Build:
-
-       cd mac && swift build
-
-   Pass: `Build complete!`, no errors.
-2. Post a scratch row against a scratch DB in one shell, then launch the app from the same shell so it inherits `CACTUS_DB`:
+1. Seed one row per act and open the TUI against a scratch DB:
 
        export CACTUS_DB=$(mktemp) CACTUS_POKE=true CACTUS_RECORDS=0
-       cactus ask "Pick one" -c "a: first" -c "b: second" --recommend b --confidence high --why t --agent me
-       ./.build/debug/cactus-mac &
+       A=review-me
+       cactus ask "review?" --act review --agent $A
+       cactus ask "plan?" --act plan --agent $A && cactus plan q2 --step one --step two
+       cactus ask "notice" --act notify --agent $A
+       cactus ask "chunks" --act data --agent $A -c "one: echo hi"
+       cactus ask "confirm?" --confirm --agent $A
+       cactus ask "pick" -c a -c b --no-free --agent $A
+       cactus run "echo hi" --agent $A --why test
+       cactus --tui
 
-   Pass: menu-bar item shows `1`.
-3. Press ⇧Space.
-   Pass: floating panel appears on the screen under the mouse; rail lists `cactus · q1 · Pick one`; card shows `1) a`, `2) b ★`, with `b` preselected.
-4. Press `1`, then Enter.
-   Pass: row leaves the rail, menu-bar title goes blank; `cactus get q1 --json | jq '.[0].answer.selected'` prints `["a"]`.
-5. Press ⇧Space with the panel open, then again.
-   Pass: hides, then shows. Esc also hides. Clicking another app hides it.
-6. Post a second row, open the panel, press `s`.
-   Pass: row skipped; `cactus get q2 --json | jq '.[0].answer.skipped'` is `true`.
-7. Post a third row, press `c`.
-   Pass: row leaves the rail; `cactus get q3 --json | jq '.[0].status'` is `cleared`.
-8. Answer a row from the TUI while the panel is open, then press a digit + Enter on the same row in the panel.
-   Pass: footer shows the CLI's already-answered line; nothing overwritten.
-9. Quit from the menu-bar item. `trash "$CACTUS_DB"`.
+2. Walk the rail with `j` and read the footer on each row.
+
+   Pass:
+   - review row: `y pass  n fail`
+   - run row: `y approve  n deny`
+   - plan row: `1-9 Toggle step`
+   - data row: `1-9 Copy chunk`, `d Close`
+   - notify row: `d Dismiss`
+   - `s Skip` present on every row above
+   - `--no-free` row: no `i`, and the card hint has no `i type`
+   - project keys render as `[` `]`, settings as `?`
+
+   Fail: any row still showing `y Yes  n No`, or `1 1-9`.
+
+3. Throwaway probe that prints the same per act:
+
+       PYTHONPATH=src python .ai/tmp/probe_footer.py

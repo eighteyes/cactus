@@ -357,9 +357,14 @@ scope.
   recorded yet, whether typed or restored by undo. `_verdict_repr` renders
   `label — text` when a verdict carries both.
 - Footer binding labels are static per `Binding` (Textual never reads a
-  description from `check_action`), so a key whose meaning varies by row
-  (`1-9`, `y`/`n`) gets one neutral footer label; the card's per-row hint
-  carries the row-specific wording.
+  description from `check_action`), so `CactusApp._relabel` rewrites the
+  row-dependent ones (`y`/`n` to the row's own confirm labels, `1-9` to
+  pick/toggle/toggle step/copy chunk, `d` to dismiss/close) in Textual's
+  binding map on every `_rebuild_card`, just before `refresh_bindings()`.
+  It fails soft to the neutral defaults in `BINDINGS`. `s` (skip) stays
+  offered on every answerable row, persistent ones included (q317). A
+  `--no-free` row's hint drops `i type` the same way `check_action` hides
+  `i`.
 - `cactus plan`/`cactus review` take an optional `--agent`, gated in `cli.py`
   (not `Store`), same split as `clear`/`reopen`/`edit`: given and the row is
   owned by someone else, refuse exit 1; omitted, or the row unowned, behave
