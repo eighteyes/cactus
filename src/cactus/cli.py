@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import subprocess
 import sys
 from typing import Any, Sequence
 
@@ -27,6 +29,51 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_TIMEOUT = 2
 EXIT_EMPTY = 3
+
+
+def _monitor_running(agent: str) -> bool:
+    """Whether an exact ``--monitor --agent`` process is already alive.
+
+    This is deliberately advisory. A process listing can be unavailable in a
+    sandbox, and a monitor can disappear immediately after this check; either
+    case should remind the agent, never make an otherwise valid cactus command
+    fail.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-ax", "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+
+    for line in result.stdout.splitlines():
+        try:
+            words = shlex.split(line)
+        except ValueError:
+            words = line.split()
+        for index, word in enumerate(words[:-1]):
+            if word == "--agent" and words[index + 1] == agent and "--monitor" in words:
+                return True
+    return False
+
+
+def _remind_about_monitor(args: argparse.Namespace) -> None:
+    """Gently surface the required answer-delivery loop to an agent caller."""
+    agent = getattr(args, "agent", None)
+    if args.monitor or not isinstance(agent, str) or not agent.strip():
+        return
+    if _monitor_running(agent):
+        return
+    print(
+        f"cactus: no monitor is running for --agent {agent}; "
+        f"start `cactus --monitor --json --agent {agent}` so answers reach you.",
+        file=sys.stderr,
+    )
 
 AGENT_HELP = """\
 NAME
@@ -1335,6 +1382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command is None:
             parser.print_help()
             return EXIT_OK
+        _remind_about_monitor(args)
         return int(args.fn(args, store, project, cwd))
     except KeyboardInterrupt:
         return 130
