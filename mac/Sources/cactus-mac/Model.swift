@@ -16,7 +16,6 @@ struct Choice: Codable, Identifiable, Hashable {
 }
 
 struct Question: Codable, Identifiable, Hashable {
-    var id: Int
     var key: String
     var ref: String?
     var project: String
@@ -35,8 +34,12 @@ struct Question: Codable, Identifiable, Hashable {
     var parent: String?
     var agent: String?
 
+    /// Feed rows carry no rowid; `ref` (`LABEL:qN`) is unique across projects,
+    /// `key` alone is unique only within one.
+    var id: String { ref ?? key }
+
     enum CodingKeys: String, CodingKey {
-        case id, key, ref, project, text, context, kind, act, status, choices
+        case key, ref, project, text, context, kind, act, status, choices
         case recommend, confidence
         case recommendWhy = "recommend_why"
         case chosen, blocked, thread, parent, agent
@@ -47,7 +50,6 @@ struct Question: Codable, Identifiable, Hashable {
     /// only ever handles one shape.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(Int.self, forKey: .id)
         key = try c.decode(String.self, forKey: .key)
         ref = try c.decodeIfPresent(String.self, forKey: .ref)
         project = try c.decode(String.self, forKey: .project)
