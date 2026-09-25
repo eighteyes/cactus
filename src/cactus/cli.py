@@ -80,7 +80,8 @@ NAME
   cactus — durable question inbox between agents and a human
 
 WORKFLOW (required)
-  1  cactus --monitor --agent ID      foreground, before the first ask
+  1  cactus --monitor --agent ID      foreground, before the first ask;
+                                     never echoes your own asked
   2  cactus ask ... --agent ID        every decision, not chat
   3  work; act on each event
   4  cactus clear KEY --agent ID      own rows only
@@ -1131,7 +1132,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --monitor, exit 0 right after the first non-asked event")
     p.add_argument("--interval", type=float, default=1.0,
                    help="with --monitor, seconds between polls (default: 1.0)")
-    p.add_argument("--agent", help="with --monitor, only events for this agent's rows")
+    p.add_argument("--agent", help="with --monitor, only events for this agent's rows "
+                                   "(never `asked`: those are its own posts)")
     p.add_argument("--workspace", help="with --monitor, only events for this workspace id")
     p.add_argument("--tab", help="with --monitor, only events for this tab id")
     p.add_argument("--pane", help="with --monitor, only events for this pane id")

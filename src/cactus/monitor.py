@@ -253,6 +253,11 @@ def run_monitor(
     because a `gone` event for a purged row has to be judged against the scope
     recorded in `seen`, not against a row that no longer exists to ask.
 
+    With `agent` set, `asked` is never streamed: the only rows that can
+    arrive under that filter are ones the agent posted (or was rehomed
+    onto, which the session-start hook already lists). `replay` still
+    emits the current inbox first when asked to.
+
     `once` exits right after the first emitted event that is not `asked` —
     an agent waiting on a verdict in the background after the Monitor tool's
     own time cap hits, not a full session watcher.
@@ -306,7 +311,12 @@ def run_monitor(
                 # some unrelated change touched it.
                 if before != signature and owned(scope):
                     event = _arrival_event(q) if before is None else _transition_event(before, q)
-                    _emit(q, event, as_json=as_json, show_project=all_projects)
+                    # An `asked` on an --agent stream is a row that agent
+                    # posted itself (q319): the line repeats what it already
+                    # knows, and every line lands in its conversation.
+                    # `--replay` above still lists the inbox on request.
+                    if not (agent is not None and event == "asked"):
+                        _emit(q, event, as_json=as_json, show_project=all_projects)
                     if event != "asked":
                         fired = True
                 seen[ident] = (scope, signature)
