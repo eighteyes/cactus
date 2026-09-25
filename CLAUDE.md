@@ -379,3 +379,12 @@ scope.
   unaffected. `CactusApp._live_projects_rows` (q313) sorts its already-filtered
   rows by `newest_open` descending, so one `]` from anywhere reaches whichever
   project just got a new row, not whichever has been busiest overall.
+- `scope.resolve_project` (q314) maps a linked git worktree to its main
+  repository's toplevel via `git_main_toplevel` (`--git-common-dir` vs
+  `--git-dir`; differ means linked, and the project root is the common dir's
+  parent), so rows asked from `.claude/worktrees/X` or `.herdr/worktrees/X`
+  file under the parent project, share its qN numbering and LABEL:qN refs,
+  and are seen by a `cactus --monitor` started in the main checkout. `cwd`
+  still records the real directory the row was asked from. `git_toplevel`
+  keeps its old per-worktree meaning; `CACTUS_SCOPE=worktree` restores it as
+  the project root too. Existing rows are not rehomed by this change.
