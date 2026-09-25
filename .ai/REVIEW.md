@@ -1,20 +1,27 @@
-# Review: notify rename + data act (commit 32cc210, branch cactus-v1)
+# Review: cactus-mac spike (branch macapp)
 
-1. Post a data row from a scratch shell:
+1. Build:
 
-       CACTUS_POKE=true cactus ask "Backfill queries" --act data -t db --agent me \
-         -c "count: SELECT count(*) FROM orders
-       WHERE backfilled IS NULL" \
-         -c "run: UPDATE orders SET backfilled = now() WHERE backfilled IS NULL"
+       cd mac && swift build
 
-2. Open `cactus --tui`, focus the row.
-   Pass: card shows `1) count` with `| ` body lines under it, footer reads `1-9 copy chunk   d dismiss`.
-3. Press `2`.
-   Pass: flash `copied 2) run via pbcopy`; paste yields the UPDATE verbatim; row still on the board.
-4. `cactus get KEY --json | jq '.[0].answers'`
-   Pass: one verdict, `selected: ["run"]`, status `live`.
-5. Press `d`, then `u`.
-   Pass: row leaves, then returns live with the verdict intact.
-6. `cactus ask "x" --act data --agent me` and `--act seen`.
-   Pass: both refused, exit 1.
-7. Any pre-existing `seen` row in the live DB reads `notify` after any cactus verb runs.
+   Pass: `Build complete!`, no errors.
+2. Post a scratch row against a scratch DB in one shell, then launch the app from the same shell so it inherits `CACTUS_DB`:
+
+       export CACTUS_DB=$(mktemp) CACTUS_POKE=true CACTUS_RECORDS=0
+       cactus ask "Pick one" -c "a: first" -c "b: second" --recommend b --confidence high --why t --agent me
+       ./.build/debug/cactus-mac &
+
+   Pass: menu-bar item shows `1`.
+3. Press ⌥Space.
+   Pass: floating panel appears on the screen under the mouse; rail lists `cactus · q1 · Pick one`; card shows `1) a`, `2) b ★`, with `b` preselected.
+4. Press `1`, then Enter.
+   Pass: row leaves the rail, menu-bar title goes blank; `cactus get q1 --json | jq '.[0].answer.selected'` prints `["a"]`.
+5. Press ⌥Space with the panel open, then again.
+   Pass: hides, then shows. Esc also hides. Clicking another app hides it.
+6. Post a second row, open the panel, press `s`.
+   Pass: row skipped; `cactus get q2 --json | jq '.[0].answer.skipped'` is `true`.
+7. Post a third row, press `c`.
+   Pass: row leaves the rail; `cactus get q3 --json | jq '.[0].status'` is `cleared`.
+8. Answer a row from the TUI while the panel is open, then press a digit + Enter on the same row in the panel.
+   Pass: footer shows the CLI's already-answered line; nothing overwritten.
+9. Quit from the menu-bar item. `trash "$CACTUS_DB"`.
