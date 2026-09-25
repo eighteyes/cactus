@@ -163,6 +163,8 @@ ENVIRONMENT
   CACTUS_POKE_WEBHOOKS  agent→webhook JSON map (default ~/.config/cactus/poke-webhooks.json)
   CACTUS_AGENT    default --by
   CACTUS_RECORDS  0 disables records
+  CACTUS_SCOPE    worktree keeps a linked git worktree its own project;
+                  default files it under the main repo's toplevel
   HERDR_*         scope stamps; see STAMPS
 """
 
