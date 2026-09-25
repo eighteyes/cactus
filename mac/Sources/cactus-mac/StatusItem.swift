@@ -2,7 +2,7 @@
 // Responsibilities:
 // - Show the count of open questions as the status item's title, blank when
 //   zero.
-// - Provide a menu with "Show (⌥Space)" (toggles the panel) and "Quit".
+// - Provide a menu with "Show (⇧Space)" (toggles the panel) and "Quit".
 
 import AppKit
 import Combine
@@ -20,7 +20,7 @@ final class StatusItemController {
 
         let menu = NSMenu()
         let showItem = NSMenuItem(
-            title: "Show (⌥Space)",
+            title: "Show (⇧Space)",
             action: #selector(showPressed),
             keyEquivalent: ""
         )

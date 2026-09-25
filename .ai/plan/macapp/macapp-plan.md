@@ -8,7 +8,7 @@ floating panel listing open rows and answers them.
 - SwiftPM executable target, no Xcode project, no signing, no packaging.
 - Menu-bar `NSStatusItem` with the open-row count as its title.
 - Global hotkey through Carbon `RegisterEventHotKey` (no Accessibility grant).
-  Default `⌥Space` (q303, pending); rebindable later via UserDefaults.
+  Default `⇧Space` (q303, pending); rebindable later via UserDefaults.
 - Floating `NSPanel` (`.nonactivatingPanel`, `.hudWindow`), toggles on the
   hotkey, dismisses on `Esc` or focus loss.
 - Rail: one line per actionable row across all projects, `project · key · text`.

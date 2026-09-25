@@ -12,11 +12,11 @@
        ./.build/debug/cactus-mac &
 
    Pass: menu-bar item shows `1`.
-3. Press ⌥Space.
+3. Press ⇧Space.
    Pass: floating panel appears on the screen under the mouse; rail lists `cactus · q1 · Pick one`; card shows `1) a`, `2) b ★`, with `b` preselected.
 4. Press `1`, then Enter.
    Pass: row leaves the rail, menu-bar title goes blank; `cactus get q1 --json | jq '.[0].answer.selected'` prints `["a"]`.
-5. Press ⌥Space with the panel open, then again.
+5. Press ⇧Space with the panel open, then again.
    Pass: hides, then shows. Esc also hides. Clicking another app hides it.
 6. Post a second row, open the panel, press `s`.
    Pass: row skipped; `cactus get q2 --json | jq '.[0].answer.skipped'` is `true`.

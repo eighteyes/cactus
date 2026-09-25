@@ -5,7 +5,7 @@
 - q297 swift-native over kitty-qa and swift-web.
 - q304 steer: feed-json read path, chosen. store.py remains the only DB module.
 - q301 steer: build the spike now, chosen.
-- q302 location, q303 hotkey: open at time of writing; defaults `mac/`, `⌥Space`.
+- q302 location: `mac/` in-repo. q303 hotkey: ⇧Space (answered as free text "shift-space").
 
 ## Key files
 

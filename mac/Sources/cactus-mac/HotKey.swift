@@ -1,7 +1,7 @@
 // HotKey.swift — global hotkey via Carbon's RegisterEventHotKey.
 // Responsibilities:
 // - Register one system-wide hotkey with no Accessibility permission needed.
-// - Default to ⌥Space (kVK_Space + optionKey); read an override from
+// - Default to ⇧Space (kVK_Space + shiftKey); read an override from
 //   UserDefaults keys "hotkeyKeyCode"/"hotkeyModifiers" when present.
 // - Invoke its callback on the main thread.
 
@@ -30,7 +30,7 @@ final class HotKey {
             : UInt32(kVK_Space)
         let modifiers: UInt32 = defaults.object(forKey: "hotkeyModifiers") != nil
             ? UInt32(defaults.integer(forKey: "hotkeyModifiers"))
-            : UInt32(optionKey)
+            : UInt32(shiftKey)
 
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
