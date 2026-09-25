@@ -588,11 +588,20 @@ class CactusApp(App[int]):
         head.update(f"{label}  {counts}{switch}")
 
     def _live_projects_rows(self) -> list[dict[str, Any]]:
-        return [
+        """Live projects, newest actionable arrival first (q313).
+
+        One `]` from anywhere should reach the project that just got a new
+        row — `newest_open` is NULL only for a project with nothing open or
+        live left, which `open_count > 0 or live_count > 0` already excludes,
+        so the sort key never needs a real fallback for a None case here.
+        """
+        rows = [
             r for r in self.store.projects()
             if (r["open_count"] > 0 or r["live_count"] > 0)
             and (self.scoped_project is None or r["project"] == self.scoped_project)
         ]
+        rows.sort(key=lambda r: r["newest_open"] or "", reverse=True)
+        return rows
 
     async def _rebuild_rail(self) -> None:
         listview = self.query_one("#rail-list", ListView)

@@ -364,3 +364,9 @@ scope.
   (not `Store`), same split as `clear`/`reopen`/`edit`: given and the row is
   owned by someone else, refuse exit 1; omitted, or the row unowned, behave
   as before.
+- `Store.projects()` carries `newest_open` — `MAX(created_at)` over each
+  project's `open`/`live`/`elaborate` rows, NULL when none — alongside its
+  existing busiest-first columns; the CLI's `cactus projects` text order is
+  unaffected. `CactusApp._live_projects_rows` (q313) sorts its already-filtered
+  rows by `newest_open` descending, so one `]` from anywhere reaches whichever
+  project just got a new row, not whichever has been busiest overall.
