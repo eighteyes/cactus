@@ -1536,7 +1536,9 @@ class Store:
                    SUM(CASE WHEN status = 'live'     THEN 1 ELSE 0 END) AS live_count,
                    SUM(CASE WHEN status = 'answered' THEN 1 ELSE 0 END) AS answered_count,
                    COUNT(*) AS total,
-                   MAX(updated_at) AS last_activity
+                   MAX(updated_at) AS last_activity,
+                   MAX(CASE WHEN status IN ('open', 'live', 'elaborate') THEN created_at END)
+                       AS newest_open
             FROM questions
             WHERE status != 'cleared'
             GROUP BY project
