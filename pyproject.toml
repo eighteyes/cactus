@@ -18,6 +18,14 @@ cactus = "cactus.cli:main"
 cac = "cactus.cli:main"
 cactus-mcp = "cactus.mcp:main"
 
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

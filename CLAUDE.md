@@ -6,13 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
     PYTHONPATH=src python3 -m cactus --help      # run from the checkout
     uv tool install --editable .               # install the `cactus` console script
-    CACTUS_DB=/tmp/scratch.db CACTUS_POKE=true PYTHONPATH=src python3 .ai/tmp/test_tui.py
-    bash .ai/tmp/test_feed.sh                  # CLI-side scripts are shell
+    uv sync --group dev && uv run pytest        # the suite, tests/
+    uv run pytest tests/test_tui.py -q         # one file
+    CACTUS_DB=/tmp/scratch.db CACTUS_POKE=true PYTHONPATH=src python3 .ai/tmp/probe_footer.py
 
-There is no test suite and no linter. Verification is throwaway scripts in
-`.ai/tmp/` that drive the real code against a scratch database — Textual apps via
-`App.run_test()` and a `Pilot`, the CLI via subprocesses. Write new ones the same
-way; they are gitignored and not part of the package.
+The suite lives in `tests/`, pytest with pytest-asyncio in auto mode. There is
+no linter. `tests/conftest.py` gives every test a scratch database, an inert
+poke transport, and records off; use its `store`, `project`, and `cli`
+fixtures rather than setting the env by hand. One file per module: store, cli,
+monitor, tui (Textual `App.run_test()` and a `Pilot`), hooks (the bash hook
+scripts run against a `cactus` shim), poke. A test that exposes a bug is
+marked `xfail` with the reason, never deleted, and the fix removes the mark.
+Throwaway probes still go in `.ai/tmp/` (gitignored); a probe worth keeping
+becomes a test.
 
 Always point `CACTUS_DB` at a scratch file when testing. The default database is the
 user's live inbox at `~/.local/share/cactus/cactus.db`. An empty `CACTUS_DB`

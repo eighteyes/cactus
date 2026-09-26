@@ -143,11 +143,45 @@ def _post_webhook(agent: str, body: str, entry: dict[str, Any], timeout: float) 
     return f"webhook POST {url} ({status})"
 
 
+# Where a user-installed transport lives when the poking process did not start
+# from a login shell: a TUI under launchd, a web board under a service manager.
+# Those inherit /usr/bin:/bin:/usr/sbin:/sbin and nothing the user added.
+FALLBACK_BIN_DIRS = (
+    Path("~/.local/bin").expanduser(),
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+)
+
+
+def resolve_executable(name: str) -> str | None:
+    """Absolute path for `name`: PATH first, then the usual user bin dirs.
+
+    A bare name that PATH cannot find is retried in FALLBACK_BIN_DIRS, so a
+    poke from a process with a stripped PATH still reaches a transport the
+    user installed. A name with a slash is taken as given.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.sep in name:
+        return None
+    for directory in FALLBACK_BIN_DIRS:
+        candidate = directory / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def _run_argv(argv: list[str], timeout: float) -> str:
     if not argv:
         raise PokeError("CACTUS_POKE is empty")
-    if shutil.which(argv[0]) is None:
-        raise PokeError(f"{argv[0]} is not on PATH; set CACTUS_POKE to a transport")
+    exe = resolve_executable(argv[0])
+    if exe is None:
+        dirs = ", ".join(str(d) for d in FALLBACK_BIN_DIRS)
+        raise PokeError(
+            f"{argv[0]} is not on PATH or in {dirs}; set CACTUS_POKE to a transport"
+        )
+    argv = [exe, *argv[1:]]
 
     try:
         done = subprocess.run(
