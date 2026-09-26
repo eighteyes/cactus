@@ -10,12 +10,14 @@ set -u
 command -v cactus >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
+# Read first: identity.sh takes the session id from this payload.
+input=$(cat)
+
 # shellcheck source=identity.sh
 . "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
 agent=$(cactus_resolve_agent)
 [ -n "$agent" ] || exit 0
 
-input=$(cat)
 tool=$(jq -r '.tool_name // empty' <<<"$input")
 [ "$tool" = "Bash" ] || exit 0
 cmd=$(jq -r '.tool_input.command // empty' <<<"$input")

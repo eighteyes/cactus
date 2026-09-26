@@ -293,6 +293,13 @@ scope.
   that agent's rows of that thread the same way any other `agent` filter
   does — no separate mechanism, `_scope_where`'s thread clause and `list`'s
   `agent` clause already AND together.
+- Hook identity (`hooks/identity.sh`, q327) resolves the hook payload's
+  `session_id` first, then herdr's view of the pane, then `CACTUS_AGENT`.
+  herdr infers a conversation id from the transcript file, which at
+  SessionStart after `/clear` does not exist yet, so it answers with the
+  previous conversation's id and the whole session posts under a dead
+  owner. Every root hook reads stdin into `input` before sourcing
+  identity.sh; nothing else may consume stdin first.
 - `cactus rehome --agent NEW` (q208) is gated to rows stamped with the
   caller's own `HERDR_PANE_ID`/`HERDR_SESSION` — missing either refuses (exit
   1) rather than guessing which rows are "mine". Scoped to the current
