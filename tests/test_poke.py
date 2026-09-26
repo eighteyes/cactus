@@ -69,3 +69,50 @@ def test_missing_everywhere_names_the_dirs(tmp_path: Path, monkeypatch: pytest.M
 def test_slashed_name_is_not_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(poke_mod, "FALLBACK_BIN_DIRS", (tmp_path,))
     assert poke_mod.resolve_executable(str(tmp_path / "absent" / "herdr")) is None
+
+
+def test_default_transport_targets_the_pane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """herdr resolves a pane id, never a conversation id: the default prompt goes to the pane."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_transport(bin_dir)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin:/bin")
+    monkeypatch.delenv("CACTUS_POKE", raising=False)
+    monkeypatch.setenv("CACTUS_POKE_WEBHOOKS", str(tmp_path / "no-webhooks.json"))
+
+    ran = poke_mod.poke("83155dd4-agent", pane="w3B:p3")
+
+    assert " prompt w3B:p3 " in ran
+    assert "83155dd4-agent" not in ran.split(" prompt ")[1].split(" ")[0]
+
+
+def test_default_transport_refuses_without_a_pane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CACTUS_POKE", raising=False)
+    monkeypatch.setenv("CACTUS_POKE_WEBHOOKS", str(tmp_path / "no-webhooks.json"))
+
+    with pytest.raises(poke_mod.PokeError) as err:
+        poke_mod.poke("agent-1")
+
+    assert "pane" in str(err.value)
+
+
+def test_override_template_gets_target_and_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_transport(bin_dir, "echo-transport")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin:/bin")
+    monkeypatch.setenv("CACTUS_POKE", "echo-transport {target} for {agent}")
+
+    ran = poke_mod.poke("agent-1", pane="w1:p1")
+
+    assert "w1:p1 for agent-1" in ran
+
+
+def test_reachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CACTUS_POKE", raising=False)
+    monkeypatch.setenv("CACTUS_POKE_WEBHOOKS", str(tmp_path / "no-webhooks.json"))
+    assert poke_mod.reachable("agent-1", "w1:p1")
+    assert not poke_mod.reachable("agent-1", None)
+    assert not poke_mod.reachable(None, "w1:p1")
+    monkeypatch.setenv("CACTUS_POKE", "true {agent} {message}")
+    assert poke_mod.reachable("agent-1", None)

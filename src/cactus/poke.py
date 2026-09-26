@@ -30,7 +30,11 @@ DEFAULT_MESSAGE = (
     "--agent {agent}` and act on what changed."
 )
 
-DEFAULT_COMMAND = "herdr agent prompt {agent} {message}"
+# herdr resolves a prompt target by pane id (`w3B:p3`), never by the
+# conversation id cactus uses as an owner, so the default transport prompts
+# the pane stamped on the row. `{target}` is the pane when the row has one,
+# else the agent id; `{agent}` stays the owner for templates that route on it.
+DEFAULT_COMMAND = "herdr agent prompt {target} {message}"
 
 DEFAULT_WEBHOOKS_PATH = Path("~/.config/cactus/poke-webhooks.json").expanduser()
 
@@ -198,37 +202,60 @@ def _run_argv(argv: list[str], timeout: float) -> str:
     return " ".join(shlex.quote(a) for a in argv)
 
 
-def poke(agent: str | None, *, message: str | None = None, timeout: float = 10.0) -> str:
-    """Deliver a nudge to `agent`. Returns a short description of what ran.
+def poke(
+    agent: str | None,
+    *,
+    pane: str | None = None,
+    message: str | None = None,
+    timeout: float = 10.0,
+) -> str:
+    """Deliver a nudge to `agent`, at `pane` when the default transport needs one.
 
-    Raises PokeError when the row has no owner or the transport is missing —
-    both are situations a human can fix, so they are reported rather than
-    swallowed.
+    Returns a short description of what ran. Raises PokeError when the row has
+    no owner, the transport is missing, or the default transport has no pane
+    to prompt — all situations a human can fix, so they are reported rather
+    than swallowed.
 
     Resolution order:
     1. CACTUS_POKE override (tests / forced transport) — same for every agent
     2. Webhook map entry for this agent id (CACTUS_POKE_WEBHOOKS /
        ~/.config/cactus/poke-webhooks.json)
-    3. Default herdr agent prompt
+    3. Default herdr agent prompt, targeting the row's pane stamp
     """
     if not agent:
         raise PokeError("this row has no agent; nothing to poke")
 
     body = message or DEFAULT_MESSAGE.format(agent=agent)
+    target = pane or agent
+
+    def fill(template: list[str]) -> list[str]:
+        return [
+            part.replace("{agent}", agent).replace("{target}", target).replace("{message}", body)
+            for part in template
+        ]
 
     if os.environ.get("CACTUS_POKE"):
-        argv = [
-            part.replace("{agent}", agent).replace("{message}", body)
-            for part in poke_command()
-        ]
-        return _run_argv(argv, timeout)
+        return _run_argv(fill(poke_command()), timeout)
 
     entry = webhook_entry(agent)
     if entry is not None:
         return _post_webhook(agent, body, entry, timeout)
 
-    argv = [
-        part.replace("{agent}", agent).replace("{message}", body)
-        for part in shlex.split(DEFAULT_COMMAND)
-    ]
-    return _run_argv(argv, timeout)
+    if not pane:
+        raise PokeError(
+            f"herdr prompts a pane and {agent} has no pane stamp; poke by KEY so "
+            "the row's pane is used, or map the agent to a webhook"
+        )
+    return _run_argv(fill(shlex.split(DEFAULT_COMMAND)), timeout)
+
+
+def reachable(agent: str | None, pane: str | None) -> bool:
+    """Whether `poke` has somewhere to deliver: an override transport, a
+    webhook for this agent, or a herdr pane stamp on the row."""
+    if not agent:
+        return False
+    if os.environ.get("CACTUS_POKE"):
+        return True
+    if pane:
+        return True
+    return webhook_entry(agent) is not None

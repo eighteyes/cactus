@@ -962,6 +962,7 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     from .poke import poke, PokeError
 
     agent = args.agent
+    pane = None
     if agent is None:
         if not args.key:
             print("cactus: poke needs a key or --agent", file=sys.stderr)
@@ -975,10 +976,10 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         if q is None:
             print(f"cactus: no such question: {args.key}", file=sys.stderr)
             return EXIT_EMPTY
-        agent = q.agent
+        agent, pane = q.agent, q.pane
 
     try:
-        ran = poke(agent, message=args.message)
+        ran = poke(agent, pane=pane, message=args.message)
     except PokeError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR

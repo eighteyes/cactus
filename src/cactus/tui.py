@@ -133,13 +133,15 @@ def _flatten(text: str) -> str:
 
 
 def _pokeable(q: Question) -> bool:
-    """A row can be poked when it names an owning agent.
+    """A row can be poked when a nudge has somewhere to land.
 
-    Poke is question-level: the transport follows `q.agent` (webhook map entry
-    or the default herdr prompt). Herdr pane/session stamps are not required —
-    agents outside herdr still need a nudge path.
+    Poke is question-level: an override transport, a webhook mapped to
+    `q.agent`, or the row's herdr pane stamp for the default prompt. An owner
+    with none of those is unreachable, and the footer must not offer `p`.
     """
-    return bool(q.agent)
+    from .poke import reachable
+
+    return reachable(q.agent, q.pane)
 
 
 def _confirm_hint(q: Question) -> str:
@@ -1163,11 +1165,11 @@ class CactusApp(App[int]):
             return
         else:
             try:
-                poke(q.agent, timeout=5.0)
+                poke(q.agent, pane=q.pane, timeout=5.0)
             except PokeError as exc:
                 self.flash = f"poke failed: {exc}"
             else:
-                self.flash = f"poked {q.agent}"
+                self.flash = f"poked {q.pane or q.agent}"
         self._rebuild_status_bar()
 
     def _rebuild_status_bar(self) -> None:

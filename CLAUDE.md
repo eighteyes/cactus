@@ -153,10 +153,15 @@ scope.
   caller can pass it to every verb uniformly.
 - `on_key` also catches `y`/`n` on a non-confirm row (check_action gates the
   binding off there) and flashes why, the same pattern as the `u` undo gate.
-- `p` (poke) binds only on a row `_pokeable` accepts: an owner plus herdr
-  `pane` and `session` stamps. The default transport prompts a herdr pane,
-  so a row posted outside herdr has nowhere for the nudge to land; the
-  footer omits `p poke` and `on_key` flashes why on a press.
+- `p` (poke) binds only on a row `poke.reachable` accepts: an owner plus one
+  of an override transport (`CACTUS_POKE`), a webhook mapped to that agent,
+  or the row's herdr `pane` stamp. herdr resolves a prompt target by pane id
+  (`w3B:p3`), never by the conversation id cactus stores as `agent`, so the
+  default transport prompts `{target}` = the pane and refuses a row without
+  one; `{agent}` stays the owner for templates and webhooks. Every caller
+  (`tui`, `cli poke KEY`, `www`) passes `pane=q.pane`; `cactus poke --agent`
+  alone has no pane and only works through an override or a webhook. The
+  footer omits `p poke` where unreachable and `on_key` flashes why.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.
