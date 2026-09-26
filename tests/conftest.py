@@ -25,6 +25,14 @@ from cactus.store import Store  # noqa: E402
 
 AGENT = "test-agent"
 
+# The per-project enable/ignore switch (Store.set_project_enabled, `cactus
+# project`, the hook gates) is a separate change; tests that need it skip
+# until it is in the checkout and run the moment it lands.
+needs_project_switch = pytest.mark.skipif(
+    not hasattr(Store, "set_project_enabled"),
+    reason="project switch not in this checkout",
+)
+
 
 @pytest.fixture
 def scratch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:

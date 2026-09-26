@@ -23,12 +23,17 @@ from pathlib import Path
 
 import pytest
 
+from conftest import needs_project_switch
+
 REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "src"
 ROOT_HOOKS = REPO / "hooks"
 CODEX_HOOKS = REPO / "plugins" / "cactus" / "hooks"
 
-pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not on PATH")
+pytestmark = [
+    pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not on PATH"),
+    needs_project_switch,
+]
 
 
 @pytest.fixture

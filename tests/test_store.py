@@ -18,7 +18,7 @@ import pytest
 
 from cactus.store import AlreadyAnswered, Choice, Store
 
-from conftest import AGENT
+from conftest import AGENT, needs_project_switch
 
 
 def test_ask_keys_per_project(store: Store, project: str, tmp_path: Path) -> None:
@@ -143,6 +143,7 @@ def test_reopen_cleared_persistent_row_restores_live(store: Store, project: str)
     assert len(restored.answers) == 1
 
 
+@needs_project_switch
 def test_projects_lists_cleared_project_with_settings_row(store: Store, project: str) -> None:
     q = store.ask("only question", project=project, cwd=project, agent=AGENT)
     store.clear(keys=[q.key], project=project)
@@ -157,6 +158,7 @@ def test_projects_lists_cleared_project_with_settings_row(store: Store, project:
     assert store.project_enabled("/nowhere/unseen/project") is True
 
 
+@needs_project_switch
 def test_set_project_enabled_persists_across_store_instances(
     store: Store, project: str
 ) -> None:

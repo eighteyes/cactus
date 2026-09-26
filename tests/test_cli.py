@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 
+from conftest import needs_project_switch
+
 AGENT_A = "agent-a"
 AGENT_B = "agent-b"
 
@@ -116,6 +118,7 @@ def test_clear_ownership_then_reopen_restores_answered(cli):
     assert rows[0]["status"] == "answered"
 
 
+@needs_project_switch
 def test_project_disable_blocks_ask_and_run_then_reactivate(cli, project):
     r_status = cli("project", "status", "--json")
     assert r_status.returncode == 0
