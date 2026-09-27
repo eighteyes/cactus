@@ -11,6 +11,8 @@
 #   - print the open rows for this project so an unanswered thread is not forgotten
 set -u
 command -v cactus >/dev/null 2>&1 || exit 0
+# Read first: identity.sh takes the session id from this payload.
+input=$(cat)
 
 # shellcheck source=identity.sh
 . "$(dirname "${BASH_SOURCE[0]}")/identity.sh"

@@ -6,13 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
     PYTHONPATH=src python3 -m cactus --help      # run from the checkout
     uv tool install --editable .               # install the `cactus` console script
-    CACTUS_DB=/tmp/scratch.db CACTUS_POKE=true PYTHONPATH=src python3 .ai/tmp/test_tui.py
-    bash .ai/tmp/test_feed.sh                  # CLI-side scripts are shell
+    uv sync --group dev && uv run pytest        # the suite, tests/
+    uv run pytest tests/test_tui.py -q         # one file
+    CACTUS_DB=/tmp/scratch.db CACTUS_POKE=true PYTHONPATH=src python3 .ai/tmp/probe_footer.py
 
-There is no test suite and no linter. Verification is throwaway scripts in
-`.ai/tmp/` that drive the real code against a scratch database — Textual apps via
-`App.run_test()` and a `Pilot`, the CLI via subprocesses. Write new ones the same
-way; they are gitignored and not part of the package.
+The suite lives in `tests/`, pytest with pytest-asyncio in auto mode. There is
+no linter. `tests/conftest.py` gives every test a scratch database, an inert
+poke transport, and records off; use its `store`, `project`, and `cli`
+fixtures rather than setting the env by hand. One file per module: store, cli,
+monitor, tui (Textual `App.run_test()` and a `Pilot`), hooks (the bash hook
+scripts run against a `cactus` shim), poke. A test that exposes a bug is
+marked `xfail` with the reason, never deleted, and the fix removes the mark.
+Throwaway probes still go in `.ai/tmp/` (gitignored); a probe worth keeping
+becomes a test.
 
 Always point `CACTUS_DB` at a scratch file when testing. The default database is the
 user's live inbox at `~/.local/share/cactus/cactus.db`. An empty `CACTUS_DB`
@@ -147,10 +153,15 @@ scope.
   caller can pass it to every verb uniformly.
 - `on_key` also catches `y`/`n` on a non-confirm row (check_action gates the
   binding off there) and flashes why, the same pattern as the `u` undo gate.
-- `p` (poke) binds only on a row `_pokeable` accepts: an owner plus herdr
-  `pane` and `session` stamps. The default transport prompts a herdr pane,
-  so a row posted outside herdr has nowhere for the nudge to land; the
-  footer omits `p poke` and `on_key` flashes why on a press.
+- `p` (poke) binds only on a row `poke.reachable` accepts: an owner plus one
+  of an override transport (`CACTUS_POKE`), a webhook mapped to that agent,
+  or the row's herdr `pane` stamp. herdr resolves a prompt target by pane id
+  (`w3B:p3`), never by the conversation id cactus stores as `agent`, so the
+  default transport prompts `{target}` = the pane and refuses a row without
+  one; `{agent}` stays the owner for templates and webhooks. Every caller
+  (`tui`, `cli poke KEY`, `www`) passes `pane=q.pane`; `cactus poke --agent`
+  alone has no pane and only works through an override or a webhook. The
+  footer omits `p poke` where unreachable and `on_key` flashes why.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.
@@ -235,6 +246,13 @@ scope.
   `--agent`; an unowned row clears by key regardless. The TUI's `c` binding
   calls `Store.clear` directly with no agent filter, so a human can still
   clear any row.
+- `monitor.run_monitor(agent=...)` never streams `asked` (q319): under
+  that filter an arriving row is one the agent posted itself, or one the
+  session-start hook already listed after a rehome, and every line lands in
+  the agent's conversation. `--replay` still lists the inbox first, `asked`
+  included, when asked to. Only a library caller without `agent` still gets
+  `asked`; the CLI refuses `--monitor` without `--agent`, so no stream a
+  human or agent starts from the shell ever carries it.
 - `monitor.run_monitor(agent=...)` still polls every agent's rows; only
   emission is filtered. `_snapshot` carries each row's owner alongside its
   signature so a `gone` event, read after the row is already deleted, can
@@ -280,6 +298,13 @@ scope.
   that agent's rows of that thread the same way any other `agent` filter
   does — no separate mechanism, `_scope_where`'s thread clause and `list`'s
   `agent` clause already AND together.
+- Hook identity (`hooks/identity.sh`, q327) resolves the hook payload's
+  `session_id` first, then herdr's view of the pane, then `CACTUS_AGENT`.
+  herdr infers a conversation id from the transcript file, which at
+  SessionStart after `/clear` does not exist yet, so it answers with the
+  previous conversation's id and the whole session posts under a dead
+  owner. Every root hook reads stdin into `input` before sourcing
+  identity.sh; nothing else may consume stdin first.
 - `cactus rehome --agent NEW` (q208) is gated to rows stamped with the
   caller's own `HERDR_PANE_ID`/`HERDR_SESSION` — missing either refuses (exit
   1) rather than guessing which rows are "mine". Scoped to the current
@@ -362,9 +387,18 @@ scope.
   recorded yet, whether typed or restored by undo. `_verdict_repr` renders
   `label — text` when a verdict carries both.
 - Footer binding labels are static per `Binding` (Textual never reads a
-  description from `check_action`), so a key whose meaning varies by row
-  (`1-9`, `y`/`n`) gets one neutral footer label; the card's per-row hint
-  carries the row-specific wording.
+  description from `check_action`), so `CactusApp._relabel` rewrites the
+  row-dependent ones (`y`/`n` to the row's own confirm labels, `1-9` to
+  pick/toggle/toggle step/copy chunk, `d` to dismiss/close) in Textual's
+  binding map on every `_rebuild_card`, just before `refresh_bindings()`.
+  It fails soft to the neutral defaults in `BINDINGS`. `s` (skip) stays
+  offered on every answerable row, persistent ones included (q317). A
+  `--no-free` row's hint drops `i type` the same way `check_action` hides
+  `i`.
+- `cactus plan`/`cactus review` take an optional `--agent`, gated in `cli.py`
+  (not `Store`), same split as `clear`/`reopen`/`edit`: given and the row is
+  owned by someone else, refuse exit 1; omitted, or the row unowned, behave
+  as before.
 - On a plan row past 9 steps, a digit buffers (~0.5s, `set_timer`) rather
   than firing at once, so "1" then "2" reaches step 12 instead of toggling
   step 1 (q16); a plan with 9 or fewer steps still fires every digit

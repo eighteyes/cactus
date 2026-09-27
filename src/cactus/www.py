@@ -642,7 +642,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         agent = q.agent
         try:
-            ran = poke(agent)
+            ran = poke(agent, pane=q.pane)
         except PokeError as exc:
             self._send_json(400, {"error": _msg(exc)})
             return

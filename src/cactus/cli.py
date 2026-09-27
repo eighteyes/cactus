@@ -80,7 +80,8 @@ NAME
   cactus — durable question inbox between agents and a human
 
 WORKFLOW (required)
-  1  cactus --monitor --agent ID      foreground, before the first ask
+  1  cactus --monitor --agent ID      foreground, before the first ask;
+                                     never echoes your own asked
   2  cactus ask ... --agent ID        every decision, not chat
   3  work; act on each event
   4  cactus clear KEY --agent ID      own rows only
@@ -95,8 +96,8 @@ SYNOPSIS
              [--recommend approve|deny --confidence L]
   cactus get KEY... [-w] [--timeout S]
   cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
-  cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X]
-  cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N]
+  cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X] [--agent ID]
+  cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N] [--agent ID]
   cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
   cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]...
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
@@ -682,10 +683,32 @@ def cmd_edit(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     return EXIT_OK
 
 
+def _refuse_if_not_owner(action: str, key: str, q, agent: str | None) -> str | None:
+    """Ownership message for a keyed verb, or None when it may proceed.
+
+    Unlike `clear`/`reopen`/`edit`, an omitted --agent here is not a bulk-safety
+    gate — it means "behave as today": no ownership check at all. The check only
+    fires when --agent is given and the row is owned by someone else.
+    """
+    if agent and q.agent is not None and q.agent != agent:
+        return (
+            f"cactus: refusing to {action} a row you do not own: {key} "
+            f"(owned by {q.agent})"
+        )
+    return None
+
+
 def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """Attach or replace the verify block on a review row."""
     try:
         rproj, rkey = store.resolve_ref(args.key, project)
+        q = store.get(rkey, project=rproj)
+        if q is None:
+            raise KeyError(f"no such question: {args.key}")
+        msg = _refuse_if_not_owner("review", args.key, q, args.agent)
+        if msg is not None:
+            print(msg, file=sys.stderr)
+            return EXIT_ERROR
         q = store.set_review(
             rkey,
             project=rproj,
@@ -728,6 +751,13 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         return EXIT_ERROR
     try:
         rproj, rkey = store.resolve_ref(args.key, project)
+        q0 = store.get(rkey, project=rproj)
+        if q0 is None:
+            raise KeyError(f"no such question: {args.key}")
+        msg = _refuse_if_not_owner("plan", args.key, q0, args.agent)
+        if msg is not None:
+            print(msg, file=sys.stderr)
+            return EXIT_ERROR
         if args.step or args.reset_steps:
             store.set_steps(rkey, args.step or [], project=rproj, reset=args.reset_steps)
         q = store.get(rkey, project=rproj)
@@ -932,6 +962,7 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     from .poke import poke, PokeError
 
     agent = args.agent
+    pane = None
     if agent is None:
         if not args.key:
             print("cactus: poke needs a key or --agent", file=sys.stderr)
@@ -945,10 +976,10 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         if q is None:
             print(f"cactus: no such question: {args.key}", file=sys.stderr)
             return EXIT_EMPTY
-        agent = q.agent
+        agent, pane = q.agent, q.pane
 
     try:
-        ran = poke(agent, message=args.message)
+        ran = poke(agent, pane=pane, message=args.message)
     except PokeError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
@@ -1102,7 +1133,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --monitor, exit 0 right after the first non-asked event")
     p.add_argument("--interval", type=float, default=1.0,
                    help="with --monitor, seconds between polls (default: 1.0)")
-    p.add_argument("--agent", help="with --monitor, only events for this agent's rows")
+    p.add_argument("--agent", help="with --monitor, only events for this agent's rows "
+                                   "(never `asked`: those are its own posts)")
     p.add_argument("--workspace", help="with --monitor, only events for this workspace id")
     p.add_argument("--tab", help="with --monitor, only events for this tab id")
     p.add_argument("--pane", help="with --monitor, only events for this pane id")
@@ -1278,6 +1310,7 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--pass", help="what a good result looks like")
     rv.add_argument("--fail", help="what disqualifies it")
     rv.add_argument("--then", help="what to set up next")
+    rv.add_argument("--agent", help="refuse if the row is owned by a different agent")
     rv.set_defaults(fn=cmd_review)
 
     pl = verb("plan", parents=[common], help="set or tick the steps on a plan row")
@@ -1288,6 +1321,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="replace the step list with this call's --step values, clearing done flags")
     pl.add_argument("--done", action="append", type=int, help="tick this step, 1-based")
     pl.add_argument("--undone", action="append", type=int, help="untick this step, 1-based")
+    pl.add_argument("--agent", help="refuse if the row is owned by a different agent")
     pl.set_defaults(fn=cmd_plan)
 
     th = verb("threads", help="list threads")

@@ -15,7 +15,12 @@ Responsibilities:
 
 from __future__ import annotations
 
+import dataclasses
+import json
+import os
+import subprocess
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from textual import events, work
@@ -30,8 +35,64 @@ from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
 
 POLL_INTERVAL = 0.5
 
+TUI_SETTINGS_DEFAULTS = {"orientation": "side", "figlet_header": False}
+
+
+def _tui_settings_path() -> Path:
+    root = Path(os.environ["XDG_CONFIG_HOME"]) if os.environ.get("XDG_CONFIG_HOME") else Path.home() / ".config"
+    return root / "cactus" / "tui.json"
+
+
+def _load_tui_settings() -> dict[str, Any]:
+    """Best-effort user preferences; a bad config never prevents the TUI opening."""
+    settings = dict(TUI_SETTINGS_DEFAULTS)
+    try:
+        data = json.loads(_tui_settings_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return settings
+    if isinstance(data, dict) and data.get("orientation") in ("side", "bottom"):
+        settings["orientation"] = data["orientation"]
+    if isinstance(data, dict) and isinstance(data.get("figlet_header"), bool):
+        settings["figlet_header"] = data["figlet_header"]
+    return settings
+
+
+def _save_tui_settings(settings: dict[str, Any]) -> str | None:
+    try:
+        path = _tui_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
+def _figlet_project_name(label: str) -> str:
+    """Render the requested local Figlet font, with a readable no-tool fallback."""
+    try:
+        result = subprocess.run(
+            ["figlet", "-f", "cybermedium", label],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return f"  {label}"
+    return result.stdout.rstrip() if result.returncode == 0 and result.stdout.strip() else f"  {label}"
+
 # How many lines of command output the card shows; the rest spills to a file.
 RUN_TAIL = 12
+
+# `D` uses the existing elaborate state rather than a second kind of pending
+# row: the owner already receives elaborate events and knows it must act before
+# the human can answer. The instruction tells it how to fan a large decision
+# out without losing the original row's thread and context.
+DECOMPOSE_INSTRUCTION = (
+    "Decompose this into several smaller, independently answerable questions. "
+    "Post each replacement as a follow-up (`cactus ask ... -p {key} --agent ID`), "
+    "then clear the original row after the replacements are posted."
+)
 
 # `confirm` is built at render time from the row's own choice labels — see
 # `_confirm_hint` — because a review answers pass/fail and a run approve/deny,
@@ -40,6 +101,14 @@ HINTS = {
     "choice": "1-9 pick   i type   s skip (answers)   c clear",
     "multi": "1-9 toggle   enter submit   i type   s skip (answers)   c clear",
     "text": "enter to type   esc back to list   s skip (answers)   c clear",
+}
+
+# Acts whose hint is not their kind's: a plan is text-shaped but closes with
+# `c`; a notice is dismissed; a data row is worked by digit.
+ACT_HINTS = {
+    "plan": "enter to type   esc back to list   s skip (answers)   c close",
+    "notify": "d dismiss   enter to type   s skip (answers)   c clear",
+    "data": "1-9 copy chunk   i note   s skip (answers)   d close",
 }
 
 
@@ -65,13 +134,15 @@ def _flatten(text: str) -> str:
 
 
 def _pokeable(q: Question) -> bool:
-    """A row can be poked when it names an owning agent.
+    """A row can be poked when a nudge has somewhere to land.
 
-    Poke is question-level: the transport follows `q.agent` (webhook map entry
-    or the default herdr prompt). Herdr pane/session stamps are not required —
-    agents outside herdr still need a nudge path.
+    Poke is question-level: an override transport, a webhook mapped to
+    `q.agent`, or the row's herdr pane stamp for the default prompt. An owner
+    with none of those is unreachable, and the footer must not offer `p`.
     """
-    return bool(q.agent)
+    from .poke import reachable
+
+    return reachable(q.agent, q.pane)
 
 
 def _confirm_hint(q: Question) -> str:
@@ -133,7 +204,10 @@ def _card_lines(
 
     if q.status == "elaborate":
         lines.append("")
-        lines.append(f"wants more: {q.elaborate}" if q.elaborate else "wants more (no hint given)")
+        if q.elaborate == DECOMPOSE_INSTRUCTION.format(key=q.key):
+            lines.append("wants this question split into smaller questions")
+        else:
+            lines.append(f"wants more: {q.elaborate}" if q.elaborate else "wants more (no hint given)")
 
     if q.answers:
         # A persistent row (review/plan) takes repeated verdicts, so the card
@@ -222,10 +296,11 @@ def _card_lines(
     else:
         if q.kind == "confirm":
             hint = _confirm_hint(q)
-        elif q.act == "data":
-            hint = "1-9 copy chunk   d dismiss"
         else:
-            hint = HINTS.get(q.kind, "")
+            hint = ACT_HINTS.get(q.act) or HINTS.get(q.kind, "")
+        if not q.allow_free:
+            # --no-free: check_action hides `i`, so the hint must not offer it.
+            hint = "   ".join(t for t in hint.split("   ") if not t.startswith("i "))
         extras = []
         if q.review is not None and q.review.run_cmd:
             extras.append("C copy   R run")
@@ -236,12 +311,11 @@ def _card_lines(
             # says what actually happens: type both digits, buffered briefly
             # so "1" then "2" reaches step 12 instead of toggling step 1.
             extras.append("1-99 toggle step" if len(q.steps) > 9 else "1-9 toggle step")
-        if q.act == "notify":
-            extras.append("d dismiss")
         if run_output:
             extras.append("O open full output")
         if q.status in ("open", "live"):
             extras.append("e elaborate")
+            extras.append("D decompose")
     lines.append("   ".join([hint, *extras]).strip())
     return "\n".join(lines)
 
@@ -335,6 +409,9 @@ class CactusApp(App[int]):
     #body {
         height: 1fr;
     }
+    #body.bottom {
+        layout: vertical;
+    }
     #rail {
         width: 32;
         border-right: solid $panel;
@@ -367,6 +444,31 @@ class CactusApp(App[int]):
     }
     #main {
         width: 1fr;
+    }
+    #body.bottom #rail {
+        dock: bottom;
+        width: 1fr;
+        height: 12;
+        border-right: none;
+        border-top: solid $panel;
+    }
+    #body.bottom #main {
+        width: 1fr;
+        height: 1fr;
+    }
+    #project-banner {
+        display: none;
+        background: $panel;
+        color: $accent;
+        padding: 0 1;
+        text-wrap: nowrap;
+    }
+    #settings-panel {
+        display: none;
+        height: 1fr;
+        border: round $accent;
+        margin: 1 2;
+        padding: 1 2;
     }
     #card {
         border: round $accent;
@@ -406,10 +508,12 @@ class CactusApp(App[int]):
         Binding("i", "toggle_free_text", "type"),
         Binding("y", "confirm_yes", "Yes"),
         Binding("n", "confirm_no", "No"),
-        Binding("[", "prev_project", "PrevProj"),
-        Binding("]", "next_project", "NextProj"),
+        Binding("[", "prev_project", "PrevProj", key_display="["),
+        Binding("]", "next_project", "NextProj", key_display="]"),
         Binding("u", "undo", "Undo"),
         Binding("e", "elaborate", "Elaborate"),
+        Binding("D", "decompose", "Decompose"),
+        Binding("?", "open_settings", "Settings", key_display="?"),
         Binding("p", "poke", "Poke"),
         Binding("C", "copy_command", "Copy"),
         Binding("R", "run_command", "Run"),
@@ -419,9 +523,10 @@ class CactusApp(App[int]):
         Binding("q", "quit_app", "Quit"),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         # Neutral label: the digits pick a choice on an ask row but toggle a
-        # step on a plan row, and a single static Binding cannot read the
-        # focused row's act to say which (see check_action/footer notes).
-        Binding("1", "select_choice(1)", "1-9", show=True),
+        # step on a plan row. The description here is the default; `_relabel`
+        # swaps it (and y/n's) for the focused row's own wording on every
+        # card rebuild, so the footer says what the key does on *this* row.
+        Binding("1", "select_choice(1)", "Pick", show=True, key_display="1-9"),
         Binding("2", "select_choice(2)", "2", show=False),
         Binding("3", "select_choice(3)", "3", show=False),
         Binding("4", "select_choice(4)", "4", show=False),
@@ -449,6 +554,10 @@ class CactusApp(App[int]):
         # Project of each running command's row: keys are only unique per project.
         self.run_projects: dict[str, str] = {}
         self.run_state = {}
+        self.tui_settings = _load_tui_settings()
+        self.settings_open = False
+        self._figlet_label: str | None = None
+        self._figlet_text = ""
         self.free_text_mode = False
         # Set while the input is open for `e`'s prompt, so on_input_submitted
         # and escape route to the elaborate request instead of an answer.
@@ -487,6 +596,7 @@ class CactusApp(App[int]):
 
     def compose(self) -> ComposeResult:
         yield Header(icon="")
+        yield Static(id="project-banner", markup=False)
         with Horizontal(id="body"):
             with Vertical(id="rail"):
                 yield Static(id="project-head", markup=False)
@@ -495,6 +605,7 @@ class CactusApp(App[int]):
                 yield Static(id="card", markup=False)
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
                 yield Static("inbox empty — waiting for questions", id="empty-state")
+        yield Static(id="settings-panel", markup=False)
         yield Static(id="status-bar", markup=False)
         yield Footer()
 
@@ -504,6 +615,7 @@ class CactusApp(App[int]):
             if self.current_project is None and live:
                 self.current_project = live[0]
         self.query_one("#card", Static).border_title = "answering"
+        self._apply_tui_settings()
         await self._reload(force=True)
         self.query_one("#rail-list", ListView).focus()
         self._sync_input_focus()
@@ -511,6 +623,77 @@ class CactusApp(App[int]):
         # focused; re-ask once the screen has settled.
         self.call_after_refresh(self.refresh_bindings)
         self.set_interval(POLL_INTERVAL, self._poll)
+
+    def _apply_tui_settings(self) -> None:
+        body = self.query_one("#body", Horizontal)
+        body.set_class(self.tui_settings["orientation"] == "bottom", "bottom")
+        self._rebuild_project_banner()
+
+    def _rebuild_project_banner(self) -> None:
+        banner = self.query_one("#project-banner", Static)
+        if not self.tui_settings["figlet_header"] or self.current_project is None:
+            banner.display = False
+            return
+        label = project_label(self.current_project)
+        if label != self._figlet_label:
+            self._figlet_label = label
+            self._figlet_text = _figlet_project_name(label)
+        banner.update(self._figlet_text)
+        banner.display = True
+
+    def _settings_text(self) -> str:
+        orientation = self.tui_settings["orientation"]
+        figlet = "on" if self.tui_settings["figlet_header"] else "off"
+        return "\n".join([
+            "settings",
+            "",
+            f"1  left / right   questions left, detail right  {'●' if orientation == 'side' else '○'}",
+            f"2  under / over   detail above, questions bottom {'●' if orientation == 'bottom' else '○'}",
+            f"f  Figlet project header (cybermedium)            {figlet}",
+            "",
+            "esc or ?  return to the inbox",
+        ])
+
+    def _render_settings(self) -> None:
+        self.query_one("#settings-panel", Static).update(self._settings_text())
+
+    def _save_settings(self) -> None:
+        error = _save_tui_settings(self.tui_settings)
+        if error:
+            self.flash = f"settings not saved: {error}"
+
+    def action_open_settings(self) -> None:
+        if self.settings_open:
+            self._close_settings()
+            return
+        self.free_text_mode = False
+        self.elaborating = False
+        self._hide_input()
+        self.settings_open = True
+        self.query_one("#body", Horizontal).display = False
+        panel = self.query_one("#settings-panel", Static)
+        panel.display = True
+        self._render_settings()
+        self.refresh_bindings()
+
+    def _close_settings(self) -> None:
+        self.settings_open = False
+        self.query_one("#settings-panel", Static).display = False
+        self.query_one("#body", Horizontal).display = True
+        self._sync_input_focus()
+        self.refresh_bindings()
+
+    def _set_orientation(self, orientation: str) -> None:
+        self.tui_settings["orientation"] = orientation
+        self._apply_tui_settings()
+        self._save_settings()
+        self._render_settings()
+
+    def _toggle_figlet_header(self) -> None:
+        self.tui_settings["figlet_header"] = not self.tui_settings["figlet_header"]
+        self._apply_tui_settings()
+        self._save_settings()
+        self._render_settings()
 
     # ---- data loading ---------------------------------------------------
 
@@ -545,6 +728,7 @@ class CactusApp(App[int]):
         self.last_cursor = cursor
         self._load_questions()
         self._flash_plan_done()
+        self._rebuild_project_banner()
         self._rebuild_project_head()
         await self._rebuild_rail()
         self._rebuild_card()
@@ -594,7 +778,8 @@ class CactusApp(App[int]):
         counts = f"{open_count} open"
         if live_count:
             counts += f" · {live_count} live"
-        head.update(f"{label}  {counts}{switch}")
+        prefix = "" if self.tui_settings["figlet_header"] else f"{label}  "
+        head.update(f"{prefix}{counts}{switch}")
 
     def _live_projects_rows(self) -> list[dict[str, Any]]:
         return [
@@ -658,7 +843,48 @@ class CactusApp(App[int]):
         # state, but Textual only re-asks it here — without this call the
         # footer keeps showing the previous row's keys after every navigation
         # or answer.
+        self._relabel(q)
         self.refresh_bindings()
+
+    # Footer labels that follow the focused row. A Binding's description is
+    # static, so `y` would read "Yes" on a review that answers pass/fail and
+    # `1-9` would read "Pick" on a plan whose digits toggle steps.
+    _RELABEL_DEFAULTS = {"y": "Yes", "n": "No", "1": "Pick", "d": "Dismiss"}
+
+    def _labels_for(self, q: Question) -> dict[str, str]:
+        labels = dict(self._RELABEL_DEFAULTS)
+        if q.kind == "confirm":
+            names = [c.label for c in q.choices] or ["yes", "no"]
+            labels["y"], labels["n"] = names[0], names[1] if len(names) > 1 else "No"
+        if q.act == "plan":
+            labels["1"] = "Toggle step"
+        elif q.act == "data":
+            labels["1"] = "Copy chunk"
+            labels["d"] = "Close"
+        elif q.kind == "multi":
+            labels["1"] = "Toggle"
+        return labels
+
+    def _relabel(self, q: Question) -> None:
+        """Rewrite the footer descriptions of the row-dependent keys.
+
+        Reaches into Textual's binding map, which is the only place a
+        description lives; every other path (check_action, the card hint) can
+        only show or hide a key, not reword it. Fails soft: a Textual without
+        that map keeps the neutral defaults from BINDINGS.
+        """
+        table = getattr(getattr(self, "_bindings", None), "key_to_bindings", None)
+        if not isinstance(table, dict):
+            return
+        for key, description in self._labels_for(q).items():
+            bindings = table.get(key)
+            if not bindings:
+                continue
+            table[key] = [
+                dataclasses.replace(b, description=description)
+                if b.description != description else b
+                for b in bindings
+            ]
 
     # Transient one-line feedback for actions that touch the outside world, so a
     # poke that failed says so instead of looking like a dead key.
@@ -680,7 +906,9 @@ class CactusApp(App[int]):
         no command is a promise the row cannot keep, and finding that out by
         pressing it is worse than never seeing it.
         """
-        if action in ("refresh_view", "quit_app"):
+        if self.settings_open:
+            return action in ("open_settings", "quit_app")
+        if action in ("refresh_view", "quit_app", "open_settings"):
             return True
 
         q = self._current_question()
@@ -711,7 +939,6 @@ class CactusApp(App[int]):
         }
         if action in always:
             return True
-
         if action in ("copy_command", "run_command"):
             return bool(self._command_of(q))
         if action == "open_output":
@@ -722,7 +949,7 @@ class CactusApp(App[int]):
             return _pokeable(q)
         if action == "undo":
             return bool(self.undo_stack)
-        if action == "elaborate":
+        if action in ("elaborate", "decompose"):
             return q.status in ("open", "live")
         if action == "toggle_free_text":
             return bool(q.allow_free)
@@ -968,11 +1195,11 @@ class CactusApp(App[int]):
             return
         else:
             try:
-                poke(q.agent, timeout=5.0)
+                poke(q.agent, pane=q.pane, timeout=5.0)
             except PokeError as exc:
                 self.flash = f"poke failed: {exc}"
             else:
-                self.flash = f"poked {q.agent}"
+                self.flash = f"poked {q.pane or q.agent}"
         self._rebuild_status_bar()
 
     def _rebuild_status_bar(self) -> None:
@@ -1091,6 +1318,19 @@ class CactusApp(App[int]):
         binding from firing, so the press would otherwise land in silence.
         This runs after bindings, so an enabled `u`/`y`/`n` never reaches here.
         """
+        if self.settings_open:
+            if event.key == "escape":
+                self._close_settings()
+            elif event.key == "1":
+                self._set_orientation("side")
+            elif event.key == "2":
+                self._set_orientation("bottom")
+            elif event.key == "f":
+                self._toggle_figlet_header()
+            else:
+                return
+            event.stop()
+            return
         if self.free_text_mode or self.elaborating:
             return
         if event.key == "u" and not self.undo_stack:
@@ -1256,6 +1496,13 @@ class CactusApp(App[int]):
         inp.placeholder = "elaborate: — enter to send, esc to cancel"
         inp.display = True
         inp.focus()
+
+    async def action_decompose(self) -> None:
+        """`D`: ask the owner to split a complex row via elaborate workflow."""
+        q = self._current_question()
+        if q is None or q.status not in ("open", "live"):
+            return
+        await self._submit_elaborate(q, DECOMPOSE_INSTRUCTION.format(key=q.key))
 
     async def _submit_elaborate(self, q: Question, hint: str) -> None:
         try:
