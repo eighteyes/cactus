@@ -274,3 +274,28 @@ async def test_empty_multi_submit_records_nothing_and_flashes(store: Store, proj
     assert fresh.status == "open"
     assert fresh.answer is None
     assert app.flash
+
+
+async def test_visit_binds_only_on_a_row_with_a_pane(store: Store, project: str) -> None:
+    store.ask("stamped", project=project, cwd=project, agent=AGENT, pane="w1:p1")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "v" in footer_keys(app)
+        await pilot.press("v")
+        await pilot.pause()
+        assert app.flash == "visited w1:p1"
+
+
+async def test_visit_flashes_on_a_row_posted_outside_herdr(store: Store, project: str) -> None:
+    q = store.ask("unstamped", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "v" not in footer_keys(app)
+        await pilot.press("v")
+        await pilot.pause()
+        assert app.flash == f"{q.key} was posted outside herdr; nothing to visit"
+

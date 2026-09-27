@@ -5,6 +5,7 @@ Responsibilities:
 - A transport on PATH resolves as before.
 - A transport missing from a stripped PATH is found in the fallback bin dirs.
 - A transport nowhere reports every place it looked.
+- Visit focuses the row's pane and refuses a row without one.
 """
 
 from __future__ import annotations
@@ -116,3 +117,23 @@ def test_reachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert not poke_mod.reachable(None, "w1:p1")
     monkeypatch.setenv("CACTUS_POKE", "true {agent} {message}")
     assert poke_mod.reachable("agent-1", None)
+
+
+def test_visit_focuses_the_pane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_transport(bin_dir)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin:/bin")
+    monkeypatch.delenv("CACTUS_VISIT", raising=False)
+
+    ran = poke_mod.visit("w3B:p3")
+
+    assert ran.endswith(" agent focus w3B:p3")
+
+
+def test_visit_refuses_without_a_pane() -> None:
+    with pytest.raises(poke_mod.PokeError) as err:
+        poke_mod.visit(None)
+
+    assert "pane" in str(err.value)
+

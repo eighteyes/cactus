@@ -9,6 +9,7 @@ Responsibilities:
 - Poll the store's change cursor and refresh the view without losing focus or
   in-progress input.
 - Provide project switching, skip, and clear actions, plus key-hint and count footers.
+- Show a dedicated Projects pane where Cactus can be ignored or reactivated per project.
 - Let a human ask an agent to rewrite a row (`e`) and withdraw that request
   (`u`) before the agent addresses it.
 """
@@ -95,20 +96,25 @@ DECOMPOSE_INSTRUCTION = (
 )
 
 # `confirm` is built at render time from the row's own choice labels — see
-# `_confirm_hint` — because a review answers pass/fail and a run approve/deny,
+# `_confirm_pairs` — because a review answers pass/fail and a run approve/deny,
 # and a fixed yes/no hint would lie about what the keys send.
 HINTS = {
-    "choice": "1-9 pick   i type   s skip (answers)   c clear",
-    "multi": "1-9 toggle   enter submit   i type   s skip (answers)   c clear",
-    "text": "enter to type   esc back to list   s skip (answers)   c clear",
+    "choice": (("{digits}", "pick"), ("i", "type"), ("s", "skip (answers)"), ("c", "clear")),
+    "multi": (("{digits}", "toggle"), ("enter", "submit"), ("i", "type"),
+              ("s", "skip (answers)"), ("c", "clear")),
+    "text": (("enter", "type"), ("esc", "back to list"),
+             ("s", "skip (answers)"), ("c", "clear")),
 }
 
 # Acts whose hint is not their kind's: a plan is text-shaped but closes with
 # `c`; a notice is dismissed; a data row is worked by digit.
 ACT_HINTS = {
-    "plan": "enter to type   esc back to list   s skip (answers)   c close",
-    "notify": "d dismiss   enter to type   s skip (answers)   c clear",
-    "data": "1-9 copy chunk   i note   s skip (answers)   d close",
+    "plan": (("enter", "type"), ("esc", "back to list"),
+             ("s", "skip (answers)"), ("c", "close")),
+    "notify": (("d", "dismiss"), ("enter", "type"),
+               ("s", "skip (answers)"), ("c", "clear")),
+    "data": (("{digits}", "copy chunk"), ("i", "note"),
+             ("s", "skip (answers)"), ("d", "close")),
 }
 
 
@@ -145,12 +151,27 @@ def _pokeable(q: Question) -> bool:
     return reachable(q.agent, q.pane)
 
 
-def _confirm_hint(q: Question) -> str:
-    """Confirm-row hint built from the row's own labels, not a fixed yes/no."""
+# Two spaces, not three: the brackets already separate a key from its verb,
+# so the old three-space gap only made the row wrap sooner.
+KEY_GAP = "  "
+
+
+def _keys(*pairs: tuple[str, str]) -> str:
+    """A hint row. Each key is bracketed so it reads apart from its verb."""
+    return KEY_GAP.join(f"[{key}] {verb}" for key, verb in pairs)
+
+
+def _digit_range(n: int) -> str:
+    """The digit keys a row answers to — `1`, or `1-n`. Only nine keys exist."""
+    n = min(n, 9)
+    return "1" if n <= 1 else f"1-{n}"
+
+
+def _confirm_pairs(q: Question) -> tuple[tuple[str, str], ...]:
+    """Confirm-row keys built from the row's own labels, not a fixed yes/no."""
     labels = [c.label for c in q.choices] or ["yes", "no"]
     keys = ["y/1", "n/2"]
-    picks = [f"{key} {label}" for key, label in zip(keys, labels)]
-    return "   ".join([*picks, "i type", "s skip (answers)", "c clear"])
+    return (*zip(keys, labels), ("i", "type"), ("s", "skip (answers)"), ("c", "clear"))
 
 
 def _verdict_repr(a: Answer) -> str:
@@ -290,33 +311,38 @@ def _card_lines(
         # Stopped accepting answers — the pick/type/skip hints above would
         # promise a key that check_action already refuses.
         hint = "awaiting rewrite by the agent — no answers accepted"
-        extras = ["c clear", "u withdraw request"]
+        extras = [("c", "clear"), ("u", "withdraw request")]
         if _pokeable(q):
-            extras.append("p poke")
+            extras.append(("p", "poke"))
+        if q.pane:
+            extras.append(("v", "visit"))
     else:
         if q.kind == "confirm":
-            hint = _confirm_hint(q)
+            pairs = _confirm_pairs(q)
         else:
-            hint = ACT_HINTS.get(q.act) or HINTS.get(q.kind, "")
+            pairs = ACT_HINTS.get(q.act) or HINTS.get(q.kind, ())
         if not q.allow_free:
             # --no-free: check_action hides `i`, so the hint must not offer it.
-            hint = "   ".join(t for t in hint.split("   ") if not t.startswith("i "))
+            pairs = tuple(pair for pair in pairs if pair[0] != "i")
+        hint = _keys(*pairs).format(digits=_digit_range(len(q.choices)))
         extras = []
         if q.review is not None and q.review.run_cmd:
-            extras.append("C copy   R run")
+            extras += [("C", "copy"), ("R", "run")]
         if _pokeable(q):
-            extras.append("p poke")
+            extras.append(("p", "poke"))
+        if q.pane:
+            extras.append(("v", "visit"))
         if q.act == "plan" and q.steps:
-            # Past 9 steps a single digit can't reach the rest, so the hint
-            # says what actually happens: type both digits, buffered briefly
-            # so "1" then "2" reaches step 12 instead of toggling step 1.
-            extras.append("1-99 toggle step" if len(q.steps) > 9 else "1-9 toggle step")
+            # Past 9 steps the digits buffer briefly, so "1" then "2" reaches
+            # step 12; the hint names the whole reachable range.
+            n = len(q.steps)
+            extras.append((_digit_range(n) if n <= 9 else f"1-{n}", "toggle step"))
         if run_output:
-            extras.append("O open full output")
+            extras.append(("O", "open full output"))
         if q.status in ("open", "live"):
-            extras.append("e elaborate")
-            extras.append("D decompose")
-    lines.append("   ".join([hint, *extras]).strip())
+            extras.append(("e", "elaborate"))
+            extras.append(("D", "decompose"))
+    lines.append(KEY_GAP.join(filter(None, [hint, _keys(*extras)])))
     return "\n".join(lines)
 
 
@@ -360,7 +386,7 @@ class QuestionBlock(ListItem):
         elif q.kind == "confirm":
             # The row's own choice labels (a review reads pass / fail, a run
             # reads approve / deny) — a fixed "yes / no" would lie about what
-            # the keys send, same reasoning as `_confirm_hint` on the card.
+            # the keys send, same reasoning as `_confirm_pairs` on the card.
             labels = [c.label for c in q.choices] or ["yes", "no"]
             shape = " / ".join(labels)
         else:
@@ -470,6 +496,14 @@ class CactusApp(App[int]):
         margin: 1 2;
         padding: 1 2;
     }
+    #projects-panel {
+        display: none;
+        height: 1fr;
+        border: round $accent;
+        margin: 1 2;
+        padding: 1 2;
+        overflow-y: auto;
+    }
     #card {
         border: round $accent;
         padding: 0 2;
@@ -510,11 +544,15 @@ class CactusApp(App[int]):
         Binding("n", "confirm_no", "No"),
         Binding("[", "prev_project", "PrevProj", key_display="["),
         Binding("]", "next_project", "NextProj", key_display="]"),
+        Binding("P", "open_projects", "Projects"),
+        Binding("I", "ignore_project", "Ignore"),
+        Binding("A", "activate_project", "Activate"),
         Binding("u", "undo", "Undo"),
         Binding("e", "elaborate", "Elaborate"),
         Binding("D", "decompose", "Decompose"),
         Binding("?", "open_settings", "Settings", key_display="?"),
         Binding("p", "poke", "Poke"),
+        Binding("v", "visit", "Visit"),
         Binding("C", "copy_command", "Copy"),
         Binding("R", "run_command", "Run"),
         Binding("O", "open_output", "Output"),
@@ -556,6 +594,9 @@ class CactusApp(App[int]):
         self.run_state = {}
         self.tui_settings = _load_tui_settings()
         self.settings_open = False
+        self.projects_open = False
+        self.project_rows: list[dict[str, Any]] = []
+        self.project_index = 0
         self._figlet_label: str | None = None
         self._figlet_text = ""
         self.free_text_mode = False
@@ -606,6 +647,7 @@ class CactusApp(App[int]):
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
                 yield Static("inbox empty — waiting for questions", id="empty-state")
         yield Static(id="settings-panel", markup=False)
+        yield Static(id="projects-panel", markup=False)
         yield Static(id="status-bar", markup=False)
         yield Footer()
 
@@ -654,6 +696,29 @@ class CactusApp(App[int]):
             "esc or ?  return to the inbox",
         ])
 
+    def _projects_text(self) -> str:
+        """Render all known projects, including ignored and currently quiet ones."""
+        if not self.project_rows:
+            return "projects\n\nno projects yet\n\nesc or P  return to inbox"
+        lines = ["projects", ""]
+        for i, row in enumerate(self.project_rows):
+            marker = "▸" if i == self.project_index else " "
+            state = "active" if row["enabled"] else "ignored"
+            counts = f"{row['open_count']} open"
+            if row["live_count"]:
+                counts += f" · {row['live_count']} live"
+            lines.append(f"{marker} {project_label(row['project'])}  {state}  {counts}")
+        lines.extend(["", "j/k or ↑/↓ move   enter open   I ignore   A activate", "esc or P  return to inbox"])
+        return "\n".join(lines)
+
+    def _render_projects(self) -> None:
+        self.project_rows = self.store.projects()
+        if self.project_rows:
+            self.project_index = max(0, min(self.project_index, len(self.project_rows) - 1))
+        else:
+            self.project_index = 0
+        self.query_one("#projects-panel", Static).update(self._projects_text())
+
     def _render_settings(self) -> None:
         self.query_one("#settings-panel", Static).update(self._settings_text())
 
@@ -675,6 +740,50 @@ class CactusApp(App[int]):
         panel.display = True
         self._render_settings()
         self.refresh_bindings()
+
+    def action_open_projects(self) -> None:
+        """Toggle the project manager without stealing text-entry keys."""
+        if self.free_text_mode or self.elaborating:
+            return
+        if self.projects_open:
+            self._close_projects()
+            return
+        self.settings_open = False
+        self.projects_open = True
+        self.query_one("#body", Horizontal).display = False
+        panel = self.query_one("#projects-panel", Static)
+        panel.display = True
+        self._render_projects()
+        self.refresh_bindings()
+
+    def _close_projects(self) -> None:
+        self.projects_open = False
+        self.query_one("#projects-panel", Static).display = False
+        self.query_one("#body", Horizontal).display = True
+        self._sync_input_focus()
+        self.refresh_bindings()
+
+    def _selected_project_row(self) -> dict[str, Any] | None:
+        if 0 <= self.project_index < len(self.project_rows):
+            return self.project_rows[self.project_index]
+        return None
+
+    async def _set_selected_project_enabled(self, enabled: bool) -> None:
+        row = self._selected_project_row()
+        if row is None:
+            return
+        self.store.set_project_enabled(row["project"], enabled)
+        self.flash = f"{project_label(row['project'])} — {'active' if enabled else 'ignored'}"
+        self._render_projects()
+        await self._reload(force=True)
+
+    async def action_ignore_project(self) -> None:
+        if self.projects_open:
+            await self._set_selected_project_enabled(False)
+
+    async def action_activate_project(self) -> None:
+        if self.projects_open:
+            await self._set_selected_project_enabled(True)
 
     def _close_settings(self) -> None:
         self.settings_open = False
@@ -784,7 +893,7 @@ class CactusApp(App[int]):
     def _live_projects_rows(self) -> list[dict[str, Any]]:
         return [
             r for r in self.store.projects()
-            if (r["open_count"] > 0 or r["live_count"] > 0)
+            if r["enabled"] and (r["open_count"] > 0 or r["live_count"] > 0)
             and (self.scoped_project is None or r["project"] == self.scoped_project)
         ]
 
@@ -908,6 +1017,14 @@ class CactusApp(App[int]):
         """
         if self.settings_open:
             return action in ("open_settings", "quit_app")
+        if self.projects_open:
+            return action in (
+                "open_projects", "focus_next", "focus_prev", "submit",
+                "ignore_project", "activate_project", "quit_app",
+            )
+        if self.free_text_mode or self.elaborating:
+            if action in ("open_projects", "ignore_project", "activate_project"):
+                return False
         if action in ("refresh_view", "quit_app", "open_settings"):
             return True
 
@@ -930,7 +1047,7 @@ class CactusApp(App[int]):
             # poking the owning agent still mean anything here.
             return action in (
                 "focus_next", "focus_prev", "prev_project", "next_project",
-                "clear_focused", "undo", "poke", "refresh_view", "quit_app",
+                "clear_focused", "undo", "poke", "visit", "refresh_view", "quit_app",
             )
 
         always = {
@@ -947,6 +1064,8 @@ class CactusApp(App[int]):
             return q.act in ("notify", "data")
         if action == "poke":
             return _pokeable(q)
+        if action == "visit":
+            return bool(q.pane)
         if action == "undo":
             return bool(self.undo_stack)
         if action in ("elaborate", "decompose"):
@@ -1202,6 +1321,22 @@ class CactusApp(App[int]):
                 self.flash = f"poked {q.pane or q.agent}"
         self._rebuild_status_bar()
 
+    def action_visit(self) -> None:
+        """Jump the herdr view to the pane that asked the focused row."""
+        from .poke import visit, PokeError
+
+        q = self._current_question()
+        if q is None or not q.pane:
+            # check_action keeps the binding off here; on_key owns the flash.
+            return
+        try:
+            visit(q.pane)
+        except PokeError as exc:
+            self.flash = f"visit failed: {exc}"
+        else:
+            self.flash = f"visited {q.pane}"
+        self._rebuild_status_bar()
+
     def _rebuild_status_bar(self) -> None:
         bar = self.query_one("#status-bar", Static)
         rows = self.store.projects()
@@ -1318,6 +1453,11 @@ class CactusApp(App[int]):
         binding from firing, so the press would otherwise land in silence.
         This runs after bindings, so an enabled `u`/`y`/`n` never reaches here.
         """
+        if self.projects_open:
+            if event.key == "escape":
+                self._close_projects()
+                event.stop()
+            return
         if self.settings_open:
             if event.key == "escape":
                 self._close_settings()
@@ -1387,14 +1527,31 @@ class CactusApp(App[int]):
                 )
                 self._rebuild_status_bar()
                 event.stop()
+        if event.key == "v":
+            # visit only binds on a row with a herdr pane stamp (check_action).
+            q = self._current_question()
+            if q is not None and not q.pane:
+                self.flash = f"{q.key} was posted outside herdr; nothing to visit"
+                self._rebuild_status_bar()
+                event.stop()
 
     def action_focus_next(self) -> None:
+        if self.projects_open:
+            if self.project_rows:
+                self.project_index = (self.project_index + 1) % len(self.project_rows)
+                self._render_projects()
+            return
         self._clear_flash()
         listview = self.query_one("#rail-list", ListView)
         listview.focus()
         listview.action_cursor_down()
 
     def action_focus_prev(self) -> None:
+        if self.projects_open:
+            if self.project_rows:
+                self.project_index = (self.project_index - 1) % len(self.project_rows)
+                self._render_projects()
+            return
         self._clear_flash()
         listview = self.query_one("#rail-list", ListView)
         listview.focus()
@@ -1705,6 +1862,15 @@ class CactusApp(App[int]):
         self._rebuild_status_bar()
 
     async def action_submit(self) -> None:
+        if self.projects_open:
+            row = self._selected_project_row()
+            if row is None:
+                return
+            self.current_project = row["project"]
+            self.focused_key = None
+            self._close_projects()
+            await self._reload(force=True)
+            return
         q = self._current_question()
         if q is None:
             return
@@ -1832,16 +1998,14 @@ class CactusApp(App[int]):
             self._rebuild_status_bar()
             self.query_one("#rail-list", ListView).focus()
             return
-        self.flash = "1-9 copies a chunk"
+        self.flash = f"{_digit_range(len(q.choices))} copies a chunk"
         self._rebuild_status_bar()
 
     def _pick_hint(self, q: Question) -> str:
         """What enter means with no draft on a choice/confirm row, in its own keys."""
         if q.kind == "confirm":
-            n = len(q.choices) or 2
-            return f"pick with y/n or 1-{n}"
-        n = len(q.choices)
-        return f"pick with 1-{n}" if n > 1 else "pick with 1"
+            return f"pick with y/n or {_digit_range(len(q.choices) or 2)}"
+        return f"pick with {_digit_range(len(q.choices))}"
 
     async def action_confirm_yes(self) -> None:
         await self._confirm(0)

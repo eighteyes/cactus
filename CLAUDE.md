@@ -162,6 +162,11 @@ scope.
   (`tui`, `cli poke KEY`, `www`) passes `pane=q.pane`; `cactus poke --agent`
   alone has no pane and only works through an override or a webhook. The
   footer omits `p poke` where unreachable and `on_key` flashes why.
+- `v` (visit) binds only on a row with a herdr `pane` stamp and runs
+  `herdr agent focus {pane}` (`poke.visit`; `CACTUS_VISIT` overrides, and
+  tests set it inert). No owner or webhook fallback: without a pane there is
+  no conversation on screen to jump to, so the footer omits it and `on_key`
+  flashes why, same as `p`.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.

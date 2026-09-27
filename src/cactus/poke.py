@@ -8,6 +8,7 @@ Responsibilities:
 - CACTUS_POKE still overrides everything (tests / one-shot transports).
 - After an answer, auto-poke only webhook-mapped agents (never herdr).
 - Report a usable failure when a row has no owner or the transport is absent.
+- Visit: focus the herdr pane a row was asked from ($CACTUS_VISIT overrides).
 """
 
 from __future__ import annotations
@@ -35,6 +36,11 @@ DEFAULT_MESSAGE = (
 # the pane stamped on the row. `{target}` is the pane when the row has one,
 # else the agent id; `{agent}` stays the owner for templates that route on it.
 DEFAULT_COMMAND = "herdr agent prompt {target} {message}"
+
+# Visiting jumps the human's herdr view to the pane that asked. Pane ids are
+# valid `herdr agent` targets. CACTUS_VISIT overrides it, with `{pane}`
+# substituted per argument, so tests can point it somewhere inert.
+DEFAULT_VISIT_COMMAND = "herdr agent focus {pane}"
 
 DEFAULT_WEBHOOKS_PATH = Path("~/.config/cactus/poke-webhooks.json").expanduser()
 
@@ -176,14 +182,14 @@ def resolve_executable(name: str) -> str | None:
     return None
 
 
-def _run_argv(argv: list[str], timeout: float) -> str:
+def _run_argv(argv: list[str], timeout: float, env_name: str = "CACTUS_POKE") -> str:
     if not argv:
-        raise PokeError("CACTUS_POKE is empty")
+        raise PokeError(f"{env_name} is empty")
     exe = resolve_executable(argv[0])
     if exe is None:
         dirs = ", ".join(str(d) for d in FALLBACK_BIN_DIRS)
         raise PokeError(
-            f"{argv[0]} is not on PATH or in {dirs}; set CACTUS_POKE to a transport"
+            f"{argv[0]} is not on PATH or in {dirs}; set {env_name} to a transport"
         )
     argv = [exe, *argv[1:]]
 
@@ -259,3 +265,17 @@ def reachable(agent: str | None, pane: str | None) -> bool:
     if pane:
         return True
     return webhook_entry(agent) is not None
+
+
+def visit(pane: str | None, *, timeout: float = 5.0) -> str:
+    """Focus the herdr pane a row was asked from. Returns what ran.
+
+    Only a pane stamp can be visited: a row posted outside herdr has no
+    conversation on screen to jump to, so it raises rather than guessing.
+    """
+    if not pane:
+        raise PokeError("posted outside herdr; no pane to visit")
+    template = shlex.split(os.environ.get("CACTUS_VISIT") or DEFAULT_VISIT_COMMAND)
+    return _run_argv(
+        [part.replace("{pane}", pane) for part in template], timeout, "CACTUS_VISIT"
+    )
