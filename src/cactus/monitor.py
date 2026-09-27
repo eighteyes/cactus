@@ -5,6 +5,8 @@ Responsibilities:
 - Poll the store's change cursor and diff the inbox against the previous tick.
 - Emit one line per transition: asked, verdict, answered, skipped, cleared,
   reopened, stepped, changed, elaborate, edited, withdrawn, gone.
+- Under `--agent`, suppress `asked` and `edited`: both are always the
+  filtered agent's own action echoed back, never something to relay.
 - Render each event as a fixed-column line or as one JSON object per line.
 - Flush every line immediately so a line-oriented watcher sees events as they land.
 """
@@ -20,6 +22,13 @@ from .scope import project_label
 from .store import ACTIONABLE, CONFIDENCE_GLYPH, Question, Store
 
 DEFAULT_INTERVAL = 1.0
+
+# Events an --agent stream never echoes back (q319, q334): both are always
+# the agent's own action reflected into its own conversation. `asked` is a
+# row the agent just posted; `edited` is `cactus edit`, which is
+# ownership-gated in cli.py and has no TUI equivalent, so under an agent
+# filter it can only be that agent's own edit.
+_OWN_ECHO = {"asked", "edited"}
 
 # q207 ("both"): the instruction an `elaborate` event carries when the human
 # typed no hint of their own. Settled wording overrides the plan doc's older
@@ -348,17 +357,23 @@ def run_monitor(
                 # some unrelated change touched it.
                 if before != signature and owned(scope):
                     event = _arrival_event(q) if before is None else _transition_event(before, q)
-                    # An `asked` on an --agent stream is a row that agent
-                    # posted itself (q319): the line repeats what it already
-                    # knows, and every line lands in its conversation.
-                    # `--replay` above still lists the inbox on request.
-                    if not (agent is not None and event == "asked"):
+                    # `asked` and `edited` on an --agent stream are always
+                    # the agent's own action echoed back (q319, and `edit`
+                    # is ownership-gated in cli.py with no TUI equivalent):
+                    # the line repeats what it already knows, and every
+                    # line lands in its own conversation. A human
+                    # withdrawing an elaborate request reads as `withdrawn`
+                    # (q228), not `edited`, so nothing human-authored is
+                    # suppressed here. `--replay` above still lists the
+                    # inbox on request.
+                    own_echo = agent is not None and event in _OWN_ECHO
+                    if not own_echo:
                         _emit(
                             q, event, as_json=as_json, show_project=all_projects,
                             open_ids=current_open_ids,
                         )
-                    if event != "asked":
-                        fired = True
+                        if event != "asked":
+                            fired = True
                 seen[ident] = (scope, signature)
             for ident in [k for k in seen if k not in live]:
                 scope, _ = seen[ident]

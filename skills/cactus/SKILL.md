@@ -225,11 +225,12 @@ answers). Rewrite the row in place; the key stays:
 
     cactus edit q7 --agent "$AGENT" --context "..." [--text "..."] [-c "label: desc"]...
 
-The row returns to `open` and the monitor reports `edited`. `edit` also
-works on any open or live row you own without a request, so fix a typo or
-add a fact the moment you notice it. `-c` replaces the choices and drops a
-`--recommend` that no longer names one. A human `u` on an elaborate request
-also reads as `edited`: re-read the row before rewriting.
+The row returns to `open`; your own `--agent` stream does not echo the
+`edited` event back at you (q334). `edit` also works on any open or live row
+you own without a request, so fix a typo or add a fact the moment you notice
+it. `-c` replaces the choices and drops a `--recommend` that no longer names
+one. A human `u` on an elaborate request reads as `withdrawn`: re-read the
+row before rewriting.
 
 `D` in the TUI asks for decomposition through the same `elaborate` event.
 When its instruction says to decompose, do not edit the original row. Post

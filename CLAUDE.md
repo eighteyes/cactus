@@ -257,7 +257,12 @@ scope.
   the agent's conversation. `--replay` still lists the inbox first, `asked`
   included, when asked to. Only a library caller without `agent` still gets
   `asked`; the CLI refuses `--monitor` without `--agent`, so no stream a
-  human or agent starts from the shell ever carries it.
+  human or agent starts from the shell ever carries it. It never streams
+  `edited` either (q334): `cactus edit` is ownership-gated in cli.py with no
+  TUI equivalent, so under an agent filter an `edited` event is always that
+  agent's own edit echoed back. `--once` ignores both for the same reason a
+  bare `asked` never fires it — neither ends a background wait for a verdict
+  that never arrived.
 - `monitor.run_monitor(agent=...)` still polls every agent's rows; only
   emission is filtered. `_snapshot` carries each row's owner alongside its
   signature so a `gone` event, read after the row is already deleted, can
