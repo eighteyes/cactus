@@ -32,11 +32,21 @@ per-agent webhook. Never assume an answer will reach you without one.
    act on the new state.
 5. Clear your own row after acting.
 
+When an elaborate instruction asks to decompose a complex row, post several
+smaller, independently answerable follow-ups with `-p ORIGINAL_KEY`, then
+clear the original row. Do not edit it back into one question.
+
 Use two or three mutually exclusive options; include the real trade-off in
 `--context`. Add `--recommend LABEL --confidence low|med|high` when you have a
 preference. Do not use a generic chat question for a decision Cactus can hold.
 
-The `UserPromptSubmit` hook injects your outstanding frontier. The `Stop` hook
-continues the turn when rows are open without a monitor. The `PermissionRequest`
+Format a question for an 80-column terminal: two or three rendered lines are
+fine, but no more. Cactus warns after an ask or edit that wraps past three
+lines; decompose a larger decision into follow-ups. Hard-wrap context and
+choice descriptions at 80 columns and keep choice labels short.
+
+The `UserPromptSubmit` hook injects your outstanding frontier. The opt-in `Stop`
+hook (`CACTUS_STOP_HOOK=1`) continues the turn when rows are open without a
+monitor. The `PermissionRequest`
 hook converts an approval-needed Bash command into a Cactus run row and denies
 the transient request so the durable inbox remains the approval surface.

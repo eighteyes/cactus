@@ -9,6 +9,7 @@ Responsibilities:
 - Check the disabled-project path is silent (or says so) for every hook, the
   enabled path produces the documented output, and a project disabled with
   `cactus project ignore` is not read as enabled by a stray jq `false` value.
+- Check both Stop hooks stay silent unless CACTUS_STOP_HOOK=1.
 """
 
 from __future__ import annotations
@@ -58,6 +59,8 @@ def hook_env(tmp_path: Path, scratch_env: dict[str, str]) -> dict[str, str]:
     # $XDG_STATE_HOME; scope it to this test so a run never dedupes against
     # (or pollutes) the developer's real ~/.local/state/cactus.
     env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
+    # The Stop hooks are opt-in; the suite exercises them switched on.
+    env["CACTUS_STOP_HOOK"] = "1"
     return env
 
 
@@ -266,3 +269,19 @@ def test_codex_ignore_not_fooled_by_false(cli, hook_env, project):
     req = run_hook(CODEX_HOOKS / "permission-request.sh", payload, hook_env, project)
     assert req.stdout.strip() == ""
     assert list_all(cli, project) == []
+
+
+def test_stop_hooks_are_opt_in(cli, hook_env, project):
+    """Open rows, no monitor: a turn both Stop hooks would hold, if switched on."""
+    cli("project", "activate", cwd=project)
+    agent = "stop-optin-1"
+    assert cli("ask", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project).returncode == 0
+
+    off = {k: v for k, v in hook_env.items() if k != "CACTUS_STOP_HOOK"}
+    off["CACTUS_AGENT"] = agent
+    payload = {"session_id": agent, "cwd": project}
+    for script in (ROOT_HOOKS / "stop-fork.sh", CODEX_HOOKS / "stop.sh"):
+        assert run_hook(script, payload, off, project).stdout.strip() == ""
+        on = run_hook(script, payload, dict(off, CACTUS_STOP_HOOK="1"), project)
+        assert "block" in on.stdout
+

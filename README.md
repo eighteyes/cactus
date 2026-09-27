@@ -29,6 +29,15 @@ Free-text input is on by default, alongside any pick.
 ### elaborate
 Kick the question back with an optional take; the agent rewrites it.
 
+Press `D` to use that same workflow to decompose a complex question into
+smaller follow-up questions. The agent posts the replacements, then retires
+the original.
+
+### view settings
+Press `?` in the TUI to choose the question rail's layout: left of the detail
+card, or underneath it. The same screen toggles a Figlet `cybermedium` project
+header; it falls back to plain text when `figlet` is not installed.
+
 It's honestly not that complicated, but it's replaced a number of my AI interactions.
 
 ## Manual Installation
@@ -104,11 +113,13 @@ hook               host          does
 SessionStart       Claude Code   resolve identity; rehome rows after /clear; start-the-monitor line; open rows
                    Codex         session id as identity; start-the-monitor line
 UserPromptSubmit   both          inject open and answered-but-unacted rows; name the monitor if none runs
-Stop               Claude Code   hold a turn with open rows and no monitor; hold a turn that posted no ask
+Stop (opt-in)      Claude Code   hold a turn with open rows and no monitor; hold a turn that posted no ask
                    Codex         hold a turn with open rows and no monitor
 PermissionDenied   Claude Code   post the denied command as a `cactus run` row
 PermissionRequest  Codex         post the requested command as a `cactus run` row, decline the transient prompt
 ```
+
+Stop is opt-in: set `CACTUS_STOP_HOOK=1`. Without it both Stop hooks exit silently.
 
 ### CLI
 
@@ -130,6 +141,7 @@ cactus ask "Which auth backend?" --agent ID \
 cactus get q7 --json                                   # at the step that needs the answer
 cactus run "make deploy" --agent ID --why "needs prod credentials"
 cactus edit q7 --agent ID --context "…"                # answer an elaborate request
+# TUI: D on q7 requests smaller follow-ups; agent asks them with -p q7, then clears q7
 cactus plan q9 --step "write code" --step "test it" --done 1   # steps are 1-based
 cactus review q9 --look-at "login form" --run "echo OK" --pass "prints OK" --fail "anything else"
 cactus clear q7 --agent ID                             # once acted on
@@ -147,5 +159,3 @@ For that weirdo Grok, and any agent that cannot hold a local monitor: map the ag
 
 ## Contributions
 Are welcome, I'm interested in seeing if this is useful! I've been thinking about out-of-band agentic communication for a while, and this is the approach that finally stuck.
-
-

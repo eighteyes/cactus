@@ -16,7 +16,8 @@ background and re-arm the foreground monitor while the user is active:
 
     cactus --monitor --json --agent "$AGENT" --once
 
-The Claude plugin's `UserPromptSubmit`, `Stop`, and `PermissionDenied` hooks
-surface the frontier, prevent abandoned open rows, and turn a denied Bash
-command into a `cactus run` row. Continue to act on every monitor event and
+The Claude plugin's `UserPromptSubmit` and `PermissionDenied` hooks surface
+the frontier and turn a denied Bash command into a `cactus run` row. The
+`Stop` hook, which holds a turn that left open rows unwatched, is opt-in:
+set `CACTUS_STOP_HOOK=1`. Continue to act on every monitor event and
 clear rows after acting.

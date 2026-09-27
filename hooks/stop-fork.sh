@@ -2,6 +2,7 @@
 # stop-fork.sh
 # Stop hook that blocks a turn from ending without posting its next fork to cactus.
 # Responsibilities:
+#   - stay silent (exit 0) unless CACTUS_STOP_HOOK=1 (opt-in)
 #   - stay silent (exit 0) when cactus is not installed or stop_hook_active is true
 #   - find the current turn: everything after the last transcript entry that
 #     opened it (a genuine human prompt, a task-notification, or a
@@ -18,9 +19,15 @@
 # Read-only: one `cactus list` for the agent's open rows; never writes.
 set -u
 
+# Opt-in: off unless CACTUS_STOP_HOOK=1.
+[ "${CACTUS_STOP_HOOK:-}" = "1" ] || exit 0
 command -v cactus >/dev/null 2>&1 || exit 0
 
 input=$(cat)
+
+enabled=$(cactus project status --json 2>/dev/null \
+  | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
+[ "${enabled:-true}" = "true" ] || exit 0
 
 # Monitor check (q252): an agent with open rows and no monitor never hears the
 # answers. Read-only: one `cactus list` and a process scan.

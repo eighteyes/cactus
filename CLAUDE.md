@@ -310,6 +310,10 @@ scope.
   previous conversation's id and the whole session posts under a dead
   owner. Every root hook reads stdin into `input` before sourcing
   identity.sh; nothing else may consume stdin first.
+- Both Stop hooks (`hooks/stop-fork.sh`, `plugins/cactus/hooks/stop.sh`) are
+  opt-in: they exit 0 before reading stdin unless `CACTUS_STOP_HOOK=1`. They
+  stay registered in hooks.json so opting in needs no settings edit.
+  `tests/test_hooks.py`'s `hook_env` sets it on.
 - `cactus rehome --agent NEW` (q208) is gated to rows stamped with the
   caller's own `HERDR_PANE_ID`/`HERDR_SESSION` — missing either refuses (exit
   1) rather than guessing which rows are "mine". Scoped to the current

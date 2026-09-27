@@ -14,8 +14,8 @@ If the execution environment cannot keep a foreground process alive, use a
 re-armed one-shot waiter or configure a webhook owner as described in
 [GROK.md](GROK.md). Do not pretend a monitor is running when it is not.
 
-Codex hooks provide the frontier at `UserPromptSubmit` and check open rows at
-`Stop`. A `PermissionRequest` hook can post a durable `cactus run` approval
+Codex hooks provide the frontier at `UserPromptSubmit` and, with
+`CACTUS_STOP_HOOK=1`, check open rows at `Stop`. A `PermissionRequest` hook can post a durable `cactus run` approval
 row before it declines the transient Codex approval request. After an
 approved row wakes you, re-read its result before running anything.
 
