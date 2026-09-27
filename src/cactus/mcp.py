@@ -175,6 +175,7 @@ TOOLS: list[dict[str, Any]] = [
         {
             "text": _prop("string", "The question, plainly."),
             "choices": {**_STR_LIST, "description": "Choices as 'label: description'; split on the first colon. Omit for a free-text question."},
+            "files": {**_STR_LIST, "description": "File paths the human may preview or edit from the TUI."},
             "act": _prop("string", "What is being asked for.", enum=["ask", "steer", "notify", "review", "plan", "data"]),
             "kind": _prop("string", "Answer shape override; inferred from choices and flags otherwise.", enum=["choice", "multi", "text", "confirm"]),
             "multi": _prop("boolean", "Allow selecting several choices."),
@@ -265,6 +266,7 @@ TOOLS: list[dict[str, Any]] = [
             "text": _prop("string", "New question text."),
             "context": _prop("string", "New context."),
             "choices": {**_STR_LIST, "description": "Replacement choices as 'label: description'."},
+            "files": {**_STR_LIST, "description": "Replacement file paths; replaces the whole list."},
             "agent": _AGENT,
         },
         ["key"],
@@ -279,6 +281,7 @@ TOOLS: list[dict[str, Any]] = [
             "pass_when": _prop("string", "What a good result looks like."),
             "fail_when": _prop("string", "What disqualifies it."),
             "then": _prop("string", "What to set up next."),
+            "files": {**_STR_LIST, "description": "Replacement file paths; replaces the whole list; omit to keep it."},
             "agent": _prop("string", "If given, refuses when the row is owned by a different agent."),
         },
         ["key"],
@@ -292,6 +295,7 @@ TOOLS: list[dict[str, Any]] = [
             "reset_steps": _prop("boolean", "Replace the list with `steps` and clear every done flag."),
             "done": _prop("integer", "1-based step number to tick."),
             "undone": _prop("integer", "1-based step number to untick."),
+            "files": {**_STR_LIST, "description": "Replacement file paths; replaces the whole list; omit to keep it."},
             "agent": _prop("string", "If given, refuses when the row is owned by a different agent."),
         },
         ["key"],
@@ -360,6 +364,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
     if name == "cactus_ask":
         argv = ["ask", a["text"], "--agent", a.get("agent") or _default_agent()]
         _repeat(argv, "-c", a.get("choices"))
+        _repeat(argv, "-f", a.get("files"))
         _flag(argv, "--act", a.get("act"))
         _flag(argv, "--kind", a.get("kind"))
         _flag(argv, "--multi", a.get("multi"))
@@ -419,6 +424,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         _flag(argv, "--text", a.get("text"))
         _flag(argv, "--context", a.get("context"))
         _repeat(argv, "-c", a.get("choices"))
+        _repeat(argv, "-f", a.get("files"))
     elif name == "cactus_review":
         argv = ["review", a["key"]]
         _flag(argv, "--look-at", a.get("look_at"))
@@ -426,6 +432,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         _flag(argv, "--pass", a.get("pass_when"))
         _flag(argv, "--fail", a.get("fail_when"))
         _flag(argv, "--then", a.get("then"))
+        _repeat(argv, "-f", a.get("files"))
         _flag(argv, "--agent", a.get("agent"))
     elif name == "cactus_plan":
         argv = ["plan", a["key"]]
@@ -433,6 +440,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         _flag(argv, "--reset-steps", a.get("reset_steps"))
         _flag(argv, "--done", a.get("done"))
         _flag(argv, "--undone", a.get("undone"))
+        _repeat(argv, "-f", a.get("files"))
         _flag(argv, "--agent", a.get("agent"))
     elif name == "cactus_clear":
         argv = ["clear", *(a.get("keys") or []), "--agent", a.get("agent") or _default_agent()]

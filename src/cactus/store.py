@@ -116,6 +116,9 @@ CREATE TABLE IF NOT EXISTS questions (
     -- diff cannot tell the two apart — both leave the row at the same
     -- status — so the monitor reads this marker instead.
     last_change  TEXT,
+    -- Absolute paths a human may preview (`f`) or edit (`F`) from the TUI,
+    -- JSON list. Additive, like `run_tail`.
+    files        TEXT,
     -- Keys number per project (q166). A fresh database starts here; an older
     -- one reaches it through `cactus migrate --yes`.
     UNIQUE(project, key)
@@ -148,6 +151,15 @@ CREATE TABLE IF NOT EXISTS steps (
     text         TEXT    NOT NULL,
     done         INTEGER NOT NULL DEFAULT 0,
     UNIQUE(question_id, idx)
+);
+
+-- Project preferences live beside the inbox rather than in a checkout: a
+-- human can ignore one project from the global TUI, and every agent using the
+-- shared database sees the same switch immediately.
+CREATE TABLE IF NOT EXISTS project_settings (
+    project    TEXT PRIMARY KEY,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT    NOT NULL
 );
 
 """
@@ -318,6 +330,7 @@ class Question:
     run_exit: int | None = None
     run_tail: list[str] = field(default_factory=list)
     run_log: str | None = None
+    files: list[str] = field(default_factory=list)
 
     @property
     def persistent(self) -> bool:
@@ -365,6 +378,7 @@ class Question:
                 {"exit": self.run_exit, "tail": self.run_tail, "log": self.run_log}
                 if self.run_exit is not None else None
             ),
+            "files": self.files,
         }
 
 
@@ -480,6 +494,10 @@ class Store:
         # column comment in SCHEMA for why the monitor needs it.
         if "last_change" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN last_change TEXT")
+        # A row's attached file paths (q-files): JSON list, additive like
+        # `run_tail` above.
+        if "files" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN files TEXT")
         # `seen` renamed to `notify`: a data fixup, not a schema change, so it
         # runs unconditionally on every open like the checks above — idempotent,
         # since a second pass finds no `seen` rows left to touch.
@@ -606,6 +624,7 @@ class Store:
                     elaborate    TEXT,
                     elaborate_at TEXT,
                     last_change  TEXT,
+                    files        TEXT,
                     UNIQUE(project, key)
                 )""",
                 """INSERT INTO questions_new
@@ -614,7 +633,7 @@ class Store:
                           chosen, blocked, choices, allow_free, recommend,
                           confidence, recommend_why, context, asked_by, status,
                           created_at, updated_at, run_exit, run_tail, run_log,
-                          elaborate, elaborate_at, last_change
+                          elaborate, elaborate_at, last_change, files
                    FROM questions""",
                 "DROP TABLE questions",
                 "ALTER TABLE questions_new RENAME TO questions",
@@ -688,6 +707,7 @@ class Store:
         parent_project: str | None = None,
         context: str | None = None,
         asked_by: str | None = None,
+        files: Sequence[str] | None = None,
     ) -> Question:
         """Insert one question and return it, with its assigned key.
 
@@ -798,8 +818,8 @@ class Store:
                     (key, num, project, cwd, thread, parent_id, text, kind, act, agent,
                      word, workspace, tab, pane, session, title, chosen, blocked,
                      choices, allow_free, recommend, confidence, recommend_why,
-                     context, asked_by, status, created_at, updated_at)
-                VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     context, asked_by, status, created_at, updated_at, files)
+                VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     num, project, cwd, thread, parent_id, text, kind, act, agent, word,
@@ -810,6 +830,7 @@ class Store:
                     json.dumps(recommend) if recommend else None,
                     confidence, recommend_why,
                     context, asked_by, status, now, now,
+                    json.dumps(list(files)) if files else None,
                 ),
             )
             rowid = int(cur.lastrowid)
@@ -1258,6 +1279,7 @@ class Store:
         text: str | None = None,
         context: str | None = None,
         choices: Sequence[Choice] | None = None,
+        files: Sequence[str] | None = None,
     ) -> Question:
         """Replace the given fields on an open/live/elaborate row, in place.
 
@@ -1287,6 +1309,7 @@ class Store:
         if not new_text or not new_text.strip():
             raise ValueError("edit would leave the question text empty")
         new_context = q.context if context is None else context
+        new_files = q.files if files is None else list(files)
 
         if choices is not None:
             if q.kind in ("choice", "multi", "confirm") and not choices:
@@ -1322,7 +1345,7 @@ class Store:
             UPDATE questions
             SET text = ?, context = ?, choices = ?, recommend = ?, confidence = ?,
                 recommend_why = ?, status = ?, elaborate = NULL, elaborate_at = NULL,
-                last_change = ?, updated_at = ?
+                last_change = ?, updated_at = ?, files = ?
             WHERE id = ?
             """,
             (
@@ -1330,16 +1353,44 @@ class Store:
                 json.dumps([c.as_dict() for c in new_choices]),
                 json.dumps(new_recommend) if new_recommend else None,
                 new_confidence, new_recommend_why,
-                new_status, new_last_change, now, q.id,
+                new_status, new_last_change, now,
+                json.dumps(new_files) if new_files else None,
+                q.id,
             ),
         )
         result = self._get_by_id(q.id)
         assert result is not None
         self._record_if_exists(
             result, event="edit",
-            prior={"text": q.text, "context": q.context, "choices": q.choices},
+            prior={
+                "text": q.text, "context": q.context, "choices": q.choices,
+                "files": q.files,
+            },
         )
         return result
+
+    def set_files(
+        self, key: str, files: Sequence[str], *, project: str | None = None
+    ) -> Question:
+        """Replace a row's attached file list outright (empty clears it).
+
+        The `-f`/`--file` primitive behind `cactus review`/`cactus plan`,
+        which have no other path to `edit`'s field set. No partial merge —
+        same whole-list-replace semantics `edit`'s `-c` already has for
+        choices.
+        """
+        q = self.get(key, project=project)
+        if q is None:
+            raise KeyError(f"no such question: {key}")
+        if q.status == "cleared":
+            raise ValueError(
+                f"{key} is cleared; cactus reopen {key} --agent ID first"
+            )
+        self.conn.execute(
+            "UPDATE questions SET files = ? WHERE id = ?",
+            (json.dumps(list(files)) if files else None, q.id),
+        )
+        return self._touch(q.id)
 
     def _record(
         self, row: Question, *, event: str, withdrawn_answer: Answer | None = None
@@ -1535,19 +1586,48 @@ class Store:
         """
         rows = self.conn.execute(
             """
-            SELECT project,
-                   SUM(CASE WHEN status = 'open'     THEN 1 ELSE 0 END) AS open_count,
-                   SUM(CASE WHEN status = 'live'     THEN 1 ELSE 0 END) AS live_count,
-                   SUM(CASE WHEN status = 'answered' THEN 1 ELSE 0 END) AS answered_count,
-                   COUNT(*) AS total,
-                   MAX(updated_at) AS last_activity
-            FROM questions
-            WHERE status != 'cleared'
-            GROUP BY project
+            WITH known_projects AS (
+                SELECT project FROM questions
+                UNION
+                SELECT project FROM project_settings
+            )
+            SELECT known_projects.project,
+                   COALESCE(project_settings.enabled, 1) AS enabled,
+                   SUM(CASE WHEN questions.status = 'open' THEN 1 ELSE 0 END) AS open_count,
+                   SUM(CASE WHEN questions.status = 'live' THEN 1 ELSE 0 END) AS live_count,
+                   SUM(CASE WHEN questions.status = 'answered' THEN 1 ELSE 0 END) AS answered_count,
+                   COUNT(questions.id) AS total,
+                   MAX(questions.updated_at) AS last_activity
+            FROM known_projects
+            LEFT JOIN project_settings ON project_settings.project = known_projects.project
+            LEFT JOIN questions ON questions.project = known_projects.project
+                              AND questions.status != 'cleared'
+            GROUP BY known_projects.project
             ORDER BY open_count DESC, live_count DESC, last_activity DESC
             """
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def project_enabled(self, project: str) -> bool:
+        """Whether Cactus hooks are active for this project (default: active)."""
+        row = self.conn.execute(
+            "SELECT enabled FROM project_settings WHERE project = ?", (project,)
+        ).fetchone()
+        return row is None or bool(row["enabled"])
+
+    def set_project_enabled(self, project: str, enabled: bool) -> None:
+        """Persist a project hook switch, visible to every process sharing this DB."""
+        self.conn.execute(
+            """
+            INSERT INTO project_settings(project, enabled, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(project) DO UPDATE SET
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+            """,
+            (project, int(enabled), _now()),
+        )
+        self.conn.commit()
 
     def threads(self, *, project: str | None = None, all_projects: bool = False) -> list[dict[str, Any]]:
         where, params = self._scope_where(project=project, all_projects=all_projects)
@@ -1806,4 +1886,5 @@ class Store:
             run_exit=row["run_exit"],
             run_tail=json.loads(row["run_tail"]) if row["run_tail"] else [],
             run_log=row["run_log"],
+            files=json.loads(row["files"]) if row["files"] else [],
         )

@@ -223,6 +223,12 @@ def _card_lines(
         lines.append("")
         lines.append(q.context)
 
+    if q.files:
+        lines.append("")
+        for i, path in enumerate(q.files, start=1):
+            label = "files" if i == 1 else ""
+            lines.append(f"  {label:<8}{i} {path}")
+
     if q.status == "elaborate":
         lines.append("")
         if q.elaborate == DECOMPOSE_INSTRUCTION.format(key=q.key):
@@ -556,6 +562,8 @@ class CactusApp(App[int]):
         Binding("C", "copy_command", "Copy"),
         Binding("R", "run_command", "Run"),
         Binding("O", "open_output", "Output"),
+        Binding("f", "view_file", "View file"),
+        Binding("F", "edit_file", "Edit file"),
         Binding("d", "dismiss", "Dismiss"),
         Binding("r", "refresh_view", "Refresh"),
         Binding("q", "quit_app", "Quit"),
@@ -614,6 +622,12 @@ class CactusApp(App[int]):
         self._step_buffer = ""
         self._step_buffer_key: str | None = None
         self._step_buffer_timer = None
+        # Digit-prefix arming for a multi-file row's `f`/`F`: which action is
+        # armed ("view"/"edit"), which row it was armed on, and the timer that
+        # disarms it if no digit follows. None/empty when idle.
+        self.file_pending: str | None = None
+        self.file_pending_key: str | None = None
+        self.file_pending_timer = None
 
     @property
     def pending_text(self) -> str:
@@ -972,6 +986,8 @@ class CactusApp(App[int]):
             labels["d"] = "Close"
         elif q.kind == "multi":
             labels["1"] = "Toggle"
+        if self.file_pending is not None:
+            labels["1"] = "Pick file"
         return labels
 
     def _relabel(self, q: Question) -> None:
@@ -1045,6 +1061,10 @@ class CactusApp(App[int]):
             # Stopped accepting answers until `edit` addresses the request —
             # only navigation, clearing, undo (withdrawing the request), and
             # poking the owning agent still mean anything here.
+            if action in ("view_file", "edit_file"):
+                return bool(q.files)
+            if action == "select_choice":
+                return self.file_pending is not None
             return action in (
                 "focus_next", "focus_prev", "prev_project", "next_project",
                 "clear_focused", "undo", "poke", "visit", "refresh_view", "quit_app",
@@ -1060,6 +1080,8 @@ class CactusApp(App[int]):
             return bool(self._command_of(q))
         if action == "open_output":
             return bool(self.run_output.get(q.key))
+        if action in ("view_file", "edit_file"):
+            return bool(q.files)
         if action == "dismiss":
             return q.act in ("notify", "data")
         if action == "poke":
@@ -1075,6 +1097,10 @@ class CactusApp(App[int]):
         if action in ("confirm_yes", "confirm_no"):
             return q.kind == "confirm"
         if action == "select_choice":
+            # A digit-prefix armed by `f`/`F` on a multi-file row (q-files)
+            # takes every digit, even on a row with no choices of its own.
+            if self.file_pending is not None:
+                return True
             # Enabled for the whole shape, not the exact digit: a digit past
             # the count still reaches action_select_choice, which flashes
             # rather than looking like a dead key.
@@ -1263,6 +1289,97 @@ class CactusApp(App[int]):
             self.flash = f"full output: {spill(lines, key=q.key)}"
         self._rebuild_status_bar()
 
+    def action_view_file(self) -> None:
+        """Preview the focused row's file (q-files) in the human's pager."""
+        self._start_file_action("view")
+
+    def action_edit_file(self) -> None:
+        """Open the focused row's file (q-files) in the human's editor."""
+        self._start_file_action("edit")
+
+    def _start_file_action(self, mode: str) -> None:
+        """Run a single-file row's action immediately, or arm a digit pick.
+
+        A one-file row has nothing to pick, so `f`/`F` runs it straight away.
+        A multi-file row instead arms `file_pending` and waits ~1.5s for the
+        digit that names which one — `action_select_choice` intercepts it.
+        """
+        q = self._current_question()
+        if q is None or not q.files:
+            # check_action/on_key already handle messaging for this case.
+            return
+        if len(q.files) == 1:
+            self._run_file_action(q, mode, 0)
+            return
+        self.file_pending = mode
+        self.file_pending_key = q.key
+        self.flash = f"file 1-{len(q.files)}?"
+        self.file_pending_timer = self.set_timer(
+            1.5, partial(self._disarm_file_pending, q.key)
+        )
+        self._rebuild_card()
+
+    def _cancel_file_pending(self) -> None:
+        """Drop an armed file pick without a flash of its own.
+
+        The caller (a disarming keypress, a row move, a fired pick) is the
+        one that knows what flash — if any — belongs on screen next.
+        """
+        if self.file_pending_timer is not None:
+            self.file_pending_timer.stop()
+            self.file_pending_timer = None
+        self.file_pending = None
+        self.file_pending_key = None
+
+    def _disarm_file_pending(self, key: str) -> None:
+        """Timer callback: no digit arrived — drop the arm and its flash."""
+        if self.file_pending_key != key:
+            return
+        self._cancel_file_pending()
+        self.flash = ""
+        self._rebuild_status_bar()
+        self._rebuild_card()
+
+    async def _resolve_file_pending(self, n: int) -> None:
+        """The digit `f`/`F` armed for — run that file, or flash why not."""
+        mode = self.file_pending
+        key = self.file_pending_key
+        self._cancel_file_pending()
+        q = self._current_question()
+        if q is None or q.key != key:
+            return
+        if n < 1 or n > len(q.files):
+            self.flash = f"{q.key} has no file {n}"
+            self._rebuild_card()
+            return
+        assert mode is not None
+        self._run_file_action(q, mode, n - 1)
+
+    def _run_file_action(self, q: Question, mode: str, idx: int) -> None:
+        """View or edit `q.files[idx]` under a suspended screen, and flash the result."""
+        from textual.app import SuspendNotSupported
+
+        from .shell import ShellError
+        from .shell import edit as shell_edit
+        from .shell import view as shell_view
+
+        path = q.files[idx]
+        func = shell_view if mode == "view" else shell_edit
+        verb = "view" if mode == "view" else "edit"
+        try:
+            try:
+                with self.suspend():
+                    ran = func(path)
+            except SuspendNotSupported:
+                ran = func(path)
+        except ShellError as exc:
+            self.flash = f"{verb} failed: {exc}"
+            self._rebuild_card()
+            return
+        past = "viewed" if mode == "view" else "edited"
+        self.flash = f"{past} {idx + 1}/{len(q.files)} {path} ({ran})"
+        self._rebuild_card()
+
     def _on_record_warning(self, message: str) -> None:
         """Store.record_warning hook: surface a failed record write as a flash."""
         self.flash = message
@@ -1403,6 +1520,7 @@ class CactusApp(App[int]):
         self.multi_selected = self._default_multi_selection(new_key)
         self.free_text_mode = False
         self._cancel_step_buffer()
+        self._cancel_file_pending()
         self._hide_input()
         for key in (prior_key, new_key):
             if key is None:
@@ -1441,6 +1559,9 @@ class CactusApp(App[int]):
             # leave a stale digit waiting to fire against a different row.
             if self._step_buffer and not (len(event.key) == 1 and event.key.isdigit()):
                 self._cancel_step_buffer()
+            if self.file_pending is not None and not (len(event.key) == 1 and event.key.isdigit()):
+                self._cancel_file_pending()
+                self._rebuild_card()
             if not self.free_text_mode and not self.elaborating:
                 self._clear_flash()
         await super().on_event(event)
@@ -1532,6 +1653,13 @@ class CactusApp(App[int]):
             q = self._current_question()
             if q is not None and not q.pane:
                 self.flash = f"{q.key} was posted outside herdr; nothing to visit"
+                self._rebuild_status_bar()
+                event.stop()
+        if event.key in ("f", "F"):
+            # view_file/edit_file only bind on a row carrying files (check_action).
+            q = self._current_question()
+            if q is not None and not q.files:
+                self.flash = f"{q.key} carries no file"
                 self._rebuild_status_bar()
                 event.stop()
 
@@ -1743,6 +1871,9 @@ class CactusApp(App[int]):
     # ---- answering ----------------------------------------------------
 
     async def action_select_choice(self, n: int) -> None:
+        if self.file_pending is not None:
+            await self._resolve_file_pending(n)
+            return
         plan = self._current_question()
         if plan is not None and plan.act == "plan" and plan.steps:
             await self._handle_step_digit(plan, n)

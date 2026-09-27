@@ -5,6 +5,9 @@ Responsibilities:
 - Copy a command to the system clipboard, naming the tool it used.
 - Run a command in a recorded directory, yielding output line by line.
 - Spill a full capture to a file when it is too long to read in a card.
+- Preview (`view`) or edit (`edit`) a row's attached file in the human's
+  own pager/editor, resolved from CACTUS_PAGER/CACTUS_EDITOR or the usual
+  PAGER/VISUAL/EDITOR fallbacks.
 """
 
 from __future__ import annotations
@@ -101,3 +104,44 @@ def spill(lines: list[str], *, key: str) -> Path:
 def quote(command: str) -> str:
     """A command rendered for display, collapsed to one line."""
     return " ".join(shlex.split(command)) if command else ""
+
+
+def _run_program(template: str, path: str) -> str:
+    """Split `template`, substitute `{path}` (or append it), and run it.
+
+    Runs with `subprocess.call` — no timeout, inherits the tty, so a pager
+    or editor gets a real terminal. Returns a short description of what ran.
+    """
+    if not os.path.exists(path):
+        raise ShellError(f"no such file: {path}")
+    argv = shlex.split(template)
+    if not argv:
+        raise ShellError("no program configured")
+    if any("{path}" in part for part in argv):
+        argv = [part.replace("{path}", path) for part in argv]
+    else:
+        argv = [*argv, path]
+    try:
+        subprocess.call(argv)
+    except FileNotFoundError:
+        raise ShellError(f"{argv[0]}: not found") from None
+    except OSError as exc:
+        raise ShellError(f"{argv[0]}: {exc}") from exc
+    return f"{argv[0]} {path}"
+
+
+def view(path: str) -> str:
+    """Preview `path` in a pager: CACTUS_PAGER, else PAGER, else `less`."""
+    template = os.environ.get("CACTUS_PAGER") or os.environ.get("PAGER") or "less"
+    return _run_program(template, path)
+
+
+def edit(path: str) -> str:
+    """Open `path` in an editor: CACTUS_EDITOR, else VISUAL, else EDITOR, else `vi`."""
+    template = (
+        os.environ.get("CACTUS_EDITOR")
+        or os.environ.get("VISUAL")
+        or os.environ.get("EDITOR")
+        or "vi"
+    )
+    return _run_program(template, path)

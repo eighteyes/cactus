@@ -181,3 +181,50 @@ def test_ask_refuses_kind_not_in_act_shape(store: Store, project: str) -> None:
 def test_store_empty_path_raises() -> None:
     with pytest.raises(ValueError):
         Store("")
+
+
+def test_ask_with_files_roundtrips(store: Store, project: str) -> None:
+    q = store.ask(
+        "look at this", project=project, cwd=project, agent=AGENT,
+        files=["/tmp/a.txt", "/tmp/b.txt"],
+    )
+    assert q.files == ["/tmp/a.txt", "/tmp/b.txt"]
+
+    got = store.get(q.key, project=project)
+    assert got is not None
+    assert got.files == ["/tmp/a.txt", "/tmp/b.txt"]
+    assert got.as_dict()["files"] == ["/tmp/a.txt", "/tmp/b.txt"]
+
+
+def test_ask_without_files_is_empty_list(store: Store, project: str) -> None:
+    q = store.ask("no files here", project=project, cwd=project, agent=AGENT)
+    assert q.files == []
+    assert q.as_dict()["files"] == []
+
+
+def test_edit_files_replace_keep_and_clear(store: Store, project: str) -> None:
+    q = store.ask(
+        "editable", project=project, cwd=project, agent=AGENT,
+        files=["/tmp/a.txt"],
+    )
+    # None keeps the existing list.
+    kept = store.edit(q.key, agent=AGENT, project=project, text="editable now")
+    assert kept.files == ["/tmp/a.txt"]
+
+    # A list replaces the whole thing.
+    replaced = store.edit(q.key, agent=AGENT, project=project, files=["/tmp/c.txt"])
+    assert replaced.files == ["/tmp/c.txt"]
+
+    # An empty list clears it.
+    cleared = store.edit(q.key, agent=AGENT, project=project, files=[])
+    assert cleared.files == []
+
+
+def test_set_files_replaces_and_refuses_cleared_row(store: Store, project: str) -> None:
+    q = store.ask("plan it", project=project, cwd=project, act="plan", kind="text", agent=AGENT)
+    updated = store.set_files(q.key, ["/tmp/plan.md"], project=project)
+    assert updated.files == ["/tmp/plan.md"]
+
+    store.clear(keys=[q.key], project=project)
+    with pytest.raises(ValueError):
+        store.set_files(q.key, ["/tmp/plan.md"], project=project)

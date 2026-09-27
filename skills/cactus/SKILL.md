@@ -115,6 +115,11 @@ Options are mile posts: two or three, mutually exclusive, each one a thing that
 actually happens. Never "other". Split each on the first colon, label then
 description.
 
+Format the question itself for an 80-column terminal: it may use two or three
+rendered lines, but no more. Cactus warns when an ask or edit wraps past three
+lines; decompose a larger decision into follow-ups instead. Hard-wrap context
+and choice descriptions at 80 columns, with blank lines between paragraphs.
+
     cactus ask "Which auth backend?" \
       -c "oidc: existing IdP" \
       -c "local: bcrypt table" \
@@ -130,6 +135,9 @@ submits it. `--chosen` on a steer does not wait: you proceed with it.
 
 `--word SHORT` gives boards a stable label. Set it when a project has many rows
 whose text starts the same way.
+
+`-f PATH` attaches a file the human can preview or edit from the TUI; repeat
+for more. `edit -f` replaces the list.
 
 ## Steer: proceed, invite a veto
 
@@ -207,7 +215,7 @@ yourself with Bash `run_in_background`:
 Listen for `reopened` and `gone` too: `reopened` means a verdict you already
 read is stale; `gone` means the row was purged.
 
-## Elaborate: the human wants the question rewritten
+## Elaborate or decompose: the human wants the question changed
 
 `e` on a row moves it to status `elaborate` and the monitor emits an
 `elaborate` event carrying `hint` (what the human typed, or null) and
@@ -222,6 +230,12 @@ works on any open or live row you own without a request, so fix a typo or
 add a fact the moment you notice it. `-c` replaces the choices and drops a
 `--recommend` that no longer names one. A human `u` on an elaborate request
 also reads as `edited`: re-read the row before rewriting.
+
+`D` in the TUI asks for decomposition through the same `elaborate` event.
+When its instruction says to decompose, do not edit the original row. Post
+each smaller, independently answerable question as a follow-up (`-p q7`) with
+the same `--agent`; the follow-ups inherit its thread. Once they are posted,
+clear the original row with `cactus clear q7 --agent "$AGENT"`.
 
 ## Read back
 

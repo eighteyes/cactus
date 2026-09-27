@@ -168,6 +168,113 @@ def test_feed_always_json_even_without_flag(cli):
     assert "questions" in doc
 
 
+def test_ask_file_resolves_relative_path_to_absolute(cli, project):
+    import os
+
+    rel = "notes.txt"
+    (open(os.path.join(project, rel), "w")).close()
+
+    r = cli("ask", "look at this", "--agent", AGENT_A, "-f", rel, "--json")
+    assert r.returncode == 0
+    doc = json.loads(r.stdout)
+    assert doc["files"] == [os.path.join(project, rel)]
+
+
+def test_ask_file_missing_exits_1(cli):
+    r = cli("ask", "x", "--agent", AGENT_A, "-f", "nope.txt")
+    assert r.returncode == 1
+    assert "no such file: nope.txt" in r.stderr
+
+
+def test_ask_file_directory_exits_1(cli, project):
+    r = cli("ask", "x", "--agent", AGENT_A, "-f", ".")
+    assert r.returncode == 1
+    assert "not a file: ." in r.stderr
+
+
+def test_ask_file_duplicate_exits_1(cli, project):
+    import os
+
+    (open(os.path.join(project, "a.txt"), "w")).close()
+
+    r = cli("ask", "x", "--agent", AGENT_A, "-f", "a.txt", "-f", "./a.txt")
+    assert r.returncode == 1
+    assert "duplicate file:" in r.stderr
+
+
+def test_edit_file_replaces_whole_list(cli, project):
+    import os
+
+    (open(os.path.join(project, "a.txt"), "w")).close()
+    (open(os.path.join(project, "b.txt"), "w")).close()
+
+    cli("ask", "x", "--agent", AGENT_A, "-f", "a.txt")
+    r = cli("edit", "q1", "--agent", AGENT_A, "-f", "b.txt", "--json")
+    assert r.returncode == 0
+    doc = json.loads(r.stdout)
+    assert doc["files"] == [os.path.join(project, "b.txt")]
+
+
+def test_get_text_shows_file_line(cli, project):
+    import os
+
+    (open(os.path.join(project, "a.txt"), "w")).close()
+    cli("ask", "look here", "--agent", AGENT_A, "-f", "a.txt")
+
+    r = cli("get", "q1")
+    assert r.returncode == 0
+    assert os.path.join(project, "a.txt") in r.stdout
+    assert "file" in r.stdout
+
+
+def test_agent_help_mentions_file_flag(cli):
+    r = cli("--agent-help")
+    assert r.returncode == 0
+    assert "-f PATH" in r.stdout
+
+
+def test_review_file_replaces_and_keeps(cli, project):
+    import os
+
+    (open(os.path.join(project, "spec.md"), "w")).close()
+    (open(os.path.join(project, "spec2.md"), "w")).close()
+
+    cli("ask", "review this", "--act", "review", "--agent", AGENT_A)
+    r1 = cli("review", "q1", "-f", "spec.md", "--json")
+    assert r1.returncode == 0
+    assert json.loads(r1.stdout)["files"] == [os.path.join(project, "spec.md")]
+
+    # Omitting -f keeps the existing list.
+    r2 = cli("review", "q1", "--pass", "looks good", "--json")
+    assert r2.returncode == 0
+    assert json.loads(r2.stdout)["files"] == [os.path.join(project, "spec.md")]
+
+    # A missing file refuses before anything else is written.
+    r3 = cli("review", "q1", "-f", "nope.md")
+    assert r3.returncode == 1
+    assert "no such file: nope.md" in r3.stderr
+
+
+def test_plan_file_replaces_and_keeps(cli, project):
+    import os
+
+    (open(os.path.join(project, "plan.md"), "w")).close()
+
+    cli("ask", "make a plan", "--act", "plan", "--agent", AGENT_A)
+    r1 = cli("plan", "q1", "-f", "plan.md", "--json")
+    assert r1.returncode == 0
+    assert json.loads(r1.stdout)["files"] == [os.path.join(project, "plan.md")]
+
+    # Omitting -f keeps the existing list.
+    r2 = cli("plan", "q1", "--step", "a", "--json")
+    assert r2.returncode == 0
+    assert json.loads(r2.stdout)["files"] == [os.path.join(project, "plan.md")]
+
+    r3 = cli("plan", "q1", "-f", "nope.md")
+    assert r3.returncode == 1
+    assert "no such file: nope.md" in r3.stderr
+
+
 def test_plan_done_and_undone_same_step_refused_and_reset_needs_step(cli):
     cli("ask", "make a plan", "--act", "plan", "--agent", AGENT_A)
 

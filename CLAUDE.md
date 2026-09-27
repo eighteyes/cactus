@@ -414,3 +414,20 @@ scope.
   instantly. Any non-digit key, row move, or a digit that cannot extend to a
   valid step number (`0` as the first digit, or a two-digit buffer) fires or
   cancels immediately — `_handle_step_digit`/`_resolve_step_buffer`.
+- `files` is an additive JSON-list column on `questions`; `cactus ask`/`edit`/
+  `review`/`plan` all take `-f/--file` (repeatable), and the CLI resolves each
+  path to absolute against cwd before writing, refusing a missing path, a
+  directory, or a duplicate after resolution — never the store's job.
+  `Store.edit`'s `files` follows `choices`' whole-list-replace semantics
+  (`None` keeps, a list replaces, `[]` clears); `review`/`plan` route through
+  `Store.set_files`, which refuses a `cleared` row like `set_review`/
+  `set_steps`. The TUI's `f`/`F` bind only on a row with files
+  (`check_action`); a one-file row runs immediately, a multi-file row arms
+  `file_pending` ("view"/"edit") and takes the next digit via
+  `action_select_choice` (which `check_action` also lets through while armed,
+  even on a row with no choices of its own) — any other key, or a row move,
+  disarms it (`on_event`'s pre-dispatch hook, mirroring the plan-step
+  buffer). Both actions run the external program under `App.suspend()`,
+  falling back on `SuspendNotSupported` (the headless test driver);
+  `CACTUS_PAGER`/`CACTUS_EDITOR` override the pager/editor template with
+  `{path}` substitution, and tests set them to an inert logging script.

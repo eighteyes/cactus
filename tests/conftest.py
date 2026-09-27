@@ -41,6 +41,8 @@ def scratch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, st
         "CACTUS_DB": str(tmp_path / "cactus.db"),
         "CACTUS_POKE": "true {agent} {message}",
         "CACTUS_VISIT": "true {pane}",
+        "CACTUS_PAGER": "true {path}",
+        "CACTUS_EDITOR": "true {path}",
         "CACTUS_RECORDS": "0",
     }
     for key, value in env.items():

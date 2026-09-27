@@ -18,6 +18,7 @@ import os
 import shlex
 import subprocess
 import sys
+import textwrap
 from typing import Any, Sequence
 
 from .scope import project_display, resolve_project
@@ -29,6 +30,9 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_TIMEOUT = 2
 EXIT_EMPTY = 3
+
+QUESTION_WIDTH = 80
+MAX_QUESTION_LINES = 3
 
 
 def _monitor_running(agent: str) -> bool:
@@ -75,6 +79,35 @@ def _remind_about_monitor(args: argparse.Namespace) -> None:
         file=sys.stderr,
     )
 
+
+def _wrapped_line_count(text: str, *, width: int = QUESTION_WIDTH) -> int:
+    """How many terminal lines a question occupies at the target width."""
+    logical_lines = text.splitlines() or [""]
+    return sum(
+        max(
+            1,
+            len(textwrap.wrap(
+                line,
+                width=width,
+                break_long_words=True,
+                break_on_hyphens=False,
+            )),
+        )
+        for line in logical_lines
+    )
+
+
+def _warn_long_question(q: Question) -> None:
+    """Nudge agents to split a question before it becomes a tall card."""
+    lines = _wrapped_line_count(q.text)
+    if lines <= MAX_QUESTION_LINES:
+        return
+    print(
+        f"cactus: {q.key} wraps to {lines} lines at {QUESTION_WIDTH} columns; "
+        f"keep questions to {MAX_QUESTION_LINES} lines or decompose them.",
+        file=sys.stderr,
+    )
+
 AGENT_HELP = """\
 NAME
   cactus — durable question inbox between agents and a human
@@ -91,15 +124,16 @@ WORKFLOW (required)
   elaborate event -> cactus edit KEY --agent ID
 
 SYNOPSIS
-  cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [options]
+  cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [-f PATH]... [options]
   cactus run CMD --agent ID [--cwd DIR] [--why X] [-t T]
              [--recommend approve|deny --confidence L]
   cactus get KEY... [-w] [--timeout S]
   cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
-  cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X] [--agent ID]
-  cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N] [--agent ID]
+  cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X] [-f PATH]... [--agent ID]
+  cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N] [-f PATH]... [--agent ID]
   cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
-  cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]...
+  cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]... [-f PATH]...
+                             (-f replaces the whole file list; omit to keep it)
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
   cactus reopen KEY... --agent ID
   cactus poke KEY | --agent ID
@@ -125,6 +159,7 @@ ACTS
 
 ASK OPTIONS
   -c LABEL[: DESC]           one choice, verbatim; repeat
+  -f PATH                    a file to preview/edit from the TUI; repeat
   --multi | --confirm        shape; text when no -c
   --kind choice|multi|text|confirm   override the inferred shape
   --act ACT                  default ask
@@ -141,6 +176,13 @@ ASK OPTIONS
   --title TEXT               button label; 60 chars max
   --by NAME                  default $CACTUS_AGENT
   --wait --timeout S
+
+FORMATTING
+  Write questions for an 80-column terminal. Keep a question within three
+  rendered lines (240 columns total); cactus warns after an ask or edit that
+  would wrap past that. Decompose a larger decision into follow-up questions.
+  Hard-wrap context and choice descriptions at 80 columns, and keep labels
+  short enough to leave room for their descriptions.
 
 STAMPS
   workspace tab pane session   from HERDR_WORKSPACE_ID HERDR_TAB_ID
@@ -199,6 +241,8 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         if q.thread:
             head += f"({q.thread})\t"
         print(f"{head}{indent}{q.text}")
+        for p in q.files:
+            print(f"\t\t{indent}  {'file':<8}{p}")
         if q.choices and q.status == "open":
             labels = " | ".join(c.label for c in q.choices)
             print(f"\t\t{indent}  choices: {labels}")
@@ -267,6 +311,25 @@ def _no_match() -> int:
     """One stderr line for every 'nothing matched' exit 3, text or --json alike."""
     print("cactus: no match", file=sys.stderr)
     return EXIT_EMPTY
+
+
+def _resolve_files(raw: Sequence[str] | None, *, cwd: str) -> list[str]:
+    """Resolve `-f/--file` paths to absolute, refusing anything unusable.
+
+    Raises ValueError (caught by every caller the same way as a bad ask())
+    for a missing path, a directory, or a duplicate after resolution.
+    """
+    resolved: list[str] = []
+    for original in raw or []:
+        path = os.path.abspath(os.path.join(cwd, original))
+        if not os.path.exists(path):
+            raise ValueError(f"no such file: {original}")
+        if os.path.isdir(path):
+            raise ValueError(f"not a file: {original}")
+        if path in resolved:
+            raise ValueError(f"duplicate file: {path}")
+        resolved.append(path)
+    return resolved
 
 
 def _emit_one(q: Question, *, as_json: bool) -> None:
@@ -385,6 +448,12 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             file=sys.stderr,
         )
         return EXIT_ERROR
+    if not store.project_enabled(project):
+        print(
+            "cactus: disabled for this project — run `cactus project activate` to reactivate it",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
 
     # Scope stamps, not arguments: herdr resolves a pane to an identity only
     # in the context of its session, so pane and session are stamped together
@@ -397,6 +466,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     session = os.environ.get("HERDR_SESSION") or None
 
     try:
+        files = _resolve_files(args.file, cwd=cwd)
         # -p accepts a bare key (this project), LABEL:qN, or /abs/path:qN
         # (q166); ambiguous labels and missing parents both raise here and
         # are reported the same way as any other bad ask().
@@ -428,11 +498,13 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             parent_project=parent_project,
             context=context,
             asked_by=args.by or os.environ.get("CACTUS_AGENT"),
+            files=files,
         )
     except (KeyError, ValueError) as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
 
+    _warn_long_question(q)
     if not args.wait:
         if args.json:
             _emit_one(q, as_json=True)
@@ -458,6 +530,12 @@ def cmd_run(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         print(
             "cactus: run needs --agent ID, the declared session identity — "
             "never a pane id",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    if not store.project_enabled(project):
+        print(
+            "cactus: disabled for this project — run `cactus project activate` to reactivate it",
             file=sys.stderr,
         )
         return EXIT_ERROR
@@ -668,10 +746,13 @@ def cmd_edit(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
             print(f"cactus: duplicate choice labels: {labels}", file=sys.stderr)
             return EXIT_ERROR
 
+    files = None
     try:
+        if args.file is not None:
+            files = _resolve_files(args.file, cwd=cwd)
         result = store.edit(
             rkey, agent=args.agent, project=rproj,
-            text=text, context=context, choices=choices,
+            text=text, context=context, choices=choices, files=files,
         )
     except KeyError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
@@ -679,6 +760,7 @@ def cmd_edit(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     except ValueError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
+    _warn_long_question(result)
     _emit_one(result, as_json=args.json)
     return EXIT_OK
 
@@ -709,6 +791,8 @@ def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -
         if msg is not None:
             print(msg, file=sys.stderr)
             return EXIT_ERROR
+        if args.file is not None:
+            store.set_files(rkey, _resolve_files(args.file, cwd=cwd), project=rproj)
         q = store.set_review(
             rkey,
             project=rproj,
@@ -758,6 +842,8 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         if msg is not None:
             print(msg, file=sys.stderr)
             return EXIT_ERROR
+        if args.file is not None:
+            store.set_files(rkey, _resolve_files(args.file, cwd=cwd), project=rproj)
         if args.step or args.reset_steps:
             store.set_steps(rkey, args.step or [], project=rproj, reset=args.reset_steps)
         q = store.get(rkey, project=rproj)
@@ -1043,10 +1129,41 @@ def cmd_projects(args: argparse.Namespace, store: Store, project: str, cwd: str)
         return _no_match()
     for r in rows:
         marker = "*" if r["project"] == project else " "
+        state = "active" if r["enabled"] else "ignored"
         print(
             f"{marker} {project_display(r['project'])}\t"
-            f"{r['open_count']} open\t{r['answered_count']} answered\t{r['last_activity']}"
+            f"{state}\t{r['open_count']} open\t{r['answered_count']} answered\t{r['last_activity']}"
         )
+    return EXIT_OK
+
+
+def cmd_project_status(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Expose the current project's hook switch for plugin hooks and diagnostics."""
+    if args.cwd:
+        project, _ = resolve_project(args.cwd)
+    info = {"project": project, "enabled": store.project_enabled(project)}
+    if args.json:
+        json.dump(info, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print(f"{project_display(project)}\t{'active' if info['enabled'] else 'ignored'}")
+    return EXIT_OK
+
+
+def cmd_project(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Inspect or change the current project's Cactus switch."""
+    if args.cwd:
+        project, _ = resolve_project(args.cwd)
+    if args.project_action == "activate":
+        store.set_project_enabled(project, True)
+    elif args.project_action == "ignore":
+        store.set_project_enabled(project, False)
+    info = {"project": project, "enabled": store.project_enabled(project)}
+    if args.json:
+        json.dump(info, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print(f"{project_display(project)}\t{'active' if info['enabled'] else 'ignored'}")
     return EXIT_OK
 
 
@@ -1192,6 +1309,8 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("-p", "--parent", help="attach as a follow-up to this question key")
     ask.add_argument("--context", help="supporting detail shown under the question, or -")
     ask.add_argument("--by", help="who is asking (default: $CACTUS_AGENT)")
+    ask.add_argument("-f", "--file", action="append",
+                     help="a file the human may preview or edit; repeat for more")
     ask.add_argument("-w", "--wait", action="store_true", help="block until answered")
     ask.add_argument("--timeout", type=float, help="seconds to wait before giving up")
     ask.set_defaults(fn=cmd_ask)
@@ -1251,6 +1370,9 @@ def build_parser() -> argparse.ArgumentParser:
     ed.add_argument("-c", "--choice", action="append",
                     help="one choice, taken verbatim; repeat. Replaces the whole "
                          "list; a recommendation naming a dropped label is cleared")
+    ed.add_argument("-f", "--file", action="append",
+                    help="a file the human may preview or edit; repeat. Replaces "
+                         "the whole list")
     ed.set_defaults(fn=cmd_edit)
 
     clr = verb("clear", help="retire questions from the inbox")
@@ -1311,6 +1433,9 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--fail", help="what disqualifies it")
     rv.add_argument("--then", help="what to set up next")
     rv.add_argument("--agent", help="refuse if the row is owned by a different agent")
+    rv.add_argument("-f", "--file", action="append",
+                    help="a file the human may preview or edit; repeat. Replaces "
+                         "the whole list; omit to keep it")
     rv.set_defaults(fn=cmd_review)
 
     pl = verb("plan", parents=[common], help="set or tick the steps on a plan row")
@@ -1322,6 +1447,9 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--done", action="append", type=int, help="tick this step, 1-based")
     pl.add_argument("--undone", action="append", type=int, help="untick this step, 1-based")
     pl.add_argument("--agent", help="refuse if the row is owned by a different agent")
+    pl.add_argument("-f", "--file", action="append",
+                    help="a file the human may preview or edit; repeat. Replaces "
+                         "the whole list; omit to keep it")
     pl.set_defaults(fn=cmd_plan)
 
     th = verb("threads", help="list threads")
@@ -1330,6 +1458,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     pr = verb("projects", help="list projects with questions")
     pr.set_defaults(fn=cmd_projects)
+
+    ps = verb("project-status", help="report whether Cactus hooks are active here")
+    ps.add_argument("--cwd", help="project directory to inspect (default: caller's cwd)")
+    ps.set_defaults(fn=cmd_project_status)
+
+    pj = verb("project", help="inspect or change this project's Cactus state")
+    pj.add_argument("project_action", nargs="?", choices=["status", "activate", "ignore"],
+                    default="status")
+    pj.add_argument("--cwd", help="project directory to change (default: caller's cwd)")
+    pj.set_defaults(fn=cmd_project)
 
     wh = verb("where", help="print the db path and resolved project")
     wh.set_defaults(fn=cmd_where)

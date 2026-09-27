@@ -17,7 +17,7 @@ import time
 from typing import Any, Iterable
 
 from .scope import project_label
-from .store import CONFIDENCE_GLYPH, Question, Store
+from .store import ACTIONABLE, CONFIDENCE_GLYPH, Question, Store
 
 DEFAULT_INTERVAL = 1.0
 
@@ -64,6 +64,7 @@ def _signature(q: Question) -> tuple[Any, ...]:
         tuple(q.recommend),
         q.confidence,
         q.recommend_why,
+        tuple(q.files),
         # withdrawn vs edited (q228): which action last moved this row out
         # of `elaborate`. Kept ahead of the last two slots below.
         q.last_change,
@@ -116,12 +117,16 @@ def _transition_event(before: tuple[Any, ...], q: Question) -> str:
         # `last_change` (q228), stamped by whichever of the two ran, tells
         # them apart.
         return "withdrawn" if q.last_change == "withdrawn" else "edited"
-    edited_fields = (before[1], before[6], before[7], before[8])
-    after_fields = (q.text, tuple(c.label for c in q.choices), q.context, tuple(q.recommend))
+    edited_fields = (before[1], before[6], before[7], before[8], before[11])
+    after_fields = (
+        q.text, tuple(c.label for c in q.choices), q.context, tuple(q.recommend),
+        tuple(q.files),
+    )
     if was_status == q.status and edited_fields != after_fields:
         # A plain in-place `edit` on a row that never went through
-        # `elaborate` — text/context/choices/recommend are the only fields
-        # `edit` ever touches, and nothing else changes them after `ask`.
+        # `elaborate` — text/context/choices/recommend/files are the only
+        # fields `edit` ever touches, and nothing else changes them after
+        # `ask` (review/plan -f go through the same files slot).
         return "edited"
     if was_status != q.status:
         # Leaving `cleared` is always a restore, whatever status it lands on —
@@ -173,16 +178,20 @@ def _display_key(project: str, key: str, *, show_project: bool) -> str:
     return f"{project_label(project)}:{key}" if show_project else key
 
 
-def _line(q: Question, event: str, *, show_project: bool) -> str:
+def _line(
+    q: Question, event: str, *, show_project: bool, open_ids: list[str]
+) -> str:
     # The act is on every line: a watcher filtering for its own review rows
     # should not have to fetch each key to learn what kind of row it is.
     key = _display_key(q.project, q.key, show_project=show_project)
-    return f"{key}  {event:<9}{q.act:<7}{_detail(q, event)}"
+    suffix = f"  open: {', '.join(open_ids) or '-'}"
+    return f"{key}  {event:<9}{q.act:<7}{_detail(q, event)}{suffix}"
 
 
-def _record(q: Question, event: str) -> dict[str, Any]:
+def _record(q: Question, event: str, *, open_ids: list[str]) -> dict[str, Any]:
     payload = q.as_dict()
     payload["event"] = event
+    payload["open_ids"] = open_ids
     if event == "elaborate":
         # Named exactly as the spec calls for, alongside the row's own
         # `elaborate`/`elaborate_at` fields already in `payload` — `hint` is
@@ -192,21 +201,36 @@ def _record(q: Question, event: str) -> dict[str, Any]:
     return payload
 
 
-def _emit(q: Question, event: str, *, as_json: bool, show_project: bool) -> None:
+def _emit(
+    q: Question,
+    event: str,
+    *,
+    as_json: bool,
+    show_project: bool,
+    open_ids: list[str],
+) -> None:
     if as_json:
-        print(json.dumps(_record(q, event)), flush=True)
+        print(json.dumps(_record(q, event, open_ids=open_ids)), flush=True)
     else:
-        print(_line(q, event, show_project=show_project), flush=True)
+        print(_line(q, event, show_project=show_project, open_ids=open_ids), flush=True)
 
 
-def _emit_gone(project: str, key: str, *, as_json: bool, show_project: bool) -> None:
+def _emit_gone(
+    project: str,
+    key: str,
+    *,
+    as_json: bool,
+    show_project: bool,
+    open_ids: list[str],
+) -> None:
     if as_json:
-        payload = {"key": key, "event": "gone"}
+        payload = {"key": key, "event": "gone", "open_ids": open_ids}
         if show_project:
             payload["ref"] = _display_key(project, key, show_project=True)
         print(json.dumps(payload), flush=True)
     else:
-        print(f"{_display_key(project, key, show_project=show_project)}  gone", flush=True)
+        ident = _display_key(project, key, show_project=show_project)
+        print(f"{ident}  gone  open: {', '.join(open_ids) or '-'}", flush=True)
 
 
 def _scope_of(q: Question) -> tuple[str | None, str | None, str | None, str | None]:
@@ -274,12 +298,24 @@ def run_monitor(
             and (pane is None or pn == pane)
         )
 
+    def open_ids(rows: Iterable[Question]) -> list[str]:
+        """Actionable row IDs the watching agent can act on right now."""
+        return [
+            _display_key(q.project, q.key, show_project=all_projects)
+            for q in rows
+            if q.status in ACTIONABLE and owned(_scope_of(q))
+        ]
+
     current = fetch()
+    current_open_ids = open_ids(current)
     if replay:
         for q in current:
             if owned(_scope_of(q)):
                 event = _arrival_event(q)
-                _emit(q, event, as_json=as_json, show_project=all_projects)
+                _emit(
+                    q, event, as_json=as_json, show_project=all_projects,
+                    open_ids=current_open_ids,
+                )
                 if once and event != "asked":
                     return 0
     seen = _snapshot(current)
@@ -293,6 +329,7 @@ def run_monitor(
                 continue
             cursor = now
             questions = fetch()
+            current_open_ids = open_ids(questions)
             live = {(q.project, q.key) for q in questions}
             fired = False
             for q in questions:
@@ -316,14 +353,22 @@ def run_monitor(
                     # knows, and every line lands in its conversation.
                     # `--replay` above still lists the inbox on request.
                     if not (agent is not None and event == "asked"):
-                        _emit(q, event, as_json=as_json, show_project=all_projects)
+                        _emit(
+                            q, event, as_json=as_json, show_project=all_projects,
+                            open_ids=current_open_ids,
+                        )
                     if event != "asked":
                         fired = True
                 seen[ident] = (scope, signature)
             for ident in [k for k in seen if k not in live]:
                 scope, _ = seen[ident]
                 if owned(scope):
-                    _emit_gone(*ident, as_json=as_json, show_project=all_projects)
+                    _emit_gone(
+                        *ident,
+                        as_json=as_json,
+                        show_project=all_projects,
+                        open_ids=current_open_ids,
+                    )
                     fired = True
                 del seen[ident]
             if once and fired:

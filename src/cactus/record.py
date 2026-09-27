@@ -203,6 +203,10 @@ def render(
     if row.context:
         parts += ["", "## Context", "", row.context]
 
+    if row.files:
+        parts += ["", "## Files", ""]
+        parts += [f"- {p}" for p in row.files]
+
     option_lines = _option_lines(row)
     if option_lines:
         parts += ["", "## Options", ""]
@@ -267,6 +271,10 @@ def render(
                 if c.description:
                     line += f" — {c.description}"
                 parts.append(line)
+        prior_files = prior.get("files") or []
+        if prior_files:
+            parts += ["", "files were:"]
+            parts += [f"- {p}" for p in prior_files]
 
     return "\n".join(parts) + "\n"
 

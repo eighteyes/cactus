@@ -144,8 +144,12 @@ cactus edit q7 --agent ID --context "…"                # answer an elaborate r
 # TUI: D on q7 requests smaller follow-ups; agent asks them with -p q7, then clears q7
 cactus plan q9 --step "write code" --step "test it" --done 1   # steps are 1-based
 cactus review q9 --look-at "login form" --run "echo OK" --pass "prints OK" --fail "anything else"
+cactus ask "Fix this file?" -f src/app.py -f README.md --agent ID   # attach files
 cactus clear q7 --agent ID                             # once acted on
 ```
+
+`f`/`F` in the TUI preview (pager) / edit (editor) a row's attached file; a
+row with more than one arms a digit pick.
 
 Full reference: `cactus --agent-help`.
 

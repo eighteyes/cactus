@@ -299,3 +299,160 @@ async def test_visit_flashes_on_a_row_posted_outside_herdr(store: Store, project
         await pilot.pause()
         assert app.flash == f"{q.key} was posted outside herdr; nothing to visit"
 
+
+def _logging_script(tmp_path: Path) -> tuple[Path, Path]:
+    """A tiny shell script that appends its argv to a log file."""
+    log = tmp_path / "log.txt"
+    script = tmp_path / "logit.sh"
+    script.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\n')
+    script.chmod(0o755)
+    return script, log
+
+
+async def test_footer_shows_f_and_ff_only_on_a_row_with_files(store: Store, project: str) -> None:
+    store.ask("no files", project=project, cwd=project, agent=AGENT)
+    store.ask("has files", project=project, cwd=project, agent=AGENT, files=["/tmp/x"])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "f" not in footer_keys(app)
+
+        await pilot.press("j")
+        await pilot.pause()
+        assert "f" in footer_keys(app)
+
+
+async def test_view_file_flashes_when_row_carries_no_file(store: Store, project: str) -> None:
+    q = store.ask("no files", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.flash == f"{q.key} carries no file"
+
+
+async def test_view_file_one_file_row_calls_pager_immediately(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_PAGER", f"{script} {{path}}")
+
+    target = tmp_path / "a.txt"
+    target.write_text("hi")
+    store.ask("one file", project=project, cwd=project, agent=AGENT, files=[str(target)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+
+    assert log.read_text().strip() == str(target)
+
+
+async def test_view_edit_two_file_row_digit_picks_the_file(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_PAGER", f"{script} {{path}}")
+    monkeypatch.setenv("CACTUS_EDITOR", f"{script} {{path}}")
+
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    q = store.ask(
+        "two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.file_pending == "view"
+        await pilot.press("2")
+        await pilot.pause()
+        assert app.file_pending is None
+
+        await pilot.press("F")
+        await pilot.pause()
+        assert app.file_pending == "edit"
+        await pilot.press("1")
+        await pilot.pause()
+        assert app.file_pending is None
+
+    lines = [line.strip() for line in log.read_text().splitlines()]
+    assert lines == [str(two), str(one)]
+    assert f"{q.key} has no file" not in app.flash
+
+
+async def test_view_file_disarmed_by_an_unrelated_key(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_PAGER", f"{script} {{path}}")
+
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    store.ask("two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.file_pending == "view"
+
+        await pilot.press("j")
+        await pilot.pause()
+        assert app.file_pending is None
+
+    assert not log.exists()
+
+
+async def test_view_file_out_of_range_digit_flashes(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_PAGER", f"{script} {{path}}")
+
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    q = store.ask("two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("9")
+        await pilot.pause()
+        assert app.flash == f"{q.key} has no file 9"
+        assert app.file_pending is None
+
+    assert not log.exists()
+
+
+async def test_card_shows_numbered_file_list(store: Store, project: str) -> None:
+    store.ask(
+        "files here", project=project, cwd=project, agent=AGENT,
+        files=["/tmp/a", "/tmp/b"],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = str(app.query_one("#card", Static).content)
+
+    assert f"  {'files':<8}1 /tmp/a" in text
+    assert f"  {'':<8}2 /tmp/b" in text
+

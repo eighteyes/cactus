@@ -167,3 +167,27 @@ def test_replay_emits_current_open_rows_as_asked(scratch_env, project, store):
 
     asked = [e for e in events if e["event"] == "asked" and e["key"] == q.key]
     assert len(asked) == 1
+
+
+def test_files_only_edit_reads_as_edited(scratch_env, project, store, tmp_path):
+    # `files` is in the signature: an edit that changes nothing but the file
+    # list must still surface, or the human's board shows stale paths.
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    proc = start_monitor(scratch_env, project, "--agent", "agent-a")
+    try:
+        wait_a_tick()
+        q = store.ask(
+            "look at this", project=project, cwd=project, agent="agent-a",
+            files=[str(one)],
+        )
+        wait_a_tick()
+        store.edit(q.key, agent="agent-a", project=project, files=[str(two)])
+        wait_a_tick()
+    finally:
+        events = stop_and_read(proc)
+
+    mine = [e for e in events if e.get("key") == q.key]
+    assert any(e["event"] == "edited" for e in mine)

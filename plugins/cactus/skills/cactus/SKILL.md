@@ -45,6 +45,9 @@ fine, but no more. Cactus warns after an ask or edit that wraps past three
 lines; decompose a larger decision into follow-ups. Hard-wrap context and
 choice descriptions at 80 columns and keep choice labels short.
 
+`-f PATH` attaches a file the human can preview or edit from the TUI; repeat
+for more. `edit -f` replaces the list.
+
 The `UserPromptSubmit` hook injects your outstanding frontier. The opt-in `Stop`
 hook (`CACTUS_STOP_HOOK=1`) continues the turn when rows are open without a
 monitor. The `PermissionRequest`
