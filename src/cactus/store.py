@@ -1585,10 +1585,13 @@ class Store:
         return [self._hydrate(r) for r in rows]
 
     def projects(self) -> list[dict[str, Any]]:
-        """Projects with live questions, counted by status, busiest first.
+        """Projects with live questions, counted by status, ranked by rows due.
 
         Cleared questions are excluded outright — a project whose whole inbox has
-        been retired should not keep a row in the rail.
+        been retired should not keep a row in the rail. `due_count` is
+        `open + elaborate` (q351) — `live` is re-answerable but never blocks
+        anyone, so it stays out of what "due" means; the projects page and the
+        projects pane both rank by it.
         """
         rows = self.conn.execute(
             """
@@ -1601,18 +1604,44 @@ class Store:
                    COALESCE(project_settings.enabled, 1) AS enabled,
                    SUM(CASE WHEN questions.status = 'open' THEN 1 ELSE 0 END) AS open_count,
                    SUM(CASE WHEN questions.status = 'live' THEN 1 ELSE 0 END) AS live_count,
+                   SUM(CASE WHEN questions.status = 'elaborate' THEN 1 ELSE 0 END) AS elaborate_count,
                    SUM(CASE WHEN questions.status = 'answered' THEN 1 ELSE 0 END) AS answered_count,
                    COUNT(questions.id) AS total,
-                   MAX(questions.updated_at) AS last_activity
+                   MAX(questions.updated_at) AS last_activity,
+                   SUM(CASE WHEN questions.status IN ('open', 'elaborate') THEN 1 ELSE 0 END) AS due_count
             FROM known_projects
             LEFT JOIN project_settings ON project_settings.project = known_projects.project
             LEFT JOIN questions ON questions.project = known_projects.project
                               AND questions.status != 'cleared'
             GROUP BY known_projects.project
-            ORDER BY open_count DESC, live_count DESC, last_activity DESC
+            ORDER BY due_count DESC, last_activity DESC
             """
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def history(self, project: str, limit: int = 200) -> list[Question]:
+        """Answered and cleared rows that carry at least one verdict (q347).
+
+        The answers view's backing query: newest-verdict-first, where "newest"
+        is the latest answer's own timestamp, not the row's `updated_at` — a
+        persistent row's most recent verdict is what should sort it, not the
+        last time anything else touched the row. A cleared or answered row with
+        no answer at all (dismissed, purely skipped-and-cleared) is history of
+        nothing and stays out.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT q.*, MAX(a.created_at) AS latest_answer_at
+            FROM questions q
+            JOIN answers a ON a.question_id = q.id
+            WHERE q.project = ? AND q.status IN ('answered', 'cleared')
+            GROUP BY q.id
+            ORDER BY latest_answer_at DESC
+            LIMIT ?
+            """,
+            (project, int(limit)),
+        ).fetchall()
+        return [self._hydrate(r) for r in rows]
 
     def project_enabled(self, project: str) -> bool:
         """Whether Cactus hooks are active for this project (default: active)."""

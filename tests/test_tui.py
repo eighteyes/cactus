@@ -471,3 +471,202 @@ async def test_card_shows_numbered_file_list(store: Store, project: str) -> None
 
     assert f"  {'files':<8}1 /tmp/a" in text
     assert f"  {'':<8}2 /tmp/b" in text
+
+
+# The answers view and projects pane (sublists) are a separate change; until
+# they land these tests skip rather than fail, and start running the moment
+# they do — same reasoning as `needs_projects_pane`.
+needs_sublists = pytest.mark.skipif(
+    not hasattr(CactusApp, "action_open_answers"),
+    reason="answers view / projects pane not in this checkout",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_tui_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_tui_settings_path` reads/writes real `~/.config/cactus/tui.json` by
+    default; any test that flips a persisted setting (orientation, figlet, the
+    projects pane) must never touch the human's own file.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
+@needs_sublists
+async def test_projects_pane_shows_due_ranked_projects_marks_current(
+    store: Store, project: str, tmp_path: Path
+) -> None:
+    busier = tmp_path / "busier"
+    busier.mkdir()
+    busier_project = str(busier)
+    store.ask("only one due", project=project, cwd=project, agent=AGENT)
+    for _ in range(3):
+        store.ask("busier", project=busier_project, cwd=busier_project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = str(app.query_one("#projects-pane", Static).content)
+
+    lines = [l for l in text.splitlines() if l.strip()]
+    # Busiest project (3 due) ranks before the current one (1 due), which
+    # still carries the ▸ marker even though it isn't first.
+    assert lines[0].strip().endswith("3")
+    assert any(l.startswith("▸") and l.strip().endswith("1") for l in lines)
+
+
+@needs_sublists
+async def test_projects_pane_hidden_in_bottom_orientation(store: Store, project: str) -> None:
+    store.ask("hi", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.query_one("#projects-pane", Static).display is True
+
+        await pilot.press("?")
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.pause()
+        assert app.query_one("#projects-pane", Static).display is False
+
+
+@needs_sublists
+async def test_projects_pane_settings_toggle_persists(
+    store: Store, project: str
+) -> None:
+    store.ask("hi", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.tui_settings["projects_pane"] is True
+
+        await pilot.press("?")
+        await pilot.pause()
+        await pilot.press("3")
+        await pilot.pause()
+        assert app.tui_settings["projects_pane"] is False
+        assert app.query_one("#projects-pane", Static).display is False
+
+    second = CactusApp(store, project=project)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        assert second.tui_settings["projects_pane"] is False
+
+
+@needs_sublists
+async def test_answers_view_opens_shows_history_closes_on_a(
+    store: Store, project: str
+) -> None:
+    answered = store.ask("answer me", project=project, cwd=project, agent=AGENT)
+    store.answer(answered.key, project=project, text="yep")
+    cleared = store.ask("clear me", project=project, cwd=project, agent=AGENT)
+    store.answer(cleared.key, project=project, text="verdict")
+    store.clear(keys=[cleared.key], project=project)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.answers_open is False
+
+        await pilot.press("a")
+        await pilot.pause()
+        assert app.answers_open is True
+        text = str(app.query_one("#answers-panel", Static).content)
+        assert answered.key in text
+        assert cleared.key in text
+        assert "cleared" in text
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.answers_open is False
+
+
+@needs_sublists
+async def test_answers_view_enter_expands_selected_row(store: Store, project: str) -> None:
+    q = store.ask("expand me", project=project, cwd=project, agent=AGENT, context="the context")
+    store.answer(q.key, project=project, text="the verdict")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert "the context" not in str(app.query_one("#answers-panel", Static).content)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.answers_expanded is True
+        assert "the context" in str(app.query_one("#answers-panel", Static).content)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.answers_expanded is False
+
+
+@needs_sublists
+async def test_answers_view_brackets_rotate_project(
+    store: Store, project: str, tmp_path: Path
+) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    other_project = str(other)
+    here = store.ask("here", project=project, cwd=project, agent=AGENT)
+    store.answer(here.key, project=project, text="ok")
+    elsewhere = store.ask("elsewhere", project=other_project, cwd=other_project, agent=AGENT)
+    store.answer(elsewhere.key, project=other_project, text="ok")
+
+    app = CactusApp(store, project=None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.current_project = project
+        await pilot.press("a")
+        await pilot.pause()
+        assert [q.key for q in app.answers_rows] == [here.key]
+
+        await pilot.press("]")
+        await pilot.pause()
+        assert app.current_project == other_project
+        assert [q.key for q in app.answers_rows] == [elsewhere.key]
+
+
+@needs_sublists
+async def test_typing_blocks_answers_view_and_letters_land_in_input(
+    store: Store, project: str
+) -> None:
+    store.ask("type here", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert app.free_text_mode is True
+
+        await pilot.press("a")
+        await pilot.pause()
+        assert app.answers_open is False
+
+        from textual.widgets import Input
+        assert app.query_one("#answer-input", Input).value == "a"
+
+
+@needs_sublists
+async def test_opening_projects_and_answers_panels_are_mutually_exclusive(
+    store: Store, project: str
+) -> None:
+    q = store.ask("hi", project=project, cwd=project, agent=AGENT)
+    store.answer(q.key, project=project, text="ok")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert app.answers_open is True
+
+        await pilot.press("P")
+        await pilot.pause()
+        assert app.answers_open is False
+        assert app.projects_open is True
+        assert app.query_one("#answers-panel", Static).display is False

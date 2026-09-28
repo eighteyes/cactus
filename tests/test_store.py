@@ -7,6 +7,8 @@ Responsibilities:
 - Exercise persistent (review/plan) rows: born live, repeatably answerable.
 - Exercise reopen()'s two paths: withdraw an answer, restore a cleared row.
 - Exercise projects()/project_enabled()/set_project_enabled() persistence.
+- Exercise projects()'s due_count (open+elaborate, live excluded) and ordering.
+- Exercise history(): answered/cleared rows with a verdict, newest first, scoped.
 - Exercise ask()'s act/kind shape refusal and Store("")'s empty-path refusal.
 """
 
@@ -168,6 +170,71 @@ def test_set_project_enabled_persists_across_store_instances(
         assert second.project_enabled(project) is False
     finally:
         second.close()
+
+
+def test_projects_due_count_is_open_plus_elaborate_live_excluded(
+    store: Store, project: str
+) -> None:
+    """due_count (q351) is open+elaborate; a live review never counts toward it."""
+    open_q = store.ask("open one", project=project, cwd=project, agent=AGENT)
+    elaborate_q = store.ask("elaborate me", project=project, cwd=project, agent=AGENT)
+    store.elaborate_request(elaborate_q.key, project=project)
+    store.ask(
+        "review this", project=project, cwd=project, agent=AGENT,
+        kind="confirm", act="review", choices=[Choice("pass"), Choice("fail")],
+    )
+
+    row = next(r for r in store.projects() if r["project"] == project)
+    assert row["open_count"] == 1
+    assert row["elaborate_count"] == 1
+    assert row["live_count"] == 1
+    assert row["due_count"] == 2
+
+
+def test_projects_ordered_by_due_count_descending(store: Store, project: str, tmp_path: Path) -> None:
+    quiet = tmp_path / "quiet"
+    quiet.mkdir()
+    store.ask("only one due", project=str(quiet), cwd=str(quiet), agent=AGENT)
+    for _ in range(3):
+        store.ask("busier", project=project, cwd=project, agent=AGENT)
+
+    rows = store.projects()
+    assert rows[0]["project"] == project
+    assert rows[0]["due_count"] == 3
+
+
+def test_history_newest_verdict_first_answered_and_cleared_only(
+    store: Store, project: str
+) -> None:
+    answered = store.ask("first", project=project, cwd=project, agent=AGENT)
+    store.answer(answered.key, project=project, text="an answer")
+
+    cleared = store.ask("second", project=project, cwd=project, agent=AGENT)
+    store.answer(cleared.key, project=project, text="verdict before clearing")
+    store.clear(keys=[cleared.key], project=project)
+
+    never_answered = store.ask("third", project=project, cwd=project, agent=AGENT)
+    store.clear(keys=[never_answered.key], project=project)
+
+    rows = store.history(project)
+    keys = [q.key for q in rows]
+    # cleared's answer landed after answered's, so it sorts first; a cleared
+    # row with no verdict at all never appears.
+    assert keys == [cleared.key, answered.key]
+    assert rows[0].status == "cleared"
+    assert rows[0].answers[-1].text == "verdict before clearing"
+
+
+def test_history_scoped_to_project(store: Store, project: str, tmp_path: Path) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    other_project = str(other)
+    here = store.ask("here", project=project, cwd=project, agent=AGENT)
+    store.answer(here.key, project=project, text="ok")
+    elsewhere = store.ask("elsewhere", project=other_project, cwd=other_project, agent=AGENT)
+    store.answer(elsewhere.key, project=other_project, text="ok")
+
+    assert [q.key for q in store.history(project)] == [here.key]
 
 
 def test_ask_refuses_kind_not_in_act_shape(store: Store, project: str) -> None:

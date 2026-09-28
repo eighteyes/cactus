@@ -9,7 +9,10 @@ Responsibilities:
 - Poll the store's change cursor and refresh the view without losing focus or
   in-progress input.
 - Provide project switching, skip, and clear actions, plus key-hint and count footers.
-- Show a dedicated Projects pane where Cactus can be ignored or reactivated per project.
+- Show a dedicated Projects page where Cactus can be ignored or reactivated per
+  project, and a smaller due-ranked projects pane beside the rail as a preview.
+- Show an answers view (`a`) of this project's history — answered and cleared
+  rows with a verdict — newest verdict first.
 - Let a human ask an agent to rewrite a row (`e`) and withdraw that request
   (`u`) before the agent addresses it.
 """
@@ -20,6 +23,7 @@ import dataclasses
 import json
 import os
 import subprocess
+from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -36,7 +40,7 @@ from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
 
 POLL_INTERVAL = 0.5
 
-TUI_SETTINGS_DEFAULTS = {"orientation": "side", "figlet_header": False}
+TUI_SETTINGS_DEFAULTS = {"orientation": "side", "figlet_header": False, "projects_pane": True}
 
 
 def _tui_settings_path() -> Path:
@@ -55,6 +59,8 @@ def _load_tui_settings() -> dict[str, Any]:
         settings["orientation"] = data["orientation"]
     if isinstance(data, dict) and isinstance(data.get("figlet_header"), bool):
         settings["figlet_header"] = data["figlet_header"]
+    if isinstance(data, dict) and isinstance(data.get("projects_pane"), bool):
+        settings["projects_pane"] = data["projects_pane"]
     return settings
 
 
@@ -165,6 +171,24 @@ def _digit_range(n: int) -> str:
     """The digit keys a row answers to — `1`, or `1-n`. Only nine keys exist."""
     n = min(n, 9)
     return "1" if n <= 1 else f"1-{n}"
+
+
+def _relative_age(ts: str) -> str:
+    """Compact age — `45s`/`12m`/`3h`/`2d` — for a timeline reading, not a clock."""
+    try:
+        then = datetime.fromisoformat(ts)
+    except ValueError:
+        return "?"
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    delta = max(0.0, (datetime.now(timezone.utc) - then).total_seconds())
+    if delta < 60:
+        return f"{int(delta)}s"
+    if delta < 3600:
+        return f"{int(delta // 60)}m"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h"
+    return f"{int(delta // 86400)}d"
 
 
 def _confirm_pairs(q: Question) -> tuple[tuple[str, str], ...]:
@@ -448,6 +472,16 @@ class CactusApp(App[int]):
     #body.bottom {
         layout: vertical;
     }
+    #projects-pane {
+        width: 22;
+        border-right: solid $panel;
+        padding: 0 1;
+        overflow-y: auto;
+        color: $text-muted;
+    }
+    #body.bottom #projects-pane {
+        display: none;
+    }
     #rail {
         width: 32;
         border-right: solid $panel;
@@ -514,6 +548,14 @@ class CactusApp(App[int]):
         padding: 1 2;
         overflow-y: auto;
     }
+    #answers-panel {
+        display: none;
+        height: 1fr;
+        border: round $accent;
+        margin: 1 2;
+        padding: 1 2;
+        overflow-y: auto;
+    }
     #card {
         border: round $accent;
         padding: 0 2;
@@ -555,6 +597,7 @@ class CactusApp(App[int]):
         Binding("[", "prev_project", "PrevProj", key_display="["),
         Binding("]", "next_project", "NextProj", key_display="]"),
         Binding("P", "open_projects", "Projects"),
+        Binding("a", "open_answers", "Answers"),
         Binding("I", "ignore_project", "Ignore"),
         Binding("A", "activate_project", "Activate"),
         Binding("u", "undo", "Undo"),
@@ -609,6 +652,13 @@ class CactusApp(App[int]):
         self.projects_open = False
         self.project_rows: list[dict[str, Any]] = []
         self.project_index = 0
+        # answers_open follows the exact pattern settings_open/projects_open
+        # use (q354 vetoed a `view` enum): the three panel booleans are
+        # mutually exclusive, never more than one true at a time.
+        self.answers_open = False
+        self.answers_rows: list[Question] = []
+        self.answers_index = 0
+        self.answers_expanded = False
         self._figlet_label: str | None = None
         self._figlet_text = ""
         self.free_text_mode = False
@@ -657,6 +707,7 @@ class CactusApp(App[int]):
         yield Header(icon="")
         yield Static(id="project-banner", markup=False)
         with Horizontal(id="body"):
+            yield Static(id="projects-pane", markup=False)
             with Vertical(id="rail"):
                 yield Static(id="project-head", markup=False)
                 yield RailList(id="rail-list")
@@ -666,6 +717,7 @@ class CactusApp(App[int]):
                 yield Static("inbox empty — waiting for questions", id="empty-state")
         yield Static(id="settings-panel", markup=False)
         yield Static(id="projects-panel", markup=False)
+        yield Static(id="answers-panel", markup=False)
         yield Static(id="status-bar", markup=False)
         yield Footer()
 
@@ -688,6 +740,7 @@ class CactusApp(App[int]):
         body = self.query_one("#body", Horizontal)
         body.set_class(self.tui_settings["orientation"] == "bottom", "bottom")
         self._rebuild_project_banner()
+        self._rebuild_projects_pane()
 
     def _rebuild_project_banner(self) -> None:
         banner = self.query_one("#project-banner", Static)
@@ -704,28 +757,39 @@ class CactusApp(App[int]):
     def _settings_text(self) -> str:
         orientation = self.tui_settings["orientation"]
         figlet = "on" if self.tui_settings["figlet_header"] else "off"
+        pane = "on" if self.tui_settings["projects_pane"] else "off"
         return "\n".join([
             "settings",
             "",
             f"1  left / right   questions left, detail right  {'●' if orientation == 'side' else '○'}",
             f"2  under / over   detail above, questions bottom {'●' if orientation == 'bottom' else '○'}",
+            f"3  projects pane  due-ranked, left of the rail    {pane}",
             f"f  Figlet project header (cybermedium)            {figlet}",
             "",
             "esc or ?  return to the inbox",
         ])
 
     def _projects_text(self) -> str:
-        """Render all known projects, including ignored and currently quiet ones."""
+        """Render all known projects, including ignored and currently quiet ones.
+
+        Line: `▸ label  active  N due · N live · N answered  3m` — due leads
+        because it is what ranks the list (q349/q351); the relative last
+        activity (`_relative_age`) trails, same reading order as the answers
+        view's own line.
+        """
         if not self.project_rows:
             return "projects\n\nno projects yet\n\nesc or P  return to inbox"
         lines = ["projects", ""]
         for i, row in enumerate(self.project_rows):
             marker = "▸" if i == self.project_index else " "
             state = "active" if row["enabled"] else "ignored"
-            counts = f"{row['open_count']} open"
+            counts = f"{row['due_count']} due"
             if row["live_count"]:
                 counts += f" · {row['live_count']} live"
-            lines.append(f"{marker} {project_label(row['project'])}  {state}  {counts}")
+            if row["answered_count"]:
+                counts += f" · {row['answered_count']} answered"
+            age = f"  {_relative_age(row['last_activity'])}" if row["last_activity"] else ""
+            lines.append(f"{marker} {project_label(row['project'])}  {state}  {counts}{age}")
         lines.extend(["", "j/k or ↑/↓ move   enter open   I ignore   A activate", "esc or P  return to inbox"])
         return "\n".join(lines)
 
@@ -737,8 +801,98 @@ class CactusApp(App[int]):
             self.project_index = 0
         self.query_one("#projects-panel", Static).update(self._projects_text())
 
+    def _rebuild_projects_pane(self) -> None:
+        """The main-screen projects pane (q349/q352): due-ranked, left of the rail.
+
+        Read-only and never focused — it is a preview, not a second way to
+        answer. Hidden in `bottom` orientation (there is no room beside the
+        rail there) and behind the settings `3` toggle. Never shifts the rail
+        rows: it lives in its own column of `#body`, beside the rail, not
+        stacked above it.
+        """
+        pane = self.query_one("#projects-pane", Static)
+        visible = self.tui_settings["projects_pane"] and self.tui_settings["orientation"] != "bottom"
+        pane.display = visible
+        if not visible:
+            return
+        rows = [r for r in self.store.projects() if r["enabled"]]
+        lines = []
+        for row in rows:
+            marker = "▸" if row["project"] == self.current_project else " "
+            lines.append(f"{marker} {project_label(row['project'])}  {row['due_count']}")
+        pane.update("\n".join(lines))
+
+    def _toggle_projects_pane(self) -> None:
+        self.tui_settings["projects_pane"] = not self.tui_settings["projects_pane"]
+        self._apply_tui_settings()
+        self._save_settings()
+        self._render_settings()
+
     def _render_settings(self) -> None:
         self.query_one("#settings-panel", Static).update(self._settings_text())
+
+    # ---- answers view (`a`) --------------------------------------------
+
+    def _load_answers(self) -> None:
+        """Reload this view's rows from the store: current project only (q353)."""
+        self.answers_rows = (
+            self.store.history(self.current_project, limit=200)
+            if self.current_project else []
+        )
+        if self.answers_rows:
+            self.answers_index = max(0, min(self.answers_index, len(self.answers_rows) - 1))
+        else:
+            self.answers_index = 0
+
+    def _render_answers(self) -> None:
+        """Reload and redraw — the entry point on open and on project rotation."""
+        self._load_answers()
+        self.answers_expanded = False
+        self._redraw_answers()
+
+    def _redraw_answers(self) -> None:
+        """Redraw from already-loaded rows — a selection move needs no reload."""
+        self.query_one("#answers-panel", Static).update(self._answers_text())
+
+    @staticmethod
+    def _answers_verdict(q: Question) -> str:
+        """The line's verdict column: `cleared` overrides even a real verdict (q347)."""
+        if q.status == "cleared":
+            return "cleared"
+        return _verdict_repr(q.answers[-1]) if q.answers else "—"
+
+    @staticmethod
+    def _answers_age(q: Question) -> str:
+        ts = q.answers[-1].created_at if q.answers else q.updated_at
+        return _relative_age(ts)
+
+    def _answers_text(self) -> str:
+        """Line: `q123  question text…  → verdict  2h`; enter expands the selected one."""
+        label = project_label(self.current_project) if self.current_project else "no project"
+        header = f"answers — {label}"
+        if not self.answers_rows:
+            return f"{header}\n\nno history yet\n\nj/k or [ ] switch project   esc or a  return to inbox"
+        lines = [header, ""]
+        for i, q in enumerate(self.answers_rows):
+            marker = "▸" if i == self.answers_index else " "
+            text = _flatten(q.text)
+            if len(text) > 48:
+                text = text[:47] + "…"
+            lines.append(
+                f"{marker} {q.key}  {text}  → {self._answers_verdict(q)}  {self._answers_age(q)}"
+            )
+            if i == self.answers_index and self.answers_expanded:
+                lines.append("")
+                lines.append(f"    {q.text}")
+                if q.context:
+                    lines.append(f"    {q.context}")
+                for a in q.answers:
+                    lines.append(f"      {_verdict_repr(a)}  ({_relative_age(a.created_at)})")
+                lines.append("")
+        lines.extend([
+            "", "j/k move   enter expand   [ ] switch project", "esc or a  return to inbox",
+        ])
+        return "\n".join(lines)
 
     def _save_settings(self) -> None:
         error = _save_tui_settings(self.tui_settings)
@@ -752,6 +906,7 @@ class CactusApp(App[int]):
         self.free_text_mode = False
         self.elaborating = False
         self._hide_input()
+        self._close_other_panels("settings")
         self.settings_open = True
         self.query_one("#body", Horizontal).display = False
         panel = self.query_one("#settings-panel", Static)
@@ -766,7 +921,7 @@ class CactusApp(App[int]):
         if self.projects_open:
             self._close_projects()
             return
-        self.settings_open = False
+        self._close_other_panels("projects")
         self.projects_open = True
         self.query_one("#body", Horizontal).display = False
         panel = self.query_one("#projects-panel", Static)
@@ -780,6 +935,48 @@ class CactusApp(App[int]):
         self.query_one("#body", Horizontal).display = True
         self._sync_input_focus()
         self.refresh_bindings()
+
+    def action_open_answers(self) -> None:
+        """`a`: toggle the answers view — this project's history (q347/q353).
+
+        Same pattern as `action_open_projects`: mutually exclusive with the
+        settings and projects panels, and never steals text-entry keys.
+        """
+        if self.free_text_mode or self.elaborating:
+            return
+        if self.answers_open:
+            self._close_answers()
+            return
+        self._close_other_panels("answers")
+        self.answers_open = True
+        self.query_one("#body", Horizontal).display = False
+        panel = self.query_one("#answers-panel", Static)
+        panel.display = True
+        self._render_answers()
+        self.refresh_bindings()
+
+    def _close_answers(self) -> None:
+        self.answers_open = False
+        self.query_one("#answers-panel", Static).display = False
+        self.query_one("#body", Horizontal).display = True
+        self._sync_input_focus()
+        self.refresh_bindings()
+
+    def _close_other_panels(self, opening: str) -> None:
+        """Settings/projects/answers are mutually exclusive (q354 vetoed a `view` enum).
+
+        Called by each panel's own open action before it flips its own flag,
+        so opening one always closes whichever of the other two was open.
+        """
+        if opening != "settings" and self.settings_open:
+            self.settings_open = False
+            self.query_one("#settings-panel", Static).display = False
+        if opening != "projects" and self.projects_open:
+            self.projects_open = False
+            self.query_one("#projects-panel", Static).display = False
+        if opening != "answers" and self.answers_open:
+            self.answers_open = False
+            self.query_one("#answers-panel", Static).display = False
 
     def _selected_project_row(self) -> dict[str, Any] | None:
         if 0 <= self.project_index < len(self.project_rows):
@@ -882,6 +1079,7 @@ class CactusApp(App[int]):
         self._flash_plan_done()
         self._rebuild_project_banner()
         self._rebuild_project_head()
+        self._rebuild_projects_pane()
         await self._rebuild_rail()
         self._rebuild_card()
         self._rebuild_status_bar()
@@ -1060,17 +1258,27 @@ class CactusApp(App[int]):
         no command is a promise the row cannot keep, and finding that out by
         pressing it is worse than never seeing it.
         """
+        # Each of the three panel-open keys stays reachable from inside any of
+        # the others (`_close_other_panels` makes the switch itself a no-op
+        # extra step, not the reader's job to close-then-reopen).
         if self.settings_open:
-            return action in ("open_settings", "quit_app")
+            return action in ("open_settings", "open_projects", "open_answers", "quit_app")
         if self.projects_open:
             return action in (
-                "open_projects", "focus_next", "focus_prev", "submit",
+                "open_projects", "open_settings", "open_answers",
+                "focus_next", "focus_prev", "submit",
                 "ignore_project", "activate_project", "quit_app",
             )
+        if self.answers_open:
+            return action in (
+                "open_answers", "open_projects", "open_settings",
+                "focus_next", "focus_prev", "submit",
+                "prev_project", "next_project", "quit_app",
+            )
         if self.free_text_mode or self.elaborating:
-            if action in ("open_projects", "ignore_project", "activate_project"):
+            if action in ("open_projects", "ignore_project", "activate_project", "open_answers"):
                 return False
-        if action in ("refresh_view", "quit_app", "open_settings"):
+        if action in ("refresh_view", "quit_app", "open_settings", "open_answers"):
             return True
 
         q = self._current_question()
@@ -1608,6 +1816,11 @@ class CactusApp(App[int]):
                 self._close_projects()
                 event.stop()
             return
+        if self.answers_open:
+            if event.key == "escape":
+                self._close_answers()
+                event.stop()
+            return
         if self.settings_open:
             if event.key == "escape":
                 self._close_settings()
@@ -1615,6 +1828,8 @@ class CactusApp(App[int]):
                 self._set_orientation("side")
             elif event.key == "2":
                 self._set_orientation("bottom")
+            elif event.key == "3":
+                self._toggle_projects_pane()
             elif event.key == "f":
                 self._toggle_figlet_header()
             else:
@@ -1698,6 +1913,12 @@ class CactusApp(App[int]):
                 self.project_index = (self.project_index + 1) % len(self.project_rows)
                 self._render_projects()
             return
+        if self.answers_open:
+            if self.answers_rows:
+                self.answers_index = (self.answers_index + 1) % len(self.answers_rows)
+                self.answers_expanded = False
+                self._redraw_answers()
+            return
         self._clear_flash()
         listview = self.query_one("#rail-list", ListView)
         listview.focus()
@@ -1709,16 +1930,46 @@ class CactusApp(App[int]):
                 self.project_index = (self.project_index - 1) % len(self.project_rows)
                 self._render_projects()
             return
+        if self.answers_open:
+            if self.answers_rows:
+                self.answers_index = (self.answers_index - 1) % len(self.answers_rows)
+                self.answers_expanded = False
+                self._redraw_answers()
+            return
         self._clear_flash()
         listview = self.query_one("#rail-list", ListView)
         listview.focus()
         listview.action_cursor_up()
 
     async def action_prev_project(self) -> None:
+        if self.answers_open:
+            await self._rotate_answers_project(-1)
+            return
         await self._switch_project(-1)
 
     async def action_next_project(self) -> None:
+        if self.answers_open:
+            await self._rotate_answers_project(1)
+            return
         await self._switch_project(1)
+
+    async def _rotate_answers_project(self, step: int) -> None:
+        """`[`/`]` while the answers view is open: switch which project's history shows.
+
+        Rotates over every known project, not just the live ones — a
+        drained project's history is exactly what this view is for.
+        """
+        if self.scoped_project is not None:
+            return
+        names = [r["project"] for r in self.store.projects()]
+        if not names:
+            return
+        try:
+            idx = names.index(self.current_project)
+        except ValueError:
+            idx = -1 if step > 0 else 0
+        self.current_project = names[(idx + step) % len(names)]
+        self._render_answers()
 
     async def _switch_project(self, step: int) -> None:
         if self.scoped_project is not None:
@@ -2030,6 +2281,10 @@ class CactusApp(App[int]):
             self.focused_key = None
             self._close_projects()
             await self._reload(force=True)
+            return
+        if self.answers_open:
+            self.answers_expanded = not self.answers_expanded
+            self._redraw_answers()
             return
         q = self._current_question()
         if q is None:

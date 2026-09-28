@@ -447,3 +447,34 @@ scope.
   falling back on `SuspendNotSupported` (the headless test driver);
   `CACTUS_PAGER`/`CACTUS_EDITOR` override the pager/editor template with
   `{path}` substitution, and tests set them to an inert logging script.
+- `Store.projects()`'s `due_count` is `open + elaborate` (q351) — `live` is
+  re-answerable but never blocks anyone, so it stays out of "due"; the
+  projects page and the projects pane both rank by it, `due_count DESC,
+  last_activity DESC`. `Store.history(project, limit=200)` (q347) is the
+  answers view's backing query: `answered`/`cleared` rows that carry at
+  least one verdict, newest-verdict-first by the latest answer's own
+  timestamp, not the row's `updated_at`.
+- `CactusApp.settings_open`/`projects_open`/`answers_open` are three plain
+  booleans, not a `view` enum (q354 explicitly vetoed the enum refactor) —
+  mutually exclusive by convention, not by type: each panel's own open
+  action calls `_close_other_panels` before flipping its own flag, so
+  opening one always closes whichever of the other two was open, and each
+  of the three `open_*` actions stays reachable via `check_action` no
+  matter which of the three is currently open.
+- The projects pane (q349/q352, `#projects-pane`) is a due-ranked preview
+  beside the rail — every enabled project, one line each, `▸ label  N due`,
+  ranked by `due_count` like `projects()` itself, current project marked
+  `▸`. Left of `#rail` inside `#body`, so it never shifts the rail's own
+  fixed-height rows — it lives in its own column, not stacked above them.
+  Read-only, never focused, rebuilt on every `_reload`. Hidden in `bottom`
+  orientation (no room beside the rail there) and behind the settings `3`
+  toggle (`tui_settings["projects_pane"]`, persisted, default on).
+- The answers view (`a`, q347/q353, `#answers-panel`) shows the current
+  project's history only — `[`/`]` rotate which project's history it shows,
+  over every known project (not just the live ones: a drained project's
+  history is exactly what this view is for). `esc` or `a` again returns to
+  the inbox. `j`/`k` move the selected line; `enter` toggles an expanded
+  block below it (full text, context, every verdict) rather than opening a
+  second view. The verdict column is `_verdict_repr` on the latest answer,
+  except a `cleared` row always reads `cleared` there regardless of what
+  that last answer actually was.
