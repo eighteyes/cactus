@@ -32,3 +32,5 @@
 - [ ] Own `cleared` via CLI still echoes; needs a `last_change` stamp to tell it from a TUI `c`.
 - [ ] `cactus edit` has no `--recommend`; `-c` drops the old one and nothing can set a new one.
 - [ ] Codex plugin hook (plugins/cactus/hooks/session-start.sh) still says Monitor; Codex wake-up mechanics unverified.
+- [x] q340: keep the unbounded --monitor stream as a CLI mode; docs-only removal. 3b4abac.
+- [ ] BUG record collision: per-project keys (q166) reuse qN numbers that old global-key rows already used, and record.py picks up the existing `qN-*.md`, so q340 (mon-scope) overwrote q340-grok-wake.md from fb8ca4b. Records need a key that cannot repeat: the row id, or project-scoped numbering that starts above the old global max.

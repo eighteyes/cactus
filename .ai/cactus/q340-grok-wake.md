@@ -1,23 +1,35 @@
-# q258 — Grok wake test — pick one after you answer, press p in the TUI to poke me.
+# q340 — Remove the monitor stuff: how far?
 
 status: answered
 act: ask
 kind: choice
-agent: 33082afe-4a84-42e6-9e62-f15e8c46e3e6
-asked by: Grok Bot
+thread: durability
+agent: 61b93eb6-af33-46a9-ae97-9aa508895e5f
 cwd: .
-asked at: 2026-09-24T17:34:53.825095+00:00
+asked at: 2026-09-28T04:39:22.624692+00:00
+
+## Context
+
+docs: text only, no behavior change, hosts that can hold a stream
+(webhook relays, library callers) keep working.
+
+mode-too: monitor.py loses the forever loop, tests for --replay/streaming
+rewrite, cactus-courier subagent and the jq pipe recipe in SKILL.md break
+and need rewriting to a loop of --once calls.
+
+Default if unanswered: docs.
 
 ## Options
 
-- Wake worked  (★◐)
-- No wake
+- docs — strip every Monitor-tool reference (Codex hook, SKILL, README, GROK, DESKTOP); keep the unbounded --monitor stream as a CLI mode  (★●)
+- mode-too — also delete the unbounded stream; --monitor always behaves as --once, --once flag becomes a no-op
 
 ## Recommendation
 
-Wake worked — med
+docs — high
+no host has shown it needs removing; the tool reference is the problem
 
 ## Answer
 
-No wake
-answered at: 2026-09-24T17:35:30.559308+00:00
+docs
+answered at: 2026-09-28T04:48:19.092333+00:00
