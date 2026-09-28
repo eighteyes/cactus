@@ -799,3 +799,77 @@ async def test_opening_projects_and_answers_panels_are_mutually_exclusive(
         assert app.answers_open is False
         assert app.projects_open is True
         assert app.query_one("#answers-panel", Static).display is False
+
+
+def _poke_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Swap the inert transport for one that logs `{target}|{message}` per call."""
+    log = tmp_path / "poke.log"
+    script = tmp_path / "poke.sh"
+    script.write_text(f'#!/bin/sh\necho "$1|$2" >> {log}\n')
+    script.chmod(0o755)
+    monkeypatch.setenv("CACTUS_POKE", f"{script} {{target}} {{message}}")
+    return log
+
+
+async def test_projects_page_p_pokes_every_pane_in_the_project(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cactus.tui import PROJECT_POKE_MESSAGE
+
+    log = _poke_log(tmp_path, monkeypatch)
+    for agent, pane in (("a1", "w1:p1"), ("a1", "w1:p1"), ("a2", "w1:p2"), ("a3", None)):
+        store.ask("hi", project=project, cwd=project, agent=agent, kind="text",
+                  act="ask", pane=pane)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("P")
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert app.flash == "poked 2 panes in proj"
+
+    calls = log.read_text().splitlines()
+    assert sorted(c.split("|", 1)[0] for c in calls) == ["w1:p1", "w1:p2"]
+    assert all(c.split("|", 1)[1] == PROJECT_POKE_MESSAGE for c in calls)
+
+
+async def test_projects_page_p_flashes_when_project_has_no_panes(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _poke_log(tmp_path, monkeypatch)
+    store.ask("hi", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("P")
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+
+        assert app.flash == "proj: no herdr panes (1 rows unstamped)"
+
+    assert not log.exists()
+
+
+async def test_inbox_p_still_pokes_only_the_focused_row(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _poke_log(tmp_path, monkeypatch)
+    store.ask("one", project=project, cwd=project, agent="a1", kind="text",
+              act="ask", pane="w1:p1")
+    store.ask("two", project=project, cwd=project, agent="a2", kind="text",
+              act="ask", pane="w1:p2")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+
+    calls = log.read_text().splitlines()
+    assert len(calls) == 1
+    assert "re-read your answers" not in calls[0]

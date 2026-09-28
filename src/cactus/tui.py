@@ -152,6 +152,12 @@ def _flatten(text: str) -> str:
     return " ".join(text.split())
 
 
+PROJECT_POKE_MESSAGE = (
+    "cactus: update your rows — re-read your answers, act on them, "
+    "clear what is done, edit stale questions."
+)
+
+
 def _pokeable(q: Question) -> bool:
     """A row can be poked when a nudge has somewhere to land.
 
@@ -819,7 +825,7 @@ class CactusApp(App[int]):
                 counts += f" · {row['answered_count']} answered"
             age = f"  {_relative_age(row['last_activity'])}" if row["last_activity"] else ""
             lines.append(f"{marker} {project_label(row['project'])}  {state}  {counts}{age}")
-        lines.extend(["", "j/k or ↑/↓ move   enter open   I ignore   A activate", "esc or P  return to inbox"])
+        lines.extend(["", "j/k or ↑/↓ move   enter open   I ignore   A activate   p poke", "esc or P  return to inbox"])
         return "\n".join(lines)
 
     def _render_projects(self) -> None:
@@ -1301,7 +1307,7 @@ class CactusApp(App[int]):
             return action in (
                 "open_projects", "open_settings", "open_answers",
                 "focus_next", "focus_prev", "submit",
-                "ignore_project", "activate_project", "quit_app",
+                "ignore_project", "activate_project", "poke", "quit_app",
             )
         if self.answers_open:
             return action in (
@@ -1694,6 +1700,9 @@ class CactusApp(App[int]):
         """
         from .poke import poke, PokeError
 
+        if self.projects_open:
+            self._poke_project()
+            return
         q = self._current_question()
         if q is None:
             return
@@ -1707,6 +1716,36 @@ class CactusApp(App[int]):
                 self.flash = f"poke failed: {exc}"
             else:
                 self.flash = f"poked {q.pane or q.agent}"
+        self._rebuild_status_bar()
+
+    def _poke_project(self) -> None:
+        """`p` on the projects page: sync message to every herdr pane in the project.
+
+        One poke per distinct pane stamped on the project's open/live/elaborate
+        rows; herdr only, so no webhook and no owner-only fallback.
+        """
+        from .poke import poke, PokeError
+
+        row = self._selected_project_row()
+        if row is None:
+            return
+        label = project_label(row["project"])
+        reach = self.store.project_panes(row["project"])
+        panes, skipped = reach["panes"], reach["skipped"]
+        if not panes:
+            self.flash = f"{label}: no herdr panes ({skipped} rows unstamped)"
+        else:
+            failed = 0
+            for entry in panes:
+                try:
+                    poke(entry["agent"], pane=entry["pane"], message=PROJECT_POKE_MESSAGE,
+                         timeout=5.0, webhook=False)
+                except PokeError:
+                    failed += 1
+            noun = "pane" if len(panes) - failed == 1 else "panes"
+            self.flash = f"poked {len(panes) - failed} {noun} in {label}"
+            if failed:
+                self.flash += f" ({failed} failed)"
         self._rebuild_status_bar()
 
     def action_visit(self) -> None:

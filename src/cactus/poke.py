@@ -214,6 +214,7 @@ def poke(
     pane: str | None = None,
     message: str | None = None,
     timeout: float = 10.0,
+    webhook: bool = True,
 ) -> str:
     """Deliver a nudge to `agent`, at `pane` when the default transport needs one.
 
@@ -227,6 +228,8 @@ def poke(
     2. Webhook map entry for this agent id (CACTUS_POKE_WEBHOOKS /
        ~/.config/cactus/poke-webhooks.json)
     3. Default herdr agent prompt, targeting the row's pane stamp
+
+    `webhook=False` skips step 2 (a project-wide poke is herdr only).
     """
     if not agent:
         raise PokeError("this row has no agent; nothing to poke")
@@ -243,7 +246,7 @@ def poke(
     if os.environ.get("CACTUS_POKE"):
         return _run_argv(fill(poke_command()), timeout)
 
-    entry = webhook_entry(agent)
+    entry = webhook_entry(agent) if webhook else None
     if entry is not None:
         return _post_webhook(agent, body, entry, timeout)
 

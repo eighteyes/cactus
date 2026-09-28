@@ -1619,6 +1619,34 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def project_panes(self, project: str) -> dict[str, Any]:
+        """The herdr panes a project-wide poke can reach.
+
+        Distinct non-null `pane` stamps over the project's `open`/`live`/
+        `elaborate` rows, each with the `agent` of that pane's newest row,
+        plus `skipped`: how many of those rows carry no pane and so cannot
+        be prompted. Returns `{"panes": [{"pane", "agent"}], "skipped": N}`.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT pane, agent FROM questions
+            WHERE project = ? AND status IN ('open', 'live', 'elaborate')
+            ORDER BY id
+            """,
+            (project,),
+        ).fetchall()
+        latest: dict[str, str | None] = {}
+        skipped = 0
+        for r in rows:
+            if r["pane"]:
+                latest[r["pane"]] = r["agent"]
+            else:
+                skipped += 1
+        return {
+            "panes": [{"pane": p, "agent": a} for p, a in latest.items()],
+            "skipped": skipped,
+        }
+
     def history(self, project: str, limit: int = 200) -> list[Question]:
         """Answered and cleared rows that carry at least one verdict (q347).
 

@@ -295,3 +295,24 @@ def test_set_files_replaces_and_refuses_cleared_row(store: Store, project: str) 
     store.clear(keys=[q.key], project=project)
     with pytest.raises(ValueError):
         store.set_files(q.key, ["/tmp/plan.md"], project=project)
+
+
+def test_project_panes_distinct_status_filtered_and_skipped(store: Store, project: str) -> None:
+    def ask(agent: str, pane: str | None) -> str:
+        return store.ask("q", project=project, cwd=project, agent=agent, kind="text",
+                         act="ask", pane=pane).key
+
+    ask("a1", "w1:p1")
+    ask("a1b", "w1:p1")          # same pane again: newest agent wins, one entry
+    ask("a2", "w1:p2")
+    ask("a3", None)              # unstamped: counted, not reachable
+    gone = ask("a4", "w1:p4")
+    store.clear(keys=[gone], project=project)  # cleared rows do not count
+
+    reach = store.project_panes(project)
+
+    assert reach["panes"] == [
+        {"pane": "w1:p1", "agent": "a1b"},
+        {"pane": "w1:p2", "agent": "a2"},
+    ]
+    assert reach["skipped"] == 1
