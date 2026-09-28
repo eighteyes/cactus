@@ -88,7 +88,7 @@ def test_sky_layer_offsets_wrap_within_bounds() -> None:
     for _ in range(5_000):
         world.tick()
         for layer in world.sky.layers.values():
-            assert 0 <= layer.offset < layer.width_px
+            assert 0 <= layer.offset < layer.period_px
 
 
 def test_bird_near_a_seed_changes_its_vx() -> None:

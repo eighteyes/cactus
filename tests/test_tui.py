@@ -1,10 +1,12 @@
 """
-test_tui.py — CactusApp footer, projects pane, and answering behavior.
+test_tui.py — CactusApp footer, key bar, projects pane, and answering behavior.
 
 Responsibilities:
-- Footer relabeling follows the focused row's act/kind (y/n, digits, d).
-- `s` (skip) stays available on plan/review/data/notify rows.
-- A --no-free row hides the `i` (type) key in both footer and card hint.
+- The Footer shows only global keys — never y/n/digits/d/s/i/etc, which are
+  row-dependent and live in the in-card key bar instead.
+- The key bar (`_keybar_items`) enumerates a row's own keys by kind: choice
+  labels, confirm's own y/n labels, plan steps, data chunks; a --no-free row
+  hides "i type" from the bar the same way it hides `i` from `check_action`.
 - Digit keys answer a choice row.
 - The projects pane opens/closes with `P`/escape and `I`/`A` flip a project's
   enabled switch, but only while not typing.
@@ -12,6 +14,9 @@ Responsibilities:
 - An empty multi submit records nothing and flashes instead.
 - Answering drops a block onto the pachinko field; clearing a row does not.
 - Backtick/tilde drop a seed anytime except while typing, empty inbox included.
+- The card is always displayed, showing the empty-state message with an
+  empty store; the field lives inside it, sized to the card's remaining
+  height once the text and key bar rows are accounted for.
 """
 
 from __future__ import annotations
@@ -42,13 +47,18 @@ def footer_keys(app: CactusApp) -> dict[str, str]:
     }
 
 
+def keybar_keys(app: CactusApp) -> dict[str, str]:
+    """The focused row's key bar items, as `_keybar_items` builds them."""
+    return dict(app._keybar_items(app._current_question()))
+
+
 def card_hint(app: CactusApp) -> str:
-    text = str(app.query_one("#card", Static).content)
+    text = str(app.query_one("#card-text", Static).content)
     lines = text.strip().splitlines()
     return lines[-1] if lines else ""
 
 
-async def test_footer_relabels_review_run_plan_data_choice(store: Store, project: str) -> None:
+async def test_keybar_enumerates_review_run_plan_data_choice(store: Store, project: str) -> None:
     review_key = store.ask(
         "review this", project=project, cwd=project, agent=AGENT,
         kind="confirm", act="review", choices=[Choice("pass"), Choice("fail")],
@@ -83,27 +93,32 @@ async def test_footer_relabels_review_run_plan_data_choice(store: Store, project
             raise AssertionError(f"{key} not reached on rail")
 
         await goto(review_key)
-        keys = footer_keys(app)
+        keys = keybar_keys(app)
         assert keys["y"] == "pass"
         assert keys["n"] == "fail"
+        assert "y" not in footer_keys(app)
 
         await goto(run_key)
-        keys = footer_keys(app)
+        keys = keybar_keys(app)
         assert keys["y"] == "approve"
         assert keys["n"] == "deny"
 
         await goto(plan_key)
-        keys = footer_keys(app)
-        assert keys["1-9"] == "Toggle step"
+        keys = keybar_keys(app)
+        assert keys["1"] == "s1"
+        assert keys["2"] == "s2"
+        assert "1" not in footer_keys(app)
 
         await goto(data_key)
-        keys = footer_keys(app)
-        assert keys["1-9"] == "Copy chunk"
-        assert keys["d"] == "Close"
+        keys = keybar_keys(app)
+        assert keys["1"] == "one"
+        assert keys["d"] == "close"
+        assert "d" not in footer_keys(app)
 
         await goto(choice_key)
-        keys = footer_keys(app)
-        assert keys["1-9"] == "Pick"
+        keys = keybar_keys(app)
+        assert keys["1"] == "a"
+        assert keys["2"] == "b"
 
 
 async def test_skip_key_present_on_plan_review_data_notify(store: Store, project: str) -> None:
@@ -136,7 +151,8 @@ async def test_skip_key_present_on_plan_review_data_notify(store: Store, project
 
         for key in (plan_key, review_key, data_key, notify_key):
             await goto(key)
-            assert "s" in footer_keys(app), f"{key} missing skip key"
+            assert "s" in keybar_keys(app), f"{key} missing skip key"
+            assert "s" not in footer_keys(app)
 
 
 async def test_no_free_hides_type_key(store: Store, project: str) -> None:
@@ -149,6 +165,7 @@ async def test_no_free_hides_type_key(store: Store, project: str) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         assert "i" not in footer_keys(app)
+        assert "i" not in keybar_keys(app)
         assert "i type" not in card_hint(app)
 
 
@@ -300,7 +317,8 @@ async def test_visit_binds_only_on_a_row_with_a_pane(store: Store, project: str)
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "v" in footer_keys(app)
+        assert "v" in keybar_keys(app)
+        assert "v" not in footer_keys(app)
         await pilot.press("v")
         await pilot.pause()
         assert app.flash == "visited w1:p1"
@@ -312,7 +330,7 @@ async def test_visit_flashes_on_a_row_posted_outside_herdr(store: Store, project
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "v" not in footer_keys(app)
+        assert "v" not in keybar_keys(app)
         await pilot.press("v")
         await pilot.pause()
         assert app.flash == f"{q.key} was posted outside herdr; nothing to visit"
@@ -327,18 +345,20 @@ def _logging_script(tmp_path: Path) -> tuple[Path, Path]:
     return script, log
 
 
-async def test_footer_shows_f_and_ff_only_on_a_row_with_files(store: Store, project: str) -> None:
+async def test_keybar_shows_f_and_ff_only_on_a_row_with_files(store: Store, project: str) -> None:
     store.ask("no files", project=project, cwd=project, agent=AGENT)
     store.ask("has files", project=project, cwd=project, agent=AGENT, files=["/tmp/x"])
 
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
+        assert "f" not in keybar_keys(app)
         assert "f" not in footer_keys(app)
 
         await pilot.press("j")
         await pilot.pause()
-        assert "f" in footer_keys(app)
+        assert "f" in keybar_keys(app)
+        assert "f" not in footer_keys(app)
 
 
 async def test_view_file_flashes_when_row_carries_no_file(store: Store, project: str) -> None:
@@ -469,7 +489,7 @@ async def test_card_shows_numbered_file_list(store: Store, project: str) -> None
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
-        text = str(app.query_one("#card", Static).content)
+        text = str(app.query_one("#card-text", Static).content)
 
     assert f"  {'files':<8}1 /tmp/a" in text
     assert f"  {'':<8}2 /tmp/b" in text
@@ -501,22 +521,35 @@ async def test_clear_drops_no_field_seed(store: Store, project: str) -> None:
         assert not app.world.seeds
 
 
-async def test_field_column_matches_the_pressed_key(store: Store, project: str) -> None:
+async def test_field_column_matches_the_keybar_glyph(store: Store, project: str) -> None:
     store.ask(
         "pick one", project=project, cwd=project, agent=AGENT,
-        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b"), Choice("c")],
     )
 
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
+        # Each digit now has its own key bar column, so "2" sits to the
+        # right of "1" — a choice row enumerates its choices left to right.
         col_1 = app._field_column("1")
-        col_i = app._field_column("i")
-        # Verified against the real footer layout (see probe report): `i` is
-        # bound early in BINDINGS and rendered left of the digit group, which
-        # is declared last — so `1`'s footer key sits to the right of `i`'s.
-        assert col_1 != col_i
-        assert col_i < col_1
+        col_2 = app._field_column("2")
+        assert col_2 > col_1
+
+
+async def test_field_column_enter_falls_back_to_i(store: Store, project: str) -> None:
+    """A plan row's key bar offers "i note" but no "enter" item of its own —
+    `_field_column("enter")` should fall back to "i"'s column rather than
+    landing on a random one."""
+    q = store.ask(
+        "plan this", project=project, cwd=project, agent=AGENT, kind="text", act="plan",
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "enter" not in dict(app._keybar_items(q))
+        assert app._field_column("enter") == app._field_column("i")
 
 
 async def test_teardown_with_a_seed_in_flight_does_not_raise(store: Store, project: str) -> None:
@@ -873,3 +906,48 @@ async def test_inbox_p_still_pokes_only_the_focused_row(
     calls = log.read_text().splitlines()
     assert len(calls) == 1
     assert "re-read your answers" not in calls[0]
+
+
+async def test_seed_dropped_by_a_digit_lands_inside_the_field(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+
+    assert len(app.world.seeds) == 1
+    assert 0 <= app.world.seeds[0].x < app.world.width
+
+
+async def test_card_is_displayed_with_an_empty_store(store: Store, project: str) -> None:
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.questions
+        card = app.query_one("#card")
+        assert card.display is not False
+        text = str(app.query_one("#card-text", Static).content)
+        assert "inbox empty" in text
+        # The key bar still shows the always-reachable seed key.
+        assert "`" in keybar_keys(app)
+
+
+async def test_field_height_fills_the_card_beneath_text_and_keybar(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        card = app.query_one("#card")
+        text = app.query_one("#card-text", Static)
+        field = app.query_one("#field")
+        keybar = app.query_one("#keybar", Static)
+        assert field.size.height == card.size.height - text.size.height - keybar.size.height

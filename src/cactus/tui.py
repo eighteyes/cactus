@@ -22,7 +22,6 @@ Responsibilities:
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 import random
@@ -38,7 +37,6 @@ from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
-from textual.widgets._footer import FooterKey
 
 from .field import TICK_SECONDS, World
 from .scope import project_label
@@ -390,7 +388,14 @@ def _card_lines(
 
 
 class FieldView(Static):
-    """The pachinko field strip; content is set by CactusApp._render_field."""
+    """The pachinko field strip inside the answering card; content is set by
+    CactusApp._render_field, which also keeps the world sized to this
+    widget."""
+
+    def on_resize(self, event: events.Resize) -> None:
+        app = self.app
+        if isinstance(app, CactusApp):
+            app._render_field()
 
 
 class RailList(ListView):
@@ -575,19 +580,18 @@ class CactusApp(App[int]):
     }
     #card {
         border: round $accent;
-        padding: 0 2;
-        height: 1fr;
         margin: 0 1;
+        height: 1fr;
+    }
+    #card-text {
+        height: auto;
+        max-height: 60%;
         overflow-y: auto;
+        padding: 0 2;
     }
     #answer-input {
         display: none;
         margin: 0 1;
-    }
-    #empty-state {
-        display: none;
-        padding: 1 3;
-        color: $text-muted;
     }
     #status-bar {
         height: 1;
@@ -596,10 +600,15 @@ class CactusApp(App[int]):
         padding: 0 1;
     }
     #field {
-        dock: bottom;
-        height: 10;
-        width: 1fr;
+        height: 1fr;
+        min-height: 4;
+        width: 100%;
         background: $surface;
+    }
+    #keybar {
+        height: 1;
+        padding: 0 2;
+        color: $text-muted;
     }
     """
 
@@ -612,29 +621,33 @@ class CactusApp(App[int]):
         # priority: the Input would otherwise swallow escape and strand focus
         # inside a text question, where j/k/[/] are unreachable.
         Binding("escape", "leave_input", "Back", show=False, priority=True),
-        Binding("s", "skip", "Skip (answers)"),
-        Binding("c", "clear_focused", "Clear"),
-        Binding("i", "toggle_free_text", "type"),
-        Binding("y", "confirm_yes", "Yes"),
-        Binding("n", "confirm_no", "No"),
+        # Row-dependent: what these keys do — and whether they mean anything
+        # at all — depends on the focused row, so they live in the in-card
+        # key bar (`_rebuild_keybar`) instead of the Footer, which now only
+        # ever shows the global keys.
+        Binding("s", "skip", "Skip (answers)", show=False),
+        Binding("c", "clear_focused", "Clear", show=False),
+        Binding("i", "toggle_free_text", "type", show=False),
+        Binding("y", "confirm_yes", "Yes", show=False),
+        Binding("n", "confirm_no", "No", show=False),
         Binding("[", "prev_project", "PrevProj", key_display="["),
         Binding("]", "next_project", "NextProj", key_display="]"),
         Binding("P", "open_projects", "Projects"),
         Binding("a", "open_answers", "Answers"),
         Binding("I", "ignore_project", "Ignore"),
         Binding("A", "activate_project", "Activate"),
-        Binding("u", "undo", "Undo"),
-        Binding("e", "elaborate", "Elaborate"),
-        Binding("D", "decompose", "Decompose"),
+        Binding("u", "undo", "Undo", show=False),
+        Binding("e", "elaborate", "Elaborate", show=False),
+        Binding("D", "decompose", "Decompose", show=False),
         Binding("?", "open_settings", "Settings", key_display="?"),
-        Binding("p", "poke", "Poke"),
-        Binding("v", "visit", "Visit"),
-        Binding("C", "copy_command", "Copy"),
-        Binding("R", "run_command", "Run"),
-        Binding("O", "open_output", "Output"),
-        Binding("f", "view_file", "View file"),
-        Binding("F", "edit_file", "Edit file"),
-        Binding("d", "dismiss", "Dismiss"),
+        Binding("p", "poke", "Poke", show=False),
+        Binding("v", "visit", "Visit", show=False),
+        Binding("C", "copy_command", "Copy", show=False),
+        Binding("R", "run_command", "Run", show=False),
+        Binding("O", "open_output", "Output", show=False),
+        Binding("f", "view_file", "View file", show=False),
+        Binding("F", "edit_file", "Edit file", show=False),
+        Binding("d", "dismiss", "Dismiss", show=False),
         Binding("r", "refresh_view", "Refresh"),
         # Manual seed drop (q368): both the bare and shifted glyph of the same
         # physical key fire it; only the unshifted one shows in the footer.
@@ -643,10 +656,10 @@ class CactusApp(App[int]):
         Binding("q", "quit_app", "Quit"),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         # Neutral label: the digits pick a choice on an ask row but toggle a
-        # step on a plan row. The description here is the default; `_relabel`
-        # swaps it (and y/n's) for the focused row's own wording on every
-        # card rebuild, so the footer says what the key does on *this* row.
-        Binding("1", "select_choice(1)", "Pick", show=True, key_display="1-9"),
+        # step on a plan row. The in-card key bar (`_rebuild_keybar`) is what
+        # shows the focused row's own wording for each digit now; the Footer
+        # never shows the digits at all.
+        Binding("1", "select_choice(1)", "Pick", show=False, key_display="1-9"),
         Binding("2", "select_choice(2)", "2", show=False),
         Binding("3", "select_choice(3)", "3", show=False),
         Binding("4", "select_choice(4)", "4", show=False),
@@ -709,11 +722,15 @@ class CactusApp(App[int]):
         self.file_pending: str | None = None
         self.file_pending_key: str | None = None
         self.file_pending_timer = None
-        # Field: an in-memory sky/weather/cactus simulation under the card,
-        # one row of seeds per answer. Sized 1x10 until the first render,
-        # when the FieldView's actual width is known.
+        # Field: an in-memory sky/weather/cactus simulation living inside the
+        # card, anchored to the bottom under the key bar. Sized 1x10 until
+        # the first render, when the FieldView's actual size is known.
         self.world = World(cols=1, rows=10)
         self._field_timer = None
+        # Each key bar item's x offset inside `#keybar`, rebuilt on every
+        # `_rebuild_keybar` — `_field_column` reads this to drop a seed under
+        # the key that answered.
+        self._keybar_x: dict[str, int] = {}
 
     @property
     def pending_text(self) -> str:
@@ -744,10 +761,11 @@ class CactusApp(App[int]):
                 yield Static(id="project-head", markup=False)
                 yield RailList(id="rail-list")
             with Vertical(id="main"):
-                yield Static(id="card", markup=False)
+                with Vertical(id="card"):
+                    yield Static(id="card-text", markup=False)
+                    yield FieldView(id="field", markup=False)
+                    yield Static(id="keybar", markup=False)
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
-                yield Static("inbox empty — waiting for questions", id="empty-state")
-                yield FieldView(id="field", markup=False)
         yield Static(id="settings-panel", markup=False)
         yield Static(id="projects-panel", markup=False)
         yield Static(id="answers-panel", markup=False)
@@ -759,7 +777,7 @@ class CactusApp(App[int]):
             live = self._live_projects()
             if self.current_project is None and live:
                 self.current_project = live[0]
-        self.query_one("#card", Static).border_title = "answering"
+        self.query_one("#card", Vertical).border_title = "answering"
         self._apply_tui_settings()
         await self._reload(force=True)
         self.query_one("#rail-list", ListView).focus()
@@ -1175,7 +1193,6 @@ class CactusApp(App[int]):
 
     async def _rebuild_rail(self) -> None:
         listview = self.query_one("#rail-list", ListView)
-        empty_state = self.query_one("#empty-state", Static)
         prior_key = self.focused_key
         self._rebuilding = True
         try:
@@ -1184,8 +1201,6 @@ class CactusApp(App[int]):
                 await listview.append(
                     QuestionBlock(q, active=q.key == prior_key, draft=q.key in self.drafts)
                 )
-            empty_state.display = not self.questions
-            self.query_one("#card", Static).display = bool(self.questions)
             if not self.questions:
                 self.focused_key = None
                 return
@@ -1206,15 +1221,17 @@ class CactusApp(App[int]):
             self._rebuilding = False
 
     def _rebuild_card(self) -> None:
-        card = self.query_one("#card", Static)
+        card = self.query_one("#card", Vertical)
+        text = self.query_one("#card-text", Static)
         q = self._current_question()
         if q is None:
-            card.display = False
+            card.border_title = "answering"
+            text.update("inbox empty — waiting for questions")
+            self._rebuild_keybar()
             self.refresh_bindings()
             return
-        card.display = True
         card.border_title = f"answering  {q.key}"
-        card.update(
+        text.update(
             _card_lines(
                 q,
                 selected=self.multi_selected,
@@ -1227,51 +1244,125 @@ class CactusApp(App[int]):
         # check_action is a pure function of the focused question and its
         # state, but Textual only re-asks it here — without this call the
         # footer keeps showing the previous row's keys after every navigation
-        # or answer.
-        self._relabel(q)
+        # or answer, and the key bar (built from the same check_action gates)
+        # would go stale right along with it.
+        self._rebuild_keybar()
         self.refresh_bindings()
 
-    # Footer labels that follow the focused row. A Binding's description is
-    # static, so `y` would read "Yes" on a review that answers pass/fail and
-    # `1-9` would read "Pick" on a plan whose digits toggle steps.
-    _RELABEL_DEFAULTS = {"y": "Yes", "n": "No", "1": "Pick", "d": "Dismiss"}
+    def _keybar_items(self, q: Question | None) -> list[tuple[str, str]]:
+        """`(key, label)` pairs for the row key bar, in display order.
 
-    def _labels_for(self, q: Question) -> dict[str, str]:
-        labels = dict(self._RELABEL_DEFAULTS)
-        if q.kind == "confirm":
-            names = [c.label for c in q.choices] or ["yes", "no"]
-            labels["y"], labels["n"] = names[0], names[1] if len(names) > 1 else "No"
-        if q.act == "plan":
-            labels["1"] = "Toggle step"
-        elif q.act == "data":
-            labels["1"] = "Copy chunk"
-            labels["d"] = "Close"
-        elif q.kind == "multi":
-            labels["1"] = "Toggle"
-        if self.file_pending is not None:
-            labels["1"] = "Pick file"
-        return labels
-
-    def _relabel(self, q: Question) -> None:
-        """Rewrite the footer descriptions of the row-dependent keys.
-
-        Reaches into Textual's binding map, which is the only place a
-        description lives; every other path (check_action, the card hint) can
-        only show or hide a key, not reword it. Fails soft: a Textual without
-        that map keeps the neutral defaults from BINDINGS.
+        Every item here is a key `check_action` would actually let through on
+        this row — the bar and the keyboard agree — though not every key
+        `check_action` allows is necessarily listed (free text, for one, is
+        reachable from more rows than the bar spells out for).
         """
-        table = getattr(getattr(self, "_bindings", None), "key_to_bindings", None)
-        if not isinstance(table, dict):
+        if q is None:
+            return [("`", "seed")]
+        if q.status == "elaborate":
+            items: list[tuple[str, str]] = [("c", "clear"), ("u", "withdraw request")]
+            if self.check_action("poke", ()):
+                items.append(("p", "poke"))
+            if self.check_action("visit", ()):
+                items.append(("v", "visit"))
+            items.append(("`", "seed"))
+            return items
+
+        items = []
+        if q.act == "data":
+            for i, choice in enumerate(q.choices[:9], start=1):
+                items.append((str(i), choice.label))
+            items.append(("d", "close"))
+        elif q.act == "plan":
+            steps = q.steps
+            if steps:
+                if len(steps) <= 9:
+                    for st in steps:
+                        items.append((str(st.idx + 1), st.text))
+                else:
+                    items.append((f"1-{len(steps)}", "toggle step"))
+            items.append(("i", "note"))
+        elif q.act == "notify":
+            items.append(("d", "dismiss"))
+        elif q.kind == "confirm":
+            labels = [c.label for c in q.choices] or ["yes", "no"]
+            items.append(("y", labels[0]))
+            items.append(("n", labels[1] if len(labels) > 1 else "no"))
+        elif q.kind == "multi":
+            for i, choice in enumerate(q.choices[:9], start=1):
+                items.append((str(i), choice.label))
+            items.append(("enter", "submit"))
+            if q.allow_free:
+                items.append(("i", "type"))
+        elif q.kind == "text":
+            if q.allow_free:
+                items.append(("i", "type"))
+            items.append(("enter", "submit"))
+        else:  # "choice"
+            for i, choice in enumerate(q.choices[:9], start=1):
+                label = choice.label + ("*" if choice.label in q.recommend else "")
+                items.append((str(i), label))
+            if q.allow_free:
+                items.append(("i", "type"))
+
+        if self.check_action("run_command", ()):
+            items.append(("R", "run"))
+        if self.check_action("copy_command", ()):
+            items.append(("C", "copy"))
+        if self.check_action("open_output", ()):
+            items.append(("O", "open"))
+
+        if self.check_action("skip", ()):
+            items.append(("s", "skip"))
+        items.append(("c", "clear"))
+        if self.check_action("elaborate", ()):
+            items.append(("e", "elaborate"))
+        if self.check_action("decompose", ()):
+            items.append(("D", "decompose"))
+        if self.check_action("view_file", ()):
+            items.append(("f", "view"))
+        if self.check_action("edit_file", ()):
+            items.append(("F", "edit"))
+        if self.check_action("poke", ()):
+            items.append(("p", "poke"))
+        if self.check_action("visit", ()):
+            items.append(("v", "visit"))
+        if self.check_action("undo", ()):
+            items.append(("u", "undo"))
+        items.append(("`", "seed"))
+        return items
+
+    def _rebuild_keybar(self) -> None:
+        """Render the row key bar and record each key's x offset.
+
+        `_field_column` reads `self._keybar_x` to drop a seed under the key
+        that answered — so this must run before any seed drop, which is why
+        every caller runs it alongside `refresh_bindings()`.
+        """
+        try:
+            bar = self.query_one("#keybar", Static)
+        except NoMatches:
             return
-        for key, description in self._labels_for(q).items():
-            bindings = table.get(key)
-            if not bindings:
-                continue
-            table[key] = [
-                dataclasses.replace(b, description=description)
-                if b.description != description else b
-                for b in bindings
-            ]
+        q = self._current_question()
+        items = self._keybar_items(q)
+        width = max(bar.size.width, 1)
+        self._keybar_x = {}
+        pieces: list[str] = []
+        pos = 0
+        for i, (key, label) in enumerate(items):
+            sep = "  " if i else ""
+            head = f"{sep}{key} "
+            if pos + len(head) >= width and pos > 0:
+                break
+            self._keybar_x[key] = pos + len(sep)
+            remaining = max(width - pos - len(head), 0)
+            shown = label if len(label) <= remaining else (
+                label[: remaining - 1] + "…" if remaining > 1 else ""
+            )
+            piece = head + shown
+            pieces.append(piece)
+            pos += len(piece)
+        bar.update("".join(pieces))
 
     # Transient one-line feedback for actions that touch the outside world, so a
     # poke that failed says so instead of looking like a dead key.
@@ -1782,7 +1873,9 @@ class CactusApp(App[int]):
         flash = f"    {self.flash}" if self.flash else ""
         bar.update(f"{counts} / {proj_total} {noun}    {mode}{undo}{flash}")
         # The undo binding's availability depends on the stack, which only
-        # this method ever changes — refresh here so the footer's `u` tracks it.
+        # this method ever changes — refresh here so the footer's `u` tracks
+        # it, and rebuild the key bar alongside it for the same reason.
+        self._rebuild_keybar()
         self.refresh_bindings()
 
     def _current_question(self) -> Question | None:
@@ -2248,7 +2341,7 @@ class CactusApp(App[int]):
                 self.flash = f"copy failed: {exc}"
                 self._rebuild_status_bar()
                 return
-            await self._submit_answer(q, selected=[choice.label], text=None, key="1")
+            await self._submit_answer(q, selected=[choice.label], text=None, key=str(n))
             self.flash = f"copied {n}) {choice.label} via {tool}"
             self._rebuild_status_bar()
             return
@@ -2262,7 +2355,7 @@ class CactusApp(App[int]):
                 self.flash = f"{q.key} has no choice {n}"
                 self._rebuild_status_bar()
                 return
-            await self._confirm(n - 1, key="1")
+            await self._confirm(n - 1, key=str(n))
             return
         if n < 1 or n > len(q.choices):
             self.flash = f"{q.key} has no choice {n}"
@@ -2270,7 +2363,7 @@ class CactusApp(App[int]):
             return
         label = q.choices[n - 1].label
         if q.kind == "choice":
-            await self._submit_answer(q, selected=[label], text=self.pending_text or None, key="1")
+            await self._submit_answer(q, selected=[label], text=self.pending_text or None, key=str(n))
         else:
             if label in self.multi_selected:
                 self.multi_selected.discard(label)
@@ -2380,7 +2473,7 @@ class CactusApp(App[int]):
                 self._rebuild_status_bar()
                 return
             await self._submit_answer(
-                q, selected=sorted(self.multi_selected), text=self.pending_text or None
+                q, selected=sorted(self.multi_selected), text=self.pending_text or None, key="enter",
             )
         elif q.kind == "text":
             inp = self.query_one("#answer-input", Input)
@@ -2391,12 +2484,12 @@ class CactusApp(App[int]):
         elif self.pending_text:
             # Choice and confirm normally need a pick, but typed text is a
             # complete answer on its own when the question allows free entry.
-            await self._submit_answer(q, selected=[], text=self.pending_text)
+            await self._submit_answer(q, selected=[], text=self.pending_text, key="enter")
         elif q.recommend:
             # No pick and no typed text: enter submits the agent's own
             # recommendation. It is advisory, not a `chosen` that already
             # proceeded — this tap is what confirms it.
-            await self._submit_answer(q, selected=list(q.recommend), text=None)
+            await self._submit_answer(q, selected=list(q.recommend), text=None, key="enter")
         elif q.kind in ("choice", "confirm"):
             self.flash = self._pick_hint(q)
             self._rebuild_status_bar()
@@ -2423,7 +2516,7 @@ class CactusApp(App[int]):
             return
         self._auto_poke_webhook(q.agent)
         self._push_undo(q.key, "noted", [], text, project=q.project)
-        self._field_drop("i")
+        self._field_drop("enter")
         self.pending_text = ""
         self.free_text_mode = False
         self._hide_input()
@@ -2454,7 +2547,7 @@ class CactusApp(App[int]):
             return
         self._auto_poke_webhook(q.agent)
         self._push_undo(q.key, "noted", [], text, project=q.project)
-        self._field_drop("i")
+        self._field_drop("enter")
         self.pending_text = ""
         self.free_text_mode = False
         self._hide_input()
@@ -2601,31 +2694,26 @@ class CactusApp(App[int]):
         self._render_field()
 
     def _field_column(self, key: str) -> int:
-        """Resolve the drop column for a binding key via its footer glyph's x.
+        """Resolve the drop column for a key via its own key bar glyph's x.
 
-        `FooterKey.region.x` is the key's position in the footer's *virtual*
-        (scrollable) content, which regularly overflows the visible screen
-        width — the v1 bug fell every column past that width onto the
-        rightmost one. Scaling `x` by the footer's virtual width into the
-        field pane's own column space keeps that proportion. Falls back to a
-        column chosen uniformly at random — never to `i`'s column — when no
-        footer key carries the pressed key, e.g. the footer is not mounted
-        yet, or the key names a hidden binding (digits 2-9 are never shown).
+        `self._keybar_x` (rebuilt on every `_rebuild_keybar`) shares the
+        field's own width and padding, so a key's x offset in the bar is the
+        field column directly — each digit now has its own column, not one
+        shared "1" slot. `enter` falls back to `i`'s column when the row has
+        no "enter" item of its own (a plan or review row, say), since that is
+        where its typing began. Falls back to a column chosen uniformly at
+        random when neither is on the bar, e.g. the key bar is not mounted
+        yet, or the row offers neither key at all.
         """
         try:
             pane_cols = max(self.query_one("#field", FieldView).size.width, 1)
         except NoMatches:
             return 0
-        try:
-            footer = self.query_one(Footer)
-        except NoMatches:
+        col = self._keybar_x.get(key)
+        if col is None and key == "enter":
+            col = self._keybar_x.get("i")
+        if col is None:
             return random.randrange(pane_cols)
-        footer_keys = {fk.key: fk for fk in footer.query(FooterKey)}
-        target = footer_keys.get(key)
-        if target is None:
-            return random.randrange(pane_cols)
-        footer_width = max(footer.virtual_size.width, footer.size.width, 1)
-        col = int(target.region.x / footer_width * pane_cols)
         return max(0, min(col, pane_cols - 1))
 
     def _field_drop(self, key: str) -> None:
@@ -2656,8 +2744,9 @@ class CactusApp(App[int]):
                 self._field_timer = None
             return
         width = max(widget.size.width, 1)
-        if width != self.world.cols:
-            self.world.resize(width, self.world.rows)
+        height = max(widget.size.height, 1)
+        if width != self.world.cols or height != self.world.rows:
+            self.world.resize(width, height)
         widget.update(self.world.render())
 
     # ---- undo -----------------------------------------------------------
