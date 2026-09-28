@@ -41,8 +41,9 @@ only that project; if it is wrong, `cd` before asking.
 
 ## Workflow, required
 
-    1  monitor   start `cactus --monitor --json --agent ID` before the first
-                 ask; keep it running while any row of yours is open
+    1  arm       run `cactus --monitor --json --agent ID --once` as a background
+                 command before the first ask; it exits on the first event for
+                 your rows and that exit wakes you; re-arm it first on every wake
     2  ask       post every decision the human makes here, not in chat;
                  --recommend when you have a pick, --agent on every row
     3  work      do everything the answer does not block
@@ -50,13 +51,14 @@ only that project; if it is wrong, `cd` before asking.
     5  clear     your own rows, by key, once acted on
 
 `--agent` is required: an unfiltered monitor is refused. Every event is one
-JSON line, already filtered to your rows:
+JSON line, already filtered to your rows, and your own `asked` and `edited`
+never echo:
 
-    cactus --monitor --json --agent "$AGENT"
+    cactus --monitor --json --agent "$AGENT" --once
 
-Start and re-arm the monitor using the mechanism in your runtime instructions.
-If the host cannot retain a monitor attached to the conversation, it must use
-a webhook wake-up instead.
+Arm and re-arm it with the background mechanism in your runtime instructions.
+A host with no background command that survives the turn must use a webhook
+wake-up instead.
 
 ## Blocked by a permission prompt
 
@@ -257,7 +259,7 @@ Every answer, undo, verdict and clear rewrites one file per row in the
 project, so the decision travels with the code. Commit it with the change it
 governed.
 
-    .ai/cactus/qN-SLUG.md    decision record, rewritten on each answer, undo, verdict, clear; commit it
+    .ai/cactus/qN-ID-SLUG.md    decision record, rewritten on each answer, undo, verdict, clear; commit it
 
 Set `CACTUS_RECORDS=0` in a test harness that runs from a real repository, or
 the scratch rows write records into it.
