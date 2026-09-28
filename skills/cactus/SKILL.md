@@ -18,8 +18,9 @@ on an automatic wake-up, read the instructions for the host running you:
 
 The host-specific file changes only identity and wake-up mechanics. The row
 semantics, authoring rules, and ownership rules below apply everywhere. A
-host with no Monitor tool and no webhook must never run `cactus --monitor`
-in the foreground: it is a stream that returns only when killed.
+host that cannot run a background command and has no webhook must never run
+`cactus --monitor` at all: without `--once` it is a stream that returns only
+when killed, and in the foreground it blocks the session.
 
 cactus is a SQLite inbox. You post a row, get a key back, and keep working. The
 human answers in `cactus --tui` on their own schedule, from any project, and you

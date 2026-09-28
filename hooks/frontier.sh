@@ -11,6 +11,10 @@ command -v jq >/dev/null 2>&1 || exit 0
 # Read first: identity.sh takes the session id from this payload.
 input=$(cat)
 
+enabled=$(cactus project status --json 2>/dev/null \
+  | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
+[ "${enabled:-true}" = "true" ] || exit 0
+
 # shellcheck source=identity.sh
 . "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
 agent=$(cactus_resolve_agent)
@@ -46,7 +50,7 @@ jq -r --argjson max "$FRONTIER_MAX" '
       (if $total > $max then "  ... \($total - $max) more: cactus list -s any --agent \($agent)" else empty end),
       "  \($more | length) to elaborate (cactus edit KEY --agent ID --context ...), \($done | length) answered to act on and clear, \($open | length) open",
       (if (($more | length) + ($open | length)) > 0 and $watching == "0"
-       then "  no cactus monitor is running for this agent: start Monitor(command=\"cactus --monitor --json --agent \($agent)\", timeout_ms=1800000) now"
+       then "  no cactus once-loop is armed for this agent: run Bash(command=\"cactus --monitor --json --agent \($agent) --once\", run_in_background=true) now"
        else empty end)
     end
 ' --arg agent "$agent" --arg watching "$watching" <<<"$rows"

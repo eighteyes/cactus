@@ -22,7 +22,7 @@ arguments:
 
 Do not run `cactus` in a shell here, and never start `cactus --monitor`: it
 is a foreground stream that only returns when killed, and a host with no
-Monitor tool will sit on it forever.
+background command will sit on it forever.
 
 ## Identity
 

@@ -110,11 +110,11 @@ Or register the server by absolute path in `claude_desktop_config.json`:
 
 ```
 hook               host          does
-SessionStart       Claude Code   resolve identity; rehome rows after /clear; start-the-monitor line; open rows
-                   Codex         session id as identity; start-the-monitor line
-UserPromptSubmit   both          inject open and answered-but-unacted rows; name the monitor if none runs
-Stop (opt-in)      Claude Code   hold a turn with open rows and no monitor; hold a turn that posted no ask
-                   Codex         hold a turn with open rows and no monitor
+SessionStart       Claude Code   resolve identity; rehome rows after /clear; arm-the-once-loop line; open rows
+                   Codex         session id as identity; arm-the-once-loop line
+UserPromptSubmit   both          inject open and answered-but-unacted rows; name the once-loop if none is armed
+Stop (opt-in)      Claude Code   hold a turn with open rows and no once-loop; hold a turn that posted no ask
+                   Codex         hold a turn with open rows and no once-loop
 PermissionDenied   Claude Code   post the denied command as a `cactus run` row
 PermissionRequest  Codex         post the requested command as a `cactus run` row, decline the transient prompt
 ```
@@ -134,7 +134,7 @@ cactus --www          # localhost web surface
 Agents:
 
 ```sh
-cactus --monitor --json --agent ID                     # before the first ask; keep it running
+cactus --monitor --json --agent ID --once              # background, before the first ask; exits on the first event, re-arm on wake
 cactus ask "Which auth backend?" --agent ID \
   -c "oidc: existing IdP" -c "local: bcrypt table" \
   --recommend oidc --confidence med --context "Staging tenant exists."
@@ -155,7 +155,7 @@ Full reference: `cactus --agent-help`.
 
 ### Skills / MCP / Subagent
 
-An agentic runtime needs two things from its host: bash calls and a background process. The skill teaches the workflow over bash; `cactus --monitor` is the background process that wakes the agent. MCP is for Desktop, which has neither: `server/cactus-mcp` wraps the same verbs, and a client polls with `cactus_get`. The `cactus-courier` subagent parks on a thread in the background and reports when the human answers.
+An agentic runtime needs two things from its host: bash calls and a background command that re-invokes the agent when it exits. The skill teaches the workflow over bash; `cactus --monitor --once` is that background command, re-armed on every wake. MCP is for Desktop, which has neither: `server/cactus-mcp` wraps the same verbs, and a client polls with `cactus_get`. The `cactus-courier` subagent parks on a thread in the background and reports when the human answers.
 
 ### Webhooks
 

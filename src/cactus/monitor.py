@@ -292,8 +292,9 @@ def run_monitor(
     emits the current inbox first when asked to.
 
     `once` exits right after the first emitted event that is not `asked` —
-    an agent waiting on a verdict in the background after the Monitor tool's
-    own time cap hits, not a full session watcher.
+    the once-loop (q339): an agent arms it as a background command, the exit
+    wakes the agent, and the agent re-arms it. The unbounded stream is for
+    a host that can hold one open without a time cap.
     """
     def fetch() -> list[Question]:
         return store.list(project=project, status=None, all_projects=all_projects)

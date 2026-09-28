@@ -64,9 +64,9 @@ open_rows = int(os.environ.get("CACTUS_OPEN") or 0)
 if open_rows > 0 and os.environ.get("CACTUS_WATCHING") == "0":
     agent = os.environ.get("CACTUS_ID", "ID")
     print(json.dumps({"decision": "block", "reason": (
-        f"you have {open_rows} open cactus row(s) and no monitor running; start "
-        f"Monitor(command=\"cactus --monitor --json --agent {agent}\", "
-        "timeout_ms=1800000) now, then stop"
+        f"you have {open_rows} open cactus row(s) and no once-loop armed; run "
+        f"Bash(command=\"cactus --monitor --json --agent {agent} --once\", "
+        "run_in_background=true) now, then stop"
     )}))
     sys.exit(0)
 

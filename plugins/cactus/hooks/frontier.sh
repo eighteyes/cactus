@@ -7,6 +7,11 @@ command -v jq >/dev/null 2>&1 || exit 0
 agent=$(jq -r '.session_id // empty' <<<"$input")
 [ -n "$agent" ] || exit 0
 
+hook_cwd=$(jq -r '.cwd // empty' <<<"$input")
+enabled=$(cactus project-status --json --cwd "${hook_cwd:-$PWD}" 2>/dev/null \
+  | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
+[ "${enabled:-true}" = "true" ] || exit 0
+
 rows=$(cactus list -s any --agent "$agent" --json 2>/dev/null) || exit 0
 [ -n "$rows" ] || exit 0
 watching=$(ps -ax -o command= 2>/dev/null | awk -v id="$agent" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
@@ -19,6 +24,6 @@ jq -r --arg agent "$agent" --arg watching "$watching" '
     "cactus frontier (--agent \($agent)):",
     ($all[:5][] | "  \(.key) \(.status) \(.word // (.text | .[0:60]))"),
     "  \($elaborate | length) to elaborate, \($answered | length) answered to act on and clear, \($open | length) open",
-    (if (($elaborate | length) + ($open | length)) > 0 and $watching == "0" then "  no monitor is running: cactus --monitor --json --agent \($agent)" else empty end)
+    (if (($elaborate | length) + ($open | length)) > 0 and $watching == "0" then "  no once-loop is armed: run cactus --monitor --json --agent \($agent) --once as a background command" else empty end)
   end
 ' <<<"$rows"
