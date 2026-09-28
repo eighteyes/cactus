@@ -6,8 +6,11 @@ Responsibilities:
   markdown, fully and idempotently — the same row state always renders to the
   same bytes. An `edit`'s `prior` fields render as a `## Rewrite` section, so
   the record shows the question before and after.
-- Resolve where that markdown lives: <project>/.ai/cactus/q{N}-{slug}.md,
-  reusing whatever filename a row already has even if its word changes.
+- Resolve where that markdown lives: <project>/.ai/cactus/q{N}-{id}-{slug}.md,
+  reusing whatever filename a row already has even if its word changes. The
+  row's globally unique `id` guards against a reused per-project key (q166)
+  ever colliding with an older row's file (q341); a bare `q{N}-*.md` is never
+  matched, so pre-q341 files are left alone and never read or renamed.
 - Write it atomically (temp file + os.replace), creating .ai/cactus/ as
   needed.
 
@@ -51,13 +54,21 @@ def record_path(row: "Question") -> Path:
 
     A record is named from the row's word or text at the time it was first
     written. A later `--word` on the same row must not orphan the old file, so
-    an existing q{N}-*.md is reused verbatim rather than re-slugged.
+    an existing q{N}-{id}-*.md is reused verbatim rather than re-slugged.
+
+    The filename embeds `row.id` (the globally unique AUTOINCREMENT rowid)
+    alongside `row.key` (only unique within a project, q166), so a key
+    reused across projects or across the old/new numbering scheme can never
+    collide with an older row's file (q341). Lookup matches `q{N}-{id}-*.md`
+    only — a bare `q{N}-*.md` from before this change is never matched, so it
+    is left untouched and a row that already has one simply gets a fresh
+    new-style file on its next write.
     """
     d = records_dir(row.project)
-    existing = sorted(d.glob(f"{row.key}-*.md"))
+    existing = sorted(d.glob(f"{row.key}-{row.id}-*.md"))
     if existing:
         return existing[0]
-    return d / f"{row.key}-{slug_for(row)}.md"
+    return d / f"{row.key}-{row.id}-{slug_for(row)}.md"
 
 
 def _status_label(row: "Question", event: str) -> str:

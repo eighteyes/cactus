@@ -272,7 +272,11 @@ scope.
   fail soft: any write error is a warning, not a rollback. Rendering is
   idempotent per row state. `CACTUS_RECORDS=0` disables writing; tests must
   set it or run inside a temp git repo, since a record lands in the row's
-  *project root*, not the caller's scratch DB.
+  *project root*, not the caller's scratch DB. The filename is
+  `q{N}-{id}-{slug}.md`, not just `q{N}-{slug}.md` (q341): `id` is the row's
+  globally unique rowid, because `key` (`q{N}`) numbers per project (q166)
+  and a reused key across projects or numbering schemes would otherwise
+  overwrite an older row's file.
 - `Store.set_review` merges: each `cactus review` call only touches the
   fields it was given, `None` (an omitted flag) keeps the stored value, and
   `""` (`--run ""`) clears it explicitly. A second call can no longer wipe
