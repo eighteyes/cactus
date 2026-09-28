@@ -35,3 +35,5 @@
 - [x] q340: keep the unbounded --monitor stream as a CLI mode; docs-only removal. 3b4abac.
 - [ ] BUG record collision: per-project keys (q166) reuse qN numbers that old global-key rows already used, and record.py picks up the existing `qN-*.md`, so q340 (mon-scope) overwrote q340-grok-wake.md from fb8ca4b. Records need a key that cannot repeat: the row id, or project-scoped numbering that starts above the old global max.
 - [x] Codex probe (q342, 2026-09-27 22:19): Codex armed the background --once, the process survived its turn end and exited on the answer, but Codex was not re-invoked. Codex has no exit-wakes-agent semantic. Wake path decision: q343.
+- [x] Codex hooks and CODEX.md stop promising a wake; frontier lists answers next turn; foreground `get --wait --timeout 300` for an answer needed now. 0ee4611.
+- [ ] Codex wake path = ACP bridge (q345): Codex asks through ACP elicitation, cactus holds the request until answered. In flight by the Codex agent (pane w3B:p5): src/cactus/acp.py, store.py source column, TUI BLOCKING·ACP rows. Asked it to commit and document in CODEX.md.
