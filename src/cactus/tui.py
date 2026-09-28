@@ -34,6 +34,7 @@ from typing import Any
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 from textual.widgets._footer import FooterKey
@@ -2585,8 +2586,15 @@ class CactusApp(App[int]):
             return
         self._stop_field_timer()
 
+    def on_unmount(self) -> None:
+        self._stop_field_timer()
+
     def _render_field(self) -> None:
-        widget = self.query_one("#field", FieldView)
+        try:
+            widget = self.query_one("#field", FieldView)
+        except NoMatches:
+            self._stop_field_timer()
+            return
         width = max(widget.size.width, 1)
         widget.update(self.field.render(width))
 
