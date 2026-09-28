@@ -951,3 +951,23 @@ async def test_field_height_fills_the_card_beneath_text_and_keybar(store: Store,
         field = app.query_one("#field")
         keybar = app.query_one("#keybar", Static)
         assert field.size.height == card.size.height - text.size.height - keybar.size.height
+
+
+async def test_sky_config_reload_updates_the_running_world(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cactus.sky import SkyConfig
+
+    path = tmp_path / "sky.toml"
+    monkeypatch.setenv("CACTUS_SKY", str(path))
+    SkyConfig().dump(path)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.world.sky.config.far.growth == SkyConfig().far.growth
+
+        changed = SkyConfig().overlay({"far": {"growth": 0.5}})
+        changed.dump(path)
+        await pilot.pause(2.5)
+        assert app.world.sky.config.far.growth == 0.5

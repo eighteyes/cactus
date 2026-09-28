@@ -4,7 +4,7 @@ test_field.py — World physics: dropping, anchoring, weather, and rendering.
 Responsibilities:
 - A dropped seed falls to the floor, or anchors on top of / beside the
   structure (including the reverse-pawn diagonal below it).
-- Wind stays bounded; the sky's depth layers scroll and wrap inside the world.
+- Wind stays bounded; the sky's air grids stay within [0, 1] density inside the world.
 - A bird nudges a seed it flies close to, and its colour follows the same
   atmospheric shift as a sky cell's.
 - Structure age is counted in `drops` (decisions), not ticks: a landed cell
@@ -83,12 +83,14 @@ def test_wind_stays_within_bounds() -> None:
         assert -0.6 <= world.wind <= 0.6
 
 
-def test_sky_layer_offsets_wrap_within_bounds() -> None:
+def test_sky_air_density_stays_within_bounds() -> None:
     world = World(cols=10, rows=8, rng=random.Random(7))
     for _ in range(5_000):
         world.tick()
-        for layer in world.sky.layers.values():
-            assert 0 <= layer.offset < layer.period_px
+        for grid in world.sky.grids.values():
+            for row in grid.d:
+                for v in row:
+                    assert 0.0 <= v <= 1.0
 
 
 def test_bird_near_a_seed_changes_its_vx() -> None:
@@ -137,14 +139,14 @@ def test_resize_rebakes_the_sky_to_the_new_column_count() -> None:
     world = World(cols=5, rows=8, rng=random.Random(15))
     world.resize(20, 8)
     assert world.sky.cols == 20
-    assert world.sky.canvas.width_px == 40
+    assert world.sky.grids["near"].width == 40
 
 
-def test_far_sky_layer_moves_slower_than_near() -> None:
+def test_far_sky_grid_drifts_slower_than_near() -> None:
     world = World(cols=10, rows=12, rng=random.Random(17))
     for _ in range(100):
         world.tick()
-    assert world.sky.layers["far"].offset < world.sky.layers["near"].offset
+    assert world.sky.config.far.wind_scale < world.sky.config.near.wind_scale
 
 
 def test_landed_cell_stays_new_through_ticks_then_ages_on_further_drops() -> None:

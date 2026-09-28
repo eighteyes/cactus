@@ -40,6 +40,7 @@ from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
 from .field import TICK_SECONDS, World
 from .scope import project_label
+from .sky import SkyConfig, config_path as sky_config_path
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
 
@@ -727,6 +728,10 @@ class CactusApp(App[int]):
         # the first render, when the FieldView's actual size is known.
         self.world = World(cols=1, rows=10)
         self._field_timer = None
+        # Sky tuning: reread the config file every SKY_RELOAD_TICKS ticks,
+        # only acting on it when its mtime has actually moved.
+        self._sky_config_mtime: float | None = None
+        self._sky_tick_count = 0
         # Each key bar item's x offset inside `#keybar`, rebuilt on every
         # `_rebuild_keybar` — `_field_column` reads this to drop a seed under
         # the key that answered.
@@ -786,6 +791,7 @@ class CactusApp(App[int]):
         # focused; re-ask once the screen has settled.
         self.call_after_refresh(self.refresh_bindings)
         self.set_interval(POLL_INTERVAL, self._poll)
+        self._reload_sky_config(initial=True)
         self._field_timer = self.set_interval(TICK_SECONDS, self._field_tick, name="field")
         self._render_field()
 
@@ -2726,9 +2732,36 @@ class CactusApp(App[int]):
         self.world.drop(self._field_column(key))
         self._render_field()
 
+    SKY_RELOAD_TICKS = 20
+
     def _field_tick(self) -> None:
         self.world.tick()
+        self._sky_tick_count += 1
+        if self._sky_tick_count % self.SKY_RELOAD_TICKS == 0:
+            self._reload_sky_config()
         self._render_field()
+
+    def _reload_sky_config(self, *, initial: bool = False) -> None:
+        """Best-effort: a missing file is the defaults, a bad file keeps the
+        config already running and flashes why instead of raising."""
+        path = sky_config_path()
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if not initial and mtime == self._sky_config_mtime:
+            return
+        self._sky_config_mtime = mtime
+        try:
+            config = SkyConfig.load(path)
+        except ValueError as exc:
+            self.flash = f"sky config: {exc}"
+            self._rebuild_status_bar()
+            return
+        self.world.sky.apply(config)
+        if not initial:
+            self.flash = "sky config reloaded"
+            self._rebuild_status_bar()
 
     def on_unmount(self) -> None:
         if self._field_timer is not None:

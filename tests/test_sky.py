@@ -1,27 +1,27 @@
 """
-test_sky.py — the value-noise sky renderer: noise, layers, canvas, downsample.
+test_sky.py — the cellular-automaton sky: grids, tuning config, downsample.
 
 Responsibilities:
-- `Noise.sample` wraps horizontally at the lattice width; `Noise.fbm` stays
-  in [0, 1] regardless of input.
-- A far layer scrolls slower than a near one, in the documented speed ratio.
-- A layer's baked texture is anisotropic — longer horizontal autocorrelation
-  than vertical — and periodic (`period_px`), so the scroll wraps with no
-  seam: the density row at the far end of one cycle and at the start of the
-  next differ only by the ordinary one-pixel scroll.
-- `Canvas.composite` never lets a farther layer overwrite a nearer one's
-  pixel.
-- `downsample` picks blank, a fringe speck, an ordered-dither braille pattern,
-  or a solid core by block mean, with a monotonic dot count as density rises,
-  and colours a block from its owning layer's band.
-- A layer's texture pair morphs into a fresh one every `MORPH_TICKS` ticks;
-  morph and the breathing cutoff both change density on their own, without
-  scrolling.
+- `Air.tick` conserves mass under advection alone, spreads anisotropically
+  under diffusion alone (further along x than y), grows a puff inside one of
+  its bands and lets one outside fade, and shears rows near the bottom of the
+  sky faster than rows near the top.
+- `Air.d` (and every row inside it) is the same object across ticks; only
+  `resize` ever rebuilds it.
+- `downsample` picks blank, a fringe speck, an ordered-dither braille
+  pattern, or a solid core by block mean, with a monotonic dot count as
+  density rises, and colours a block from its owning grid's own dark/light
+  tone ramp plus the shared atmospheric depth shift.
+- `Sky.render_cells` uses at least 24 distinct colours across a real sky and
+  stays inside the 40 ms frame budget at 100x20.
+- `SkyConfig.load`/`overlay`/`dump` round-trip through TOML, overlay only the
+  keys a file supplies, and raise `ValueError` naming the offending key.
 """
 
 from __future__ import annotations
 
 import random
+import time
 
 import pytest
 from rich.cells import cell_len
@@ -29,143 +29,185 @@ from rich.cells import cell_len
 from cactus.field import MONO_PLUS
 from cactus.sky import (
     _SPECK_GLYPHS,
-    BANDS,
     CORE_GLYPH,
-    MORPH_TICKS,
-    Canvas,
-    Layer,
-    Noise,
+    GRID_BAND_REGION,
+    GRID_ORDER,
+    Air,
+    GridConfig,
     Sky,
+    SkyConfig,
     _ordered_dither,
-    atmospheric_colour,
     downsample,
 )
 
 
-def test_noise_wraps_at_lattice_width() -> None:
-    noise = Noise(random.Random(1), 6, 6)
-    for y in (0, 1.5, 4.0):
-        assert noise.sample(0, y) == noise.sample(6, y)
+def _still_config(**overrides) -> GridConfig:
+    """A grid config with every dynamic process off by default, so a test can
+    turn exactly one back on."""
+    base = dict(
+        wind_scale=1.0, kx=0.0, ky=0.0, growth=0.0, evaporation=0.0,
+        nucleate_p=0.0, band_count=0, floor=0.0, allee=0.0, uptake=0.0, replenish=0.0,
+    )
+    base.update(overrides)
+    return GridConfig(**base)
 
 
-def test_fbm_stays_in_unit_range() -> None:
-    noise = Noise(random.Random(2), 9, 9)
-    rng = random.Random(3)
-    for _ in range(1000):
-        x, y = rng.uniform(-50, 50), rng.uniform(-50, 50)
-        assert 0.0 <= noise.fbm(x, y, 3) <= 1.0
+def _tiny_grids(cfg: SkyConfig | None = None, width: int = 2, height: int = 4):
+    cfg = cfg or SkyConfig()
+    return {
+        name: Air(width, height, random.Random(i), getattr(cfg, name), GRID_BAND_REGION[name], warm=False)
+        for i, name in enumerate(GRID_ORDER)
+    }, cfg
 
 
-def test_far_layer_scrolls_slower_than_near() -> None:
-    sky = Sky(cols=20, sky_rows=8, rng=random.Random(5), palette=MONO_PLUS)
+# ---- Air: the cellular automaton ---------------------------------------
+
+
+def test_advection_alone_conserves_mass() -> None:
+    cfg = _still_config()
+    air = Air(20, 8, random.Random(1), cfg, (0.4, 0.6), warm=False)
+    for x in range(3):
+        air.d[4][x] = 0.6
+    start = sum(sum(row) for row in air.d)
     for _ in range(100):
-        sky.tick()
-    far_offset = sky.layers["far"].offset
-    near_offset = sky.layers["near"].offset
-    assert far_offset < near_offset
-    ratio = near_offset / far_offset
-    documented = BANDS["near"]["speed"] / BANDS["far"]["speed"]
-    assert ratio == pytest.approx(documented)
+        air.tick(0.37, shear_floor=0.0, shear_base=1.0, shear_span=0.0)
+    end = sum(sum(row) for row in air.d)
+    assert end == pytest.approx(start, abs=1e-6)
 
 
-def test_layer_texture_is_anisotropic_longer_in_x_than_y() -> None:
-    """A cirrus layer's baked texture should look "long and thin": neighbours
-    along x should be more alike (smaller mean absolute difference) than
-    neighbours along y, since scale_x is documented far larger than scale_y."""
-    layer = Layer("mid", width_px=60, height_px=40, rng=random.Random(21))
-    tex = layer.tex_a
+def test_diffusion_is_anisotropic() -> None:
+    cfg = _still_config(kx=0.10, ky=0.006)
+    air = Air(30, 20, random.Random(2), cfg, (0.4, 0.6), warm=False)
+    cx, cy = 15, 10
+    air.d[cy][cx] = 1.0
+    for _ in range(50):
+        air.tick(0.0, shear_floor=0.0, shear_base=1.0, shear_span=0.0)
 
-    x_diffs = []
-    for row in tex:
-        for i in range(len(row) - 1):
-            x_diffs.append(abs(row[i + 1] - row[i]))
-    mean_x_diff = sum(x_diffs) / len(x_diffs)
-
-    y_diffs = []
-    for y in range(len(tex) - 1):
-        row_a, row_b = tex[y], tex[y + 1]
-        for i in range(min(len(row_a), len(row_b))):
-            y_diffs.append(abs(row_b[i] - row_a[i]))
-    mean_y_diff = sum(y_diffs) / len(y_diffs)
-
-    assert mean_x_diff < mean_y_diff
+    total = sum(sum(row) for row in air.d)
+    mx = sum(x * v for row in air.d for x, v in enumerate(row)) / total
+    my = sum(y * v for y, row in enumerate(air.d) for v in row) / total
+    var_x = sum((x - mx) ** 2 * v for row in air.d for x, v in enumerate(row)) / total
+    var_y = sum((y - my) ** 2 * v for y, row in enumerate(air.d) for v in row) / total
+    assert var_x > var_y
 
 
-def test_texture_scroll_wraps_with_no_seam() -> None:
-    """The density row read at the tail of one cycle and the head of the next
-    should differ only by the ordinary one-pixel scroll, not jump — the
-    texture is baked exactly one period wide and read by plain wraparound."""
-    layer = Layer("near", width_px=30, height_px=20, rng=random.Random(9))
-    layer.blend = 0.0  # isolate the read window from morph blending
-
-    period = layer.period_px
-    for y in range(layer.height_px):
-        if layer.envelope[y] < 1e-4:
-            continue
-        layer.offset = period - 0.5
-        row_end = layer.density_row(y)
-        layer.offset = 0.5
-        row_start = layer.density_row(y)
-        # Both windows are read at (effectively) the same integer offset one
-        # pixel apart around the wrap point — shifting one against the other
-        # by that single pixel should leave them nearly identical.
-        diffs = [abs(a - b) for a, b in zip(row_end[1:], row_start[:-1])]
-        assert max(diffs) < 0.05
+def test_puff_inside_a_band_grows_and_outside_fades() -> None:
+    cfg = _still_config(growth=2.0, evaporation=0.04, band_count=1, band_sigma_lo=2.0, band_sigma_hi=2.0)
+    air = Air(10, 40, random.Random(3), cfg, (0.5, 0.5), warm=False)
+    centre, _sigma = air.bands[0]
+    inside_y = int(round(centre))
+    outside_y = 2
+    air.d[inside_y][3] = 0.2
+    air.d[outside_y][3] = 0.2
+    for _ in range(600):
+        air.tick(0.0, shear_floor=0.0, shear_base=1.0, shear_span=0.0)
+    assert air.d[inside_y][3] > 0.2
+    assert air.d[outside_y][3] < 0.01
 
 
-def test_composite_never_lets_a_farther_layer_overwrite_a_nearer_pixel() -> None:
-    width_px, height_px = 4, 4
-    near = Layer("near", width_px, height_px, random.Random(7))
-    mid = Layer("mid", width_px, height_px, random.Random(8))
-    # Force both textures dense everywhere so ownership is decided purely by
-    # front-to-back order, not by which happens to clear the density floor.
-    for layer in (near, mid):
-        layer.tex_a = [[1.0] * layer.period_px for _ in range(height_px)]
-        layer.tex_b = [[1.0] * layer.period_px for _ in range(height_px)]
-        layer.envelope = [1.0] * height_px
-        layer.base_cutoff = 0.0
-    canvas = Canvas(width_px, height_px)
-    canvas.composite([near, mid])
-    assert all(v == 0 for row in canvas.layer_id for v in row)
+def test_shear_moves_bottom_rows_faster_than_top() -> None:
+    cfg = _still_config()
+    h = 20
+    air = Air(40, h, random.Random(4), cfg, (0.4, 0.6), warm=False)
+    bottom_y, top_y = 1, h - 2
+    air.d[bottom_y][5] = 1.0
+    air.d[top_y][5] = 1.0
+    for _ in range(200):
+        air.tick(0.3, shear_floor=0.03, shear_base=0.7, shear_span=0.3)
+
+    def centroid_x(y: int) -> float:
+        row = air.d[y]
+        total = sum(row)
+        return sum(x * v for x, v in enumerate(row)) / total
+
+    assert (centroid_x(bottom_y) - 5) > (centroid_x(top_y) - 5)
+
+
+def test_air_d_identity_is_stable_across_ticks_only_resize_rebuilds_it() -> None:
+    cfg = _still_config(kx=0.1, ky=0.006, growth=0.01, evaporation=0.004, nucleate_p=0.1, band_count=2)
+    air = Air(10, 8, random.Random(5), cfg, (0.4, 0.6), warm=False)
+    d_id = id(air.d)
+    row_ids = [id(r) for r in air.d]
+    for _ in range(30):
+        air.tick(0.2, shear_floor=0.03, shear_base=0.7, shear_span=0.3)
+    assert id(air.d) == d_id
+    assert [id(r) for r in air.d] == row_ids
+    air.resize(20, 8)
+    assert id(air.d) != d_id
+
+
+# ---- Sky: three grids composited, rendered, and timed ------------------
+
+
+def test_render_uses_at_least_24_distinct_colours() -> None:
+    sky = Sky(cols=100, sky_rows=14, rng=random.Random(1), palette=MONO_PLUS)
+    for _ in range(300):
+        sky.tick(0.1)
+    grid = sky.render_cells()
+    colours = {colour for row in grid for glyph, colour in row if glyph != " " and colour is not None}
+    assert len(colours) >= 24
+
+
+def test_frame_time_budget_at_100x20() -> None:
+    sky = Sky(cols=100, sky_rows=20, rng=random.Random(1), palette=MONO_PLUS)
+    start = time.perf_counter()
+    for _ in range(20):
+        sky.tick(0.1)
+        sky.render_cells()
+    elapsed = (time.perf_counter() - start) / 20
+    assert elapsed < 0.040, f"{elapsed * 1000:.1f} ms/frame, over the 40 ms budget"
+
+
+# ---- downsample: kept from v5 ------------------------------------------
 
 
 def test_downsample_blank_dither_and_core() -> None:
-    layers = [Layer(name, 2, 4, random.Random(i)) for i, name in enumerate(("near", "mid", "far"))]
+    grids, cfg = _tiny_grids()
+    assert downsample(grids, MONO_PLUS, sky_rows=1, cols=1, cfg=cfg)[0][0] == (" ", None)
 
-    blank = Canvas(2, 4)  # freshly constructed: density is all-zero already
-    assert downsample(blank, layers, MONO_PLUS, sky_rows=1)[0][0] == (" ", None)
+    grids, cfg = _tiny_grids()
+    for row in grids["near"].d:
+        row[:] = [0.1, 0.1]
+    glyph, _ = downsample(grids, MONO_PLUS, sky_rows=1, cols=1, cfg=cfg)[0][0]
+    assert glyph not in (" ", CORE_GLYPH)
 
-    faint = Canvas(2, 4)
-    faint.density = [[0.1, 0.1], [0.1, 0.1], [0.1, 0.1], [0.1, 0.1]]
-    faint.layer_id = [[0, 0], [0, 0], [0, 0], [0, 0]]
-    glyph, _ = downsample(faint, layers, MONO_PLUS, sky_rows=1)[0][0]
-    assert glyph not in (" ", CORE_GLYPH)  # a dim dithered cell, not blank or full
-
-    full = Canvas(2, 4)
-    full.density = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]
-    full.layer_id = [[0, 0], [0, 0], [0, 0], [0, 0]]
-    glyph, _ = downsample(full, layers, MONO_PLUS, sky_rows=1)[0][0]
+    grids, cfg = _tiny_grids()
+    for row in grids["near"].d:
+        row[:] = [1.0, 1.0]
+    glyph, _ = downsample(grids, MONO_PLUS, sky_rows=1, cols=1, cfg=cfg)[0][0]
     assert glyph == CORE_GLYPH
 
 
 def test_downsample_mid_density_cell_is_neither_blank_nor_full() -> None:
-    layers = [Layer(name, 2, 4, random.Random(i)) for i, name in enumerate(("near", "mid", "far"))]
-    mid = Canvas(2, 4)
-    mid.density = [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]
-    mid.layer_id = [[0, 0], [0, 0], [0, 0], [0, 0]]
-    glyph, _ = downsample(mid, layers, MONO_PLUS, sky_rows=1)[0][0]
+    grids, cfg = _tiny_grids()
+    for row in grids["near"].d:
+        row[:] = [0.5, 0.5]
+    glyph, _ = downsample(grids, MONO_PLUS, sky_rows=1, cols=1, cfg=cfg)[0][0]
     assert glyph not in (" ", CORE_GLYPH)
 
 
 def test_downsample_fringe_cell_renders_a_speck() -> None:
-    layers = [Layer(name, 2, 4, random.Random(i)) for i, name in enumerate(("near", "mid", "far"))]
-    canvas = Canvas(2, 4)
-    # One pixel just above the fringe threshold; block mean stays well below
-    # BLANK_MEAN.
-    canvas.density = [[0.03, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
-    canvas.layer_id = [[0, -1], [-1, -1], [-1, -1], [-1, -1]]
-    glyph, _ = downsample(canvas, layers, MONO_PLUS, sky_rows=1)[0][0]
+    grids, cfg = _tiny_grids()
+    # (0, 0)'s cell hash is checked to land in the speck bucket below.
+    grids["near"].d[0][0] = 0.03
+    glyph, _ = downsample(grids, MONO_PLUS, sky_rows=1, cols=1, cfg=cfg)[0][0]
     assert glyph in _SPECK_GLYPHS
+
+
+def test_downsample_colour_follows_the_owning_grids_tone_pair() -> None:
+    grids, cfg = _tiny_grids()
+    for row in grids["far"].d:
+        row[:] = [1.0, 1.0]
+    _, colour = downsample(grids, MONO_PLUS, sky_rows=1, cols=1, cfg=cfg)[0][0]
+    # m = 1.0: tone is 1.0, so the base is the far grid's light end, pushed
+    # toward haze only by the far grid's own fixed depth (row 0 of 1 adds no
+    # further row-height shift).
+    from cactus.sky import GRID_DEPTH, _lerp_hex, atmospheric_colour
+    expected = atmospheric_colour(
+        MONO_PLUS.cloud_far_light, GRID_DEPTH["far"], 0, 1, MONO_PLUS,
+        cfg.haze_depth_weight, cfg.haze_row_weight, cfg.haze_clamp,
+    )
+    assert colour == expected
 
 
 def test_ordered_dither_dot_count_is_monotonic_with_uniform_density() -> None:
@@ -189,45 +231,6 @@ def test_braille_bit_order() -> None:
     assert _ordered_dither(bottom_right) == "⢀"
 
 
-
-def test_colour_follows_the_owning_layers_band() -> None:
-    layers = [Layer(name, 2, 4, random.Random(i)) for i, name in enumerate(("near", "mid", "far"))]
-    canvas = Canvas(2, 4)
-    canvas.density = [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]
-    canvas.layer_id = [[2, 2], [2, 2], [2, 2], [2, 2]]  # index 2: "far" in LAYER_ORDER
-    _, colour = downsample(canvas, layers, MONO_PLUS, sky_rows=1)[0][0]
-    # m = 1.0: the tone-mix-toward-haze term is zero, so full density reads
-    # as the plain atmospheric colour.
-    expected = atmospheric_colour(MONO_PLUS.cloud_far, layers[2].depth, 0, 1, MONO_PLUS)
-    assert colour == expected
-
-
-def test_layer_morphs_tex_a_into_the_former_tex_b() -> None:
-    layer = Layer("near", 4, 4, random.Random(11), stagger=0.0)
-    former_b = layer.tex_b
-    for _ in range(int(MORPH_TICKS)):
-        layer.tick()
-    assert layer.tex_a == former_b
-
-
-def test_morph_and_breath_change_density_without_scrolling() -> None:
-    layer = Layer("mid", 8, 4, random.Random(13), stagger=0.0)
-    layer.speed = 0.0  # isolate morph/breath from scrolling
-    # A cutoff mid-range of the raw fbm's spread guarantees the blend and the
-    # breathing cutoff both cross it somewhere over the run below, rather
-    # than depending on this seed's fbm values happening to reach the
-    # (otherwise untouched) band cutoff.
-    layer.base_cutoff = 0.3
-    before = layer.density_row(2)
-    changed = False
-    for _ in range(300):
-        layer.tick()
-        if layer.density_row(2) != before:
-            changed = True
-            break
-    assert changed
-
-
 def test_alphabet_glyphs_are_all_single_cell_width() -> None:
     """Every glyph the sky can draw must be one terminal cell wide in a
     monospace font — a double-width character would desync the field's
@@ -236,3 +239,37 @@ def test_alphabet_glyphs_are_all_single_cell_width() -> None:
     alphabet += [chr(0x2800 | bits) for bits in range(256)]
     for glyph in alphabet:
         assert cell_len(glyph) == 1, repr(glyph)
+
+
+# ---- SkyConfig: load / overlay / dump -----------------------------------
+
+
+def test_overlay_changes_one_key_and_keeps_the_rest() -> None:
+    cfg = SkyConfig().overlay({"far": {"growth": 0.5}, "shared": {"tone_exp": 0.8}})
+    assert cfg.far.growth == 0.5
+    assert cfg.far.kx == SkyConfig().far.kx
+    assert cfg.mid.growth == SkyConfig().mid.growth
+    assert cfg.tone_exp == 0.8
+    assert cfg.blank_mean == SkyConfig().blank_mean
+
+
+def test_overlay_bad_value_raises_naming_the_key() -> None:
+    with pytest.raises(ValueError, match=r"far\.kx"):
+        SkyConfig().overlay({"far": {"kx": "not a number"}})
+
+
+def test_overlay_unknown_key_raises_naming_the_key() -> None:
+    with pytest.raises(ValueError, match=r"shared\.bogus"):
+        SkyConfig().overlay({"shared": {"bogus": 1}})
+
+
+def test_dump_then_load_round_trips(tmp_path) -> None:
+    path = tmp_path / "sky.toml"
+    written = SkyConfig().overlay({"near": {"nucleate_p": 0.9}})
+    written.dump(path)
+    loaded = SkyConfig.load(path)
+    assert loaded == written
+
+
+def test_load_missing_file_is_defaults(tmp_path) -> None:
+    assert SkyConfig.load(tmp_path / "does-not-exist.toml") == SkyConfig()

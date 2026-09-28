@@ -1,107 +1,77 @@
 """
-sky.py — value-noise sky renderer: cirrus clouds downsampled to toned glyphs.
+sky.py — cellular-automaton sky: three persistent air grids downsampled to
+toned glyphs.
 
 Responsibilities:
-- Bake two tileable, anisotropic value-noise textures per parallax depth band
-  (far, mid, near) — each sampled far wider in x than in y so features read
-  as long, thin streaks (cirrus), not blobs — with its own octave count,
-  scroll speed, and a per-layer vertical shape: a shared bell envelope
-  bunched a little above mid-height, times a thin horizontal comb so streaks
-  stack in bands rather than filling one wide layer.
-- Bake each texture exactly one lattice-period wide (`Layer.period_px`), so
-  scrolling wraps by plain modulo indexing with no seam — the old
-  double-width-then-snap trick is gone.
-- Scroll each layer's texture independently by depth, and slowly morph it
-  from one baked texture toward a fresh one and back (`Sky.tick`), so the
-  sky keeps changing shape, not just drifting; and breathe its density
-  cutoff on a slower cycle, so clouds swell and thin without a rebake.
-- Composite the layers into a density canvas front-to-back, so a nearer
-  layer's pixel is never overwritten by one further back
-  (`Sky.render_cells`).
-- Downsample the canvas, `PX_X` by `PX_Y` pixels per terminal cell, to one
-  toned glyph: blank, a fringe speck, an ordered-dither braille pattern (nine
-  visible tones per cell via a 2x4 Bayer matrix), a flat cirrus stroke, a
-  tapering edge stroke, or a solid core — plus a colour shifted toward
-  `palette.haze` by depth, by height, and by the cell's own density, so thin
-  fringes read dimmer than dense cores in the same cloud (`downsample`).
+- `Air`: one depth's persistent density grid at braille-pixel resolution,
+  evolved in place every tick — advect along x with a height-sheared wind,
+  diffuse anisotropically (far more along x than y, so mass stays 1-3 rows
+  tall), react with a banded logistic growth against a flat evaporation, and
+  nucleate the occasional puff. Nothing is regenerated: `tick()` mutates
+  `Air.d`, `resize()` is the only method that reassigns it wholesale.
+- `Sky`: owns three `Air` grids (far/mid/near), each its own share of the
+  world's wind, its own band placement, and composites them front-to-back
+  into one canvas the same way v5's layers did — the nearest grid whose
+  density clears `DENSITY_FLOOR` owns a pixel.
+- `GridConfig`/`SkyConfig`: every tunable constant, per grid and shared,
+  as a dataclass rather than a module constant, so it can be loaded from a
+  TOML file (`SkyConfig.load`), written back out with a one-line comment per
+  key (`SkyConfig.dump`), and swapped live into a running `Sky`
+  (`Sky.apply`) without disturbing the grids' drawn bands.
+- Downsample the composited canvas, `PX_X` by `PX_Y` pixels per terminal
+  cell, to one toned glyph: blank, a fringe speck, an ordered-dither braille
+  pattern, a flat cirrus stroke, a tapering edge stroke, or a solid core —
+  coloured by a 16-step tone ramp between the owning grid's own dark/light
+  pair, then shifted toward `palette.haze` by that grid's fixed depth and
+  the cell's own height (`atmospheric_colour`, shared with a bird's colour
+  at its own row).
 - Stay pure Python (no numpy) and free of Textual or store imports; `field.py`
-  is the only caller, and it duck-types `palette` (no import of its type here,
-  to avoid a cycle). Keeps its own `TICK_SECONDS`, matching field.py's, so its
-  morph/breath cycles read in real seconds without importing field.py.
+  is the only caller, and it duck-types `palette` (no import of its type
+  here, to avoid a cycle).
 """
 
 from __future__ import annotations
 
 import math
+import os
 import random
+import tomllib
+from dataclasses import dataclass, field, fields, replace
+from pathlib import Path
 
 PX_X = 2  # pixels per terminal cell, horizontal (braille dot geometry)
 PX_Y = 4  # pixels per terminal cell, vertical
 
 # Compositing ownership floor and the fringe-speck peak threshold are the
-# same number by design: a pixel the canvas ever zeroes out for compositing
-# is exactly a pixel too faint to earn even a speck (v5 plan §1, "below that,
-# nothing").
+# same number by design: a pixel too faint to ever own a composited cell is
+# exactly a pixel too faint to earn even a speck.
 DENSITY_FLOOR = 0.02
-BLANK_MEAN = 0.10
-CORE_MEAN = 0.92  # block mean at or above this is a solid core
-SEMI_CORE_MEAN = 0.80  # [SEMI_CORE_MEAN, CORE_MEAN) alternates core/dither
-FLAT_GX = 0.15  # a flat cirrus stroke needs a horizontal gradient at least this strong
-FLAT_GY_MAX = 0.10  # ...and a vertical gradient no stronger than this
-FLAT_MEAN_LO = 0.25
-FLAT_MEAN_HI = 0.70
-EDGE_MEAN_HI = 0.65  # tapering-tip edge strokes are only tried below this block mean
-EDGE_GX = 0.15
-EDGE_GY = 0.10
 
 CORE_GLYPH = "⣿"  # "⣿" — all eight braille dots, same bits an all-lit dither gives
 _SPECK_GLYPHS = ". · ˙".split()  # ". · ˙"
 
-# Kept in step with field.TICK_SECONDS by convention, not import (see module
-# docstring) — the morph/breath cycles below are expressed in seconds only
-# to read naturally; nothing here depends on field.py.
-TICK_SECONDS = 0.1
-MORPH_SECONDS = 120.0  # a layer's texture fully morphs into a fresh one
-BREATH_SECONDS = 90.0  # the cutoff's swell/thin cycle
-MORPH_TICKS = MORPH_SECONDS / TICK_SECONDS
-BREATH_TICKS = BREATH_SECONDS / TICK_SECONDS
-BREATH_AMPLITUDE = 0.06
+# Compositing order, nearest first — the first grid whose pixel clears
+# DENSITY_FLOOR owns it, exactly as v5's near/mid/far layers did.
+GRID_ORDER = ("near", "mid", "far")
+# Fixed per-grid identity: not tunable (unlike GridConfig below). `depth` is
+# the haze weight `atmospheric_colour` shifts by, matching field.py's
+# DEPTH_BAND for birds one-for-one. `band_region` is the fraction of sky
+# height (0 at the bottom) each grid's bands are drawn within — far sits in
+# the top half, mid the middle, near the lower half.
+GRID_DEPTH = {"far": 0.9, "mid": 0.6, "near": 0.2}
+GRID_BAND_REGION = {"far": (0.67, 0.97), "mid": (0.36, 0.64), "near": (0.03, 0.33)}
 
-# depth (for colour), octave count, the anisotropic feature scale — `scale_x`
-# in terminal cells, `scale_y` in pixel rows, deliberately very different so
-# fbm reads long and thin (cirrus, not blobs) — the fbm cutoff and post-cutoff
-# gain that shape density, the scroll speed in px/tick, this layer's stagger
-# in [0, 1) (its starting point on both the morph cycle and the breath cycle,
-# so the three layers never morph-rebake or crest together), and the vertical
-# comb's period in pixel rows (far/mid/near stack thinner streaks nearer).
-BANDS = {
-    "far": dict(depth=0.9, octaves=3, scale_x=40, scale_y=3, cutoff=0.55, gain=3.5, speed=0.02, stagger=0.0, comb_period=6),
-    "mid": dict(depth=0.6, octaves=3, scale_x=28, scale_y=4, cutoff=0.51, gain=3.2, speed=0.05, stagger=0.33, comb_period=8),
-    "near": dict(depth=0.2, octaves=2, scale_x=18, scale_y=6, cutoff=0.48, gain=3.0, speed=0.10, stagger=0.66, comb_period=10),
-}
-# Compositing and colour-tiebreak order: front (nearest) to back.
-LAYER_ORDER = ("near", "mid", "far")
-# Braille dot bit for each (col, row) position in a PX_X x PX_Y block,
-# standard braille bit order: col 0 is bits 0,1,2,6 top to bottom, col 1 is
-# bits 3,4,5,7 top to bottom.
-_BRAILLE_BIT = {
-    (0, 0): 0, (0, 1): 1, (0, 2): 2, (0, 3): 6,
-    (1, 0): 3, (1, 1): 4, (1, 2): 5, (1, 3): 7,
-}
-# 2x4 ordered (Bayer) dither matrix, one fixed threshold per dot position in
-# a cell, so a cell's tone (0-8 lit dots) reads as a stable spatial pattern
-# rather than every dot snapping on together at one density.
-_BAYER = ((0, 4), (6, 2), (1, 5), (7, 3))
-_BAYER_THRESHOLD = tuple(tuple(v / 8.0 + 1.0 / 16.0 for v in row) for row in _BAYER)
+# Where a user's sky tuning file lives, overridable for tests and tooling.
+CONFIG_ENV = "CACTUS_SKY"
+
+
+def config_path() -> Path:
+    override = os.environ.get(CONFIG_ENV)
+    return Path(override) if override else Path.home() / ".config" / "cactus" / "sky.toml"
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
-
-
-def _smoothstep(t: float) -> float:
-    t = _clamp(t, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
 
 
 def _lerp_hex(a: str, b: str, t: float) -> str:
@@ -114,237 +84,366 @@ def _lerp_hex(a: str, b: str, t: float) -> str:
     return f"#{r:02x}{g:02x}{c:02x}"
 
 
-def atmospheric_colour(band_colour: str, depth: float, row: int, sky_rows: int, palette) -> str:
-    """Shift `band_colour` toward `palette.haze` by depth and by height.
+def _ramp16(a: str, b: str, t: float) -> str:
+    """`a` to `b` in 16 quantised steps, so runs of equal tone merge."""
+    step = round(_clamp(t, 0.0, 1.0) * 15) / 15
+    return _lerp_hex(a, b, step)
+
+
+def atmospheric_colour(
+    band_colour: str, depth: float, row: int, sky_rows: int, palette,
+    depth_weight: float = 0.55, row_weight: float = 0.30, clamp_at: float = 0.85,
+) -> str:
+    """Shift `band_colour` toward `palette.haze` by `depth` and by height.
 
     `row` is 0 at the bottom of the sky and `sky_rows - 1` at the top, so a
     colour fades further toward the haze the higher and the further back it
-    sits. Shared by the downsampler's cloud cells and, at a fixed depth of
-    0.5, by a bird at its own row.
+    sits. Shared by the downsampler's cloud cells (`depth` is the owning
+    grid's fixed `GRID_DEPTH`) and, at a bird's own depth and row, by
+    `field.py`'s `_bird_colour`. `depth_weight`/`row_weight`/`clamp_at` are
+    `SkyConfig`'s shared haze weights; a caller with no config (birds) gets
+    the tuned defaults.
     """
     denom = sky_rows - 1 if sky_rows > 1 else 1
-    t = 0.55 * depth + 0.30 * (row / denom)
-    return _lerp_hex(band_colour, palette.haze, _clamp(t, 0.0, 0.85))
+    t = depth_weight * depth + row_weight * (row / denom)
+    return _lerp_hex(band_colour, palette.haze, _clamp(t, 0.0, clamp_at))
 
 
-class Noise:
-    """A lattice of random floats, wrapping horizontally, bilinear-sampled."""
-
-    def __init__(self, rng: random.Random, lattice_w: int, lattice_h: int) -> None:
-        self.lattice_w = lattice_w
-        self.lattice_h = lattice_h
-        self.lattice = [[rng.random() for _ in range(lattice_w)] for _ in range(lattice_h)]
-
-    def sample(self, x: float, y: float) -> float:
-        lw, lh = self.lattice_w, self.lattice_h
-        x = x % lw
-        x0 = int(x)
-        x1 = (x0 + 1) % lw
-        tx = _smoothstep(x - x0)
-        y0f = int(y)
-        y1f = y0f + 1
-        ty = _smoothstep(y - y0f)
-        y0 = min(max(y0f, 0), lh - 1)
-        y1 = min(max(y1f, 0), lh - 1)
-        row0, row1 = self.lattice[y0], self.lattice[y1]
-        a = row0[x0] + (row0[x1] - row0[x0]) * tx
-        b = row1[x0] + (row1[x1] - row1[x0]) * tx
-        return a + (b - a) * ty
-
-    def fbm(self, x: float, y: float, octaves: int, lacunarity: float = 2.0, gain: float = 0.5) -> float:
-        freq, amp, total, norm = 1.0, 1.0, 0.0, 0.0
-        for _ in range(octaves):
-            total += amp * self.sample(x * freq, y * freq)
-            norm += amp
-            freq *= lacunarity
-            amp *= gain
-        return total / norm if norm else 0.0
+def _rotate(row: list[float], k: int) -> list[float]:
+    """`result[x] == row[(x - k) % len(row)]` — a wrapping shift by `k`."""
+    w = len(row)
+    k %= w
+    if k == 0:
+        return row[:]
+    return row[-k:] + row[:-k]
 
 
-def _read_window(row: list[float], off: int, w: int, period: int) -> list[float]:
-    """`w` values starting at `off`, wrapping at `period` — the seamless scroll."""
-    end = off + w
-    if end <= period:
-        return row[off:end]
-    return row[off:period] + row[0:end - period]
+# ---- tuning: every constant a builder or a user can retune -----------------
 
 
-class Layer:
-    """One depth band's pair of baked, scrolling, morphing raw-fbm textures.
+@dataclass
+class GridConfig:
+    """One grid's physics and weather knobs. `wind_scale` is this grid's
+    share of the world's wind (parallax); the rest shape its cellular
+    automaton (v6 plan's "five constants" plus the puff and band knobs)."""
 
-    `tex_a`/`tex_b` hold raw fbm values in [0, 1] — no cutoff, gain, or
-    envelope baked in, so the cutoff can breathe at composite time for free.
-    Each is baked exactly `period_px` wide, one full period of the lattice
-    noise in x (`Noise.sample` already wraps at the lattice width), chosen
-    `>= 2 * width_px` — so a `width_px`-wide read window can start anywhere
-    `offset` (itself wrapped at `period_px`) reaches and wrap by plain modulo
-    indexing (`_read_window`) with no seam, unlike a double-width bake that
-    has to snap the visible window back once per cycle.
-    """
+    wind_scale: float
+    kx: float = 0.05
+    ky: float = 0.003
+    growth: float = 3.0
+    evaporation: float = 0.015
+    nucleate_p: float = 0.05
+    puff_lo: float = 0.5
+    puff_hi: float = 0.8
+    puff_width: int = 30
+    puff_height: int = 2
+    band_sigma_lo: float = 1.5
+    band_sigma_hi: float = 2.5
+    band_count: int = 2
+    uptake: float = 2.5
+    replenish: float = 0.002
+    floor: float = 0.03
+    allee: float = 0.15
 
-    def __init__(self, band: str, width_px: int, height_px: int, rng: random.Random, stagger: float | None = None) -> None:
-        p = BANDS[band]
-        self.band = band
-        self.depth = p["depth"]
-        self.width_px = width_px
-        self.height_px = height_px
-        self.speed = p["speed"]
+
+GRID_FIELD_NAMES = tuple(f.name for f in fields(GridConfig))
+
+_GRID_COMMENTS = {
+    "wind_scale": "fraction of the world's wind this grid drifts at",
+    "kx": "horizontal diffusion — spreads mass along a streak",
+    "ky": "vertical diffusion — spreads mass across a streak (keep small)",
+    "growth": "logistic growth rate inside a band",
+    "evaporation": "decay rate everywhere, strongest outside a band",
+    "nucleate_p": "probability per tick of a new puff",
+    "puff_lo": "a puff's minimum added density",
+    "puff_hi": "a puff's maximum added density",
+    "puff_width": "a puff's width in pixels",
+    "puff_height": "a puff's height in pixels",
+    "uptake": "moisture a unit of growth spends; higher means shorter-lived streaks",
+    "replenish": "moisture return rate per tick toward 1",
+    "floor": "density below this snaps to zero, so evaporation leaves no haze",
+    "allee": "density a streak must reach to grow; below it, it thins away",
+    "band_sigma_lo": "a band's minimum vertical spread in pixels",
+    "band_sigma_hi": "a band's maximum vertical spread in pixels",
+    "band_count": "how many bands this grid draws at startup",
+}
+
+_SHARED_COMMENTS = {
+    "shear_floor": "minimum wind magnitude per row, so drift never stalls",
+    "shear_base": "row shear's base fraction of a grid's own wind",
+    "shear_span": "row shear's extra fraction at the bottom of the sky",
+    "tone_exp": "block-mean lift before the 16-step tone ramp",
+    "haze_depth_weight": "how much a grid's fixed depth mixes toward haze",
+    "haze_row_weight": "how much a cell's height mixes toward haze",
+    "haze_clamp": "ceiling on the haze mix, however deep or high",
+    "blank_mean": "block mean below this renders blank",
+    "core_mean": "block mean at or above this renders a solid core",
+    "semi_core_mean": "block mean at or above this alternates core/dither",
+    "flat_gx": "minimum x gradient for a flat cirrus stroke",
+    "flat_gy_max": "maximum y gradient allowed for a flat cirrus stroke",
+    "flat_mean_lo": "flat stroke's minimum block mean",
+    "flat_mean_hi": "flat stroke's maximum block mean",
+    "edge_mean_hi": "tapering edge strokes are only tried below this mean",
+    "edge_gx": "minimum x gradient for a tapering edge stroke",
+    "edge_gy": "minimum y gradient for a tapering edge stroke",
+}
+
+
+@dataclass
+class SkyConfig:
+    """Every sky constant, per grid and shared. `load`/`dump` round-trip
+    this through a TOML file; `Sky.apply` swaps one in live."""
+
+    far: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=0.25))
+    mid: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=0.55))
+    near: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=1.0))
+
+    shear_floor: float = 0.03
+    shear_base: float = 0.7
+    shear_span: float = 0.3
+    tone_exp: float = 0.45
+    haze_depth_weight: float = 0.55
+    haze_row_weight: float = 0.30
+    haze_clamp: float = 0.85
+    blank_mean: float = 0.10
+    core_mean: float = 0.92
+    semi_core_mean: float = 0.80
+    flat_gx: float = 0.15
+    flat_gy_max: float = 0.10
+    flat_mean_lo: float = 0.25
+    flat_mean_hi: float = 0.70
+    edge_mean_hi: float = 0.65
+    edge_gx: float = 0.15
+    edge_gy: float = 0.10
+
+    @classmethod
+    def load(cls, path: str | Path | None = None) -> "SkyConfig":
+        """Defaults overlaid with whatever `path` (or `config_path()`)
+        holds; a missing file is silently the defaults."""
+        p = Path(path) if path is not None else config_path()
+        cfg = cls()
+        if not p.exists():
+            return cfg
+        with open(p, "rb") as fh:
+            data = tomllib.load(fh)
+        return cfg.overlay(data)
+
+    def overlay(self, data: dict) -> "SkyConfig":
+        grids = {name: replace(getattr(self, name)) for name in ("far", "mid", "near")}
+        for gname, gcfg in grids.items():
+            table = data.get(gname, {})
+            if not isinstance(table, dict):
+                raise ValueError(f"bad value for {gname}: expected a table")
+            for key, value in table.items():
+                if key not in GRID_FIELD_NAMES:
+                    raise ValueError(f"bad value for {gname}.{key}: unknown key")
+                _set_typed(gcfg, key, value, f"{gname}.{key}")
+        shared = replace(self, far=grids["far"], mid=grids["mid"], near=grids["near"])
+        table = data.get("shared", {})
+        if not isinstance(table, dict):
+            raise ValueError("bad value for shared: expected a table")
+        for key, value in table.items():
+            if key not in _SHARED_COMMENTS:
+                raise ValueError(f"bad value for shared.{key}: unknown key")
+            _set_typed(shared, key, value, f"shared.{key}")
+        return shared
+
+    def dump(self, path: str | Path | None = None) -> Path:
+        """Write the current values to `path` (or `config_path()`), one
+        commented line per key, and return the path written."""
+        p = Path(path) if path is not None else config_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = []
+        for gname in ("far", "mid", "near"):
+            lines.append(f"[{gname}]")
+            gcfg = getattr(self, gname)
+            for f in fields(gcfg):
+                v = getattr(gcfg, f.name)
+                lines.append(f"{f.name} = {v!r}  # {_GRID_COMMENTS[f.name]}")
+            lines.append("")
+        lines.append("[shared]")
+        for key in _SHARED_COMMENTS:
+            v = getattr(self, key)
+            lines.append(f"{key} = {v!r}  # {_SHARED_COMMENTS[key]}")
+        p.write_text("\n".join(lines) + "\n")
+        return p
+
+
+def _set_typed(obj, key: str, value, label: str) -> None:
+    typ = type(getattr(obj, key))
+    try:
+        setattr(obj, key, typ(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"bad value for {label}: {value!r}") from exc
+
+
+# ---- the grid ---------------------------------------------------------
+
+
+class Air:
+    """One depth's persistent density grid, `y = 0` at the bottom, wrapping
+    in x. `tick()` mutates `d` in place — neither it nor any row inside it is
+    ever rebound except by `resize`."""
+
+    def __init__(
+        self, width_px: int, height_px: int, rng: random.Random,
+        config: GridConfig, band_region: tuple[float, float], *, warm: bool = True,
+    ) -> None:
+        self.width = max(width_px, 1)
+        self.height = max(height_px, 1)
         self.rng = rng
+        self.config = config
+        self.band_region = band_region
+        self.d: list[list[float]] = [[0.0] * self.width for _ in range(self.height)]
+        # Moisture: growth spends it, and it returns slowly, so a streak has
+        # a finite life and the sky never saturates a whole row.
+        self.m: list[list[float]] = [[1.0] * self.width for _ in range(self.height)]
+        self.bands = self._draw_bands()
+        self.env = self._build_env()
+        if warm:
+            for _ in range(40):
+                self._nucleate(force=True)
+            for _ in range(300):
+                self.tick(0.0, 0.03, 0.7, 0.3)
 
-        # scale_x is documented in terminal cells (anisotropic: far wider in
-        # x than in y so features read as long, thin streaks); scale_y is
-        # already in pixel rows.
-        self.scale_x_px = p["scale_x"] * PX_X
-        self.scale_y_px = p["scale_y"]
-        self.octaves = p["octaves"]
-        self.base_cutoff = p["cutoff"]
-        self.gain = p["gain"]
-        self.comb_period = p["comb_period"]
-        self.comb_phase = rng.uniform(0.0, 2.0 * math.pi)
-
-        stagger = p["stagger"] if stagger is None else stagger
-        self.blend = stagger
-        self.breath_phase = 2.0 * math.pi * stagger
-        self._tick = 0
-
-        # Vertical envelope: a shared bell shape (bunched a little above mid
-        # height) times this layer's own thin horizontal comb, so streaks sit
-        # in stacked bands instead of one wide blob.
-        centre = 0.55 * height_px
-        sigma = max(0.22 * height_px, 1e-6)
-        self.envelope = [
-            math.exp(-((y - centre) / sigma) ** 2) * self._comb(y)
-            for y in range(height_px)
+    def _draw_bands(self) -> list[tuple[float, float]]:
+        lo_frac, hi_frac = self.band_region
+        lo, hi = lo_frac * self.height, hi_frac * self.height
+        return [
+            (self.rng.uniform(lo, hi), self.rng.uniform(self.config.band_sigma_lo, self.config.band_sigma_hi))
+            for _ in range(self.config.band_count)
         ]
 
-        min_period = max(2 * width_px, 1)
-        self.lattice_w = max(3, -(-min_period // self.scale_x_px))  # ceil div
-        self.period_px = self.lattice_w * self.scale_x_px
-        self.lattice_h = max(3, round(height_px / self.scale_y_px) + 2)
+    def _build_env(self) -> list[float]:
+        return [
+            sum(math.exp(-((y - centre) / sigma) ** 2) for centre, sigma in self.bands)
+            for y in range(self.height)
+        ]
 
-        self.offset = 0.0
-        self.tex_a = self._bake_raw()
-        self.tex_b = self._bake_raw()
+    # ---- tick -----------------------------------------------------------
 
-    def _comb(self, y: int) -> float:
-        phase = 2.0 * math.pi * y / self.comb_period + self.comb_phase
-        return 0.8 + 0.2 * (0.5 + 0.5 * math.cos(phase))
+    def tick(self, world_wind: float, shear_floor: float, shear_base: float, shear_span: float) -> None:
+        wind = world_wind * self.config.wind_scale
+        self._advect(wind, shear_floor, shear_base, shear_span)
+        self._diffuse()
+        self._react()
+        self._nucleate()
+        self._clamp()
 
-    def _bake_raw(self) -> list[list[float]]:
-        """Bake one fresh raw-fbm texture, exactly `period_px` wide and
-        periodic by construction — `Noise.sample` wraps at `lattice_w`, and
-        `period_px` is a whole multiple of it."""
-        noise = Noise(self.rng, self.lattice_w, self.lattice_h)
-        tex: list[list[float]] = []
-        for y in range(self.height_px):
-            if self.envelope[y] < 1e-4:
-                # Zero envelope means composite always multiplies this row to
-                # 0 regardless of fbm value or cutoff — skip the fbm work.
-                tex.append([0.0] * self.period_px)
-                continue
-            ys = y / self.scale_y_px
-            tex.append([
-                noise.fbm(x / self.scale_x_px, ys, self.octaves)
-                for x in range(self.period_px)
+    def _advect(self, wind: float, shear_floor: float, shear_base: float, shear_span: float) -> None:
+        h, w = self.height, self.width
+        d = self.d
+        new_rows = []
+        for y in range(h):
+            u = wind * (shear_base + shear_span * (1.0 - y / h))
+            if abs(u) < shear_floor:
+                u = math.copysign(shear_floor, u) if u != 0.0 else shear_floor
+            k = math.floor(u)
+            frac = u - k
+            row = d[y]
+            i0 = _rotate(row, k + 1)
+            i1 = _rotate(row, k)
+            new_rows.append([a * frac + b * (1.0 - frac) for a, b in zip(i0, i1)])
+        for y in range(h):
+            d[y][:] = new_rows[y]
+
+    def _diffuse(self) -> None:
+        h, w = self.height, self.width
+        kx, ky = self.config.kx, self.config.ky
+        d = self.d
+        new_rows = []
+        for y in range(h):
+            row = d[y]
+            left = _rotate(row, 1)
+            right = _rotate(row, -1)
+            up = d[y + 1] if y + 1 < h else row
+            down = d[y - 1] if y - 1 >= 0 else row
+            new_rows.append([
+                row[x] + kx * (left[x] + right[x] - 2.0 * row[x]) + ky * (up[x] + down[x] - 2.0 * row[x])
+                for x in range(w)
             ])
-        return tex
+        for y in range(h):
+            d[y][:] = new_rows[y]
 
-    def tick(self) -> None:
-        self._tick += 1
-        self.offset = (self.offset + self.speed) % self.period_px
-        self.blend += 1.0 / MORPH_TICKS
-        if self.blend >= 1.0:
-            self.blend = 0.0
-            self.tex_a = self.tex_b
-            self.tex_b = self._bake_raw()
+    def _react(self) -> None:
+        g, e = self.config.growth, self.config.evaporation
+        uptake, replenish = self.config.uptake, self.config.replenish
+        allee = self.config.allee
+        env = self.env
+        d, m = self.d, self.m
+        for y in range(self.height):
+            gy = g * env[y]
+            drow, mrow = d[y], m[y]
+            # Bistable growth: below `allee` the term is negative and a faint
+            # wisp thins away; above it a streak grows toward full.
+            grown = [gy * v * (v - allee) * (1.0 - v) * w for v, w in zip(drow, mrow)]
+            drow[:] = [v + gr - e * v for v, gr in zip(drow, grown)]
+            mrow[:] = [w - uptake * max(gr, 0.0) + replenish * (1.0 - w) for w, gr in zip(mrow, grown)]
 
-    def _effective_cutoff(self) -> float:
-        phase = 2.0 * math.pi * self._tick / BREATH_TICKS + self.breath_phase
-        return self.base_cutoff + BREATH_AMPLITUDE * math.sin(phase)
+    def _nucleate(self, force: bool = False) -> None:
+        cfg = self.config
+        if not self.bands:
+            return
+        if not force and self.rng.random() >= cfg.nucleate_p:
+            return
+        centre, sigma = self.bands[self.rng.randrange(len(self.bands))]
+        y = max(0, min(self.height - 1, int(round(self.rng.gauss(centre, sigma)))))
+        x0 = self.rng.randrange(self.width)
+        amt = self.rng.uniform(cfg.puff_lo, cfg.puff_hi)
+        w = self.width
+        for dy in range(cfg.puff_height):
+            yy = y + dy
+            if yy >= self.height:
+                break
+            row = self.d[yy]
+            for i in range(cfg.puff_width):
+                xx = (x0 + i) % w
+                row[xx] = min(1.0, row[xx] + amt)
 
-    def density_row(self, y: int) -> list[float]:
-        """This layer's composited density for row `y`, `width_px` wide,
-        already windowed by `offset`: blend the two textures, apply the
-        (breathing) cutoff and gain with a `** 0.7` curve so a cloud's fringe
-        spends many pixels between faint and solid instead of snapping, then
-        the row's envelope."""
-        env = self.envelope[y]
-        if env < 1e-4:
-            return [0.0] * self.width_px
-        off = int(self.offset)
-        w = self.width_px
-        period = self.period_px
-        row_a = _read_window(self.tex_a[y], off, w, period)
-        row_b = _read_window(self.tex_b[y], off, w, period)
-        blend = self.blend
-        cut = self._effective_cutoff()
-        gain = self.gain
-        out = []
-        for a, b in zip(row_a, row_b):
-            raw = a + (b - a) * blend
-            d = (raw - cut) * gain
-            d = 0.0 if d < 0.0 else (1.0 if d > 1.0 else d)
-            out.append(env * (d ** 0.7 if d > 0.0 else 0.0))
-        return out
+    def _clamp(self) -> None:
+        # Below `floor` a pixel snaps to zero: evaporation is exponential and
+        # would otherwise leave a faint haze of specks over the whole sky.
+        floor = self.config.floor
+        for row in self.d:
+            row[:] = [0.0 if v < floor else 1.0 if v > 1.0 else v for v in row]
 
+    # ---- resize -----------------------------------------------------------
 
-class Canvas:
-    """Per-pixel density and owning-layer-index, rebuilt fresh every composite."""
+    def resize(self, width_px: int, height_px: int) -> None:
+        """Bilinearly resample `d` (wrapping in x, clamped in y) into the new
+        size, keeping the weather that was there; the only place `d` (and
+        `bands`/`env`) are rebuilt wholesale."""
+        new_w, new_h = max(width_px, 1), max(height_px, 1)
+        old_w, old_h, old_d = self.width, self.height, self.d
 
-    def __init__(self, width_px: int, height_px: int) -> None:
-        self.width_px = width_px
-        self.height_px = height_px
-        self.density: list[list[float]] = [[0.0] * width_px for _ in range(height_px)]
-        self.layer_id: list[list[int]] = [[-1] * width_px for _ in range(height_px)]
+        def sample(x: float, y: float) -> float:
+            x %= old_w
+            x0 = int(math.floor(x))
+            x1 = (x0 + 1) % old_w
+            tx = x - x0
+            y0 = max(0, min(old_h - 1, int(math.floor(y))))
+            y1 = max(0, min(old_h - 1, y0 + 1))
+            ty = y - y0
+            row0, row1 = old_d[y0], old_d[y1]
+            a = row0[x0] + (row0[x1] - row0[x0]) * tx
+            b = row1[x0] + (row1[x1] - row1[x0]) * tx
+            return a + (b - a) * ty
 
-    def composite(self, layers: list[Layer]) -> None:
-        """Rebuild from scratch, `layers[0]` (nearest) to last (farthest);
-        a pixel already claimed by an earlier layer is not overwritten."""
-        w = self.width_px
-        for y in range(self.height_px):
-            rows = [layer.density_row(y) for layer in layers]
-            owned_row = self.layer_id[y]
-            dens_row = self.density[y]
-            for x in range(w):
-                owner = -1
-                value = 0.0
-                for idx, row in enumerate(rows):
-                    v = row[x]
-                    if v > DENSITY_FLOOR:
-                        owner = idx
-                        value = v
-                        break
-                owned_row[x] = owner
-                dens_row[x] = value
+        new_d = []
+        for ny in range(new_h):
+            sy = ny * (old_h - 1) / (new_h - 1) if new_h > 1 and old_h > 1 else 0.0
+            sx_scale = old_w / new_w
+            new_d.append([sample(nx * sx_scale, sy) for nx in range(new_w)])
 
-
-def _majority_layer(id_rows: list[list[int]], x0: int) -> int:
-    """The block's most-common owning layer, ties broken toward the nearest
-    (lowest index, since layers are ordered front to back)."""
-    counts: dict[int, int] = {}
-    for row in id_rows:
-        for v in row[x0: x0 + PX_X]:
-            if v != -1:
-                counts[v] = counts.get(v, 0) + 1
-    if not counts:
-        return -1
-    best_idx, best_count = -1, -1
-    for idx in sorted(counts):
-        if counts[idx] > best_count:
-            best_idx, best_count = idx, counts[idx]
-    return best_idx
+        scale = new_h / old_h if old_h else 1.0
+        self.width, self.height = new_w, new_h
+        self.d = new_d
+        self.m = [[1.0] * new_w for _ in range(new_h)]
+        self.bands = [(c * scale, s * scale) for c, s in self.bands]
+        self.env = self._build_env()
 
 
-def _ordered_dither(pixels: list[list[float]]) -> str:
-    """A braille glyph from per-pixel density against the fixed Bayer
-    thresholds — nine visible tones per cell (0-8 lit dots) with a stable
-    spatial pattern; the scroll moves the pattern along with the cloud."""
-    bits = 0
-    for row in range(PX_Y):
-        for col in range(PX_X):
-            if pixels[row][col] > _BAYER_THRESHOLD[row][col]:
-                bits |= 1 << _BRAILLE_BIT[(col, row)]
-    return chr(0x2800 | bits)
+# ---- downsample -------------------------------------------------------
 
 
 def _gradients(pixels: list[list[float]]) -> tuple[float, float]:
@@ -357,8 +456,8 @@ def _gradients(pixels: list[list[float]]) -> tuple[float, float]:
 
 def _cell_hash(x0: int, y0: int) -> int:
     """A cheap, deterministic per-cell hash — stable for a given pixel
-    position, so it reads as a fixed spatial pattern that scrolls with the
-    windowed canvas rather than flickering frame to frame."""
+    position, so it reads as a fixed spatial pattern rather than flickering
+    frame to frame."""
     h = (x0 * 374761393 + y0 * 668265263) & 0xFFFFFFFF
     h ^= h >> 13
     h = (h * 1274126177) & 0xFFFFFFFF
@@ -370,94 +469,165 @@ def _speck_glyph(x0: int, y0: int) -> str:
     return _SPECK_GLYPHS[_cell_hash(x0, y0) % len(_SPECK_GLYPHS)]
 
 
-def _cell_colour(
-    id_rows: list[list[int]], x0: int, layers: list[Layer], palette,
-    row_from_bottom: int, sky_rows: int, m: float,
-) -> str:
-    """A cell's colour: atmospheric shift by the owning layer's depth and
-    height, then a further mix toward haze by the cell's own density — a
-    thin fringe reads dimmer than a dense core in the same cloud."""
-    owner = _majority_layer(id_rows, x0)
-    layer = layers[owner] if owner != -1 else layers[0]
-    colour = atmospheric_colour(
-        getattr(palette, f"cloud_{layer.band}"), layer.depth, row_from_bottom, sky_rows, palette,
+# 2x4 ordered (Bayer) dither matrix, one fixed threshold per dot position in
+# a cell, so a cell's tone (0-8 lit dots) reads as a stable spatial pattern
+# rather than every dot snapping on together at one density.
+_BAYER = ((0, 4), (6, 2), (1, 5), (7, 3))
+_BAYER_THRESHOLD = tuple(tuple(v / 8.0 + 1.0 / 16.0 for v in row) for row in _BAYER)
+# Braille dot bit for each (col, row) position in a PX_X x PX_Y block,
+# standard braille bit order: col 0 is bits 0,1,2,6 top to bottom, col 1 is
+# bits 3,4,5,7 top to bottom.
+_BRAILLE_BIT = {
+    (0, 0): 0, (0, 1): 1, (0, 2): 2, (0, 3): 6,
+    (1, 0): 3, (1, 1): 4, (1, 2): 5, (1, 3): 7,
+}
+
+
+def _ordered_dither(pixels: list[list[float]]) -> str:
+    """A braille glyph from per-pixel density against the fixed Bayer
+    thresholds — nine visible tones per cell (0-8 lit dots)."""
+    bits = 0
+    for row in range(PX_Y):
+        for col in range(PX_X):
+            if pixels[row][col] > _BAYER_THRESHOLD[row][col]:
+                bits |= 1 << _BRAILLE_BIT[(col, row)]
+    return chr(0x2800 | bits)
+
+
+def _majority_owner(owner_rows: list[list[str]], x0: int) -> str:
+    """The block's most-common owning grid, ties broken toward the nearest
+    (`GRID_ORDER`); `""` if no pixel in the block has an owner."""
+    counts: dict[str, int] = {}
+    for row in owner_rows:
+        for v in row[x0: x0 + PX_X]:
+            if v:
+                counts[v] = counts.get(v, 0) + 1
+    if not counts:
+        return ""
+    rank = {name: i for i, name in enumerate(GRID_ORDER)}
+    return min(counts, key=lambda k: (-counts[k], rank[k]))
+
+
+def _cell_colour(cfg: SkyConfig, palette, owner: str, m: float, row_from_bottom: int, sky_rows: int) -> str:
+    name = owner or "near"
+    tone = m ** cfg.tone_exp
+    base = _ramp16(getattr(palette, f"cloud_{name}_dark"), getattr(palette, f"cloud_{name}_light"), tone)
+    return atmospheric_colour(
+        base, GRID_DEPTH[name], row_from_bottom, sky_rows, palette,
+        cfg.haze_depth_weight, cfg.haze_row_weight, cfg.haze_clamp,
     )
-    return _lerp_hex(colour, palette.haze, _clamp((1.0 - m) * 0.35, 0.0, 1.0))
 
 
-def downsample(canvas: Canvas, layers: list[Layer], palette, sky_rows: int) -> list[list[tuple[str, str | None]]]:
-    """One `(glyph, colour)` per terminal cell from its `PX_X x PX_Y` block.
+def _composite(grids: dict[str, Air]) -> tuple[list[list[float]], list[list[str]]]:
+    """Front-to-back (`GRID_ORDER`) composite: the nearest grid whose pixel
+    clears `DENSITY_FLOOR` owns it, never overwritten by one further back."""
+    any_grid = next(iter(grids.values()))
+    h, w = any_grid.height, any_grid.width
+    density = [[0.0] * w for _ in range(h)]
+    owner = [[""] * w for _ in range(h)]
+    for y in range(h):
+        rows = [(name, grids[name].d[y]) for name in GRID_ORDER]
+        drow, orow = density[y], owner[y]
+        for x in range(w):
+            for name, row in rows:
+                v = row[x]
+                if v > DENSITY_FLOOR:
+                    drow[x] = v
+                    orow[x] = name
+                    break
+    return density, owner
 
-    `layers` must be the same front-to-back list `Canvas.composite` used, so
-    a block's owning index resolves to the right band's depth and colour.
-    """
-    cols = canvas.width_px // PX_X
-    grid: list[list[tuple[str, str | None]]] = []
+
+def downsample(grids: dict[str, Air], palette, sky_rows: int, cols: int, cfg: SkyConfig) -> list[list[tuple[str, str | None]]]:
+    """One `(glyph, colour)` per terminal cell from the grids' composited
+    `PX_X x PX_Y` pixel block, top row first."""
+    density, owner = _composite(grids)
+    density = density[::-1]  # Air is bottom-up; render top-down
+    owner = owner[::-1]
+    out: list[list[tuple[str, str | None]]] = []
     for row_i in range(sky_rows):
         y0 = row_i * PX_Y
-        block_rows = canvas.density[y0: y0 + PX_Y]
-        id_rows = canvas.layer_id[y0: y0 + PX_Y]
+        block_density = density[y0: y0 + PX_Y]
+        block_owner = owner[y0: y0 + PX_Y]
         row_from_bottom = (sky_rows - 1) - row_i
         out_row: list[tuple[str, str | None]] = []
         for col_i in range(cols):
             x0 = col_i * PX_X
-            pixels = [r[x0: x0 + PX_X] for r in block_rows]
+            pixels = [r[x0: x0 + PX_X] for r in block_density]
             flat = [v for prow in pixels for v in prow]
             m = sum(flat) / 8.0
-            if m < BLANK_MEAN:
+            if m < cfg.blank_mean:
                 peak = max(flat)
                 if peak <= DENSITY_FLOOR or _cell_hash(x0, y0) % 3:
                     out_row.append((" ", None))
                     continue
                 glyph = _speck_glyph(x0, y0)
-                colour = _cell_colour(id_rows, x0, layers, palette, row_from_bottom, sky_rows, m)
+                owner_name = _majority_owner(block_owner, x0)
+                colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows)
                 out_row.append((glyph, colour))
                 continue
             gx, gy = _gradients(pixels)
-            if m >= CORE_MEAN:
+            if m >= cfg.core_mean:
                 glyph = CORE_GLYPH
-            elif m >= SEMI_CORE_MEAN:
+            elif m >= cfg.semi_core_mean:
                 glyph = CORE_GLYPH if _cell_hash(x0, y0) % 2 == 0 else _ordered_dither(pixels)
-            elif abs(gx) > FLAT_GX and abs(gy) <= FLAT_GY_MAX and FLAT_MEAN_LO <= m < FLAT_MEAN_HI:
+            elif abs(gx) > cfg.flat_gx and abs(gy) <= cfg.flat_gy_max and cfg.flat_mean_lo <= m < cfg.flat_mean_hi:
                 glyph = "-" if _cell_hash(x0, y0) % 2 == 0 else "~"
-            elif m < EDGE_MEAN_HI and abs(gx) > EDGE_GX and abs(gy) > EDGE_GY:
+            elif m < cfg.edge_mean_hi and abs(gx) > cfg.edge_gx and abs(gy) > cfg.edge_gy:
                 glyph = "/" if (gx > 0) == (gy > 0) else "\\"
             else:
                 glyph = _ordered_dither(pixels)
-            colour = _cell_colour(id_rows, x0, layers, palette, row_from_bottom, sky_rows, m)
+            owner_name = _majority_owner(block_owner, x0)
+            colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows)
             out_row.append((glyph, colour))
-        grid.append(out_row)
-    return grid
+        out.append(out_row)
+    return out
+
+
+# ---- Sky ----------------------------------------------------------------
 
 
 class Sky:
-    """Owns the three depth layers and the density canvas for one field."""
+    """Owns the three depth grids for one field."""
 
-    def __init__(self, cols: int, sky_rows: int, rng: random.Random, palette) -> None:
-        self.cols = cols
+    def __init__(self, cols: int, sky_rows: int, rng: random.Random, palette, config: SkyConfig | None = None) -> None:
+        self.cols = max(cols, 0)
         self.sky_rows = max(sky_rows, 0)
         self.rng = rng
         self.palette = palette
+        self.config = config or SkyConfig()
         self._bake()
 
     def _bake(self) -> None:
-        width_px = self.cols * PX_X
-        height_px = self.sky_rows * PX_Y
-        self.canvas = Canvas(width_px, height_px)
-        self.layers = {name: Layer(name, width_px, height_px, self.rng) for name in LAYER_ORDER}
+        width_px = max(self.cols * PX_X, 1)
+        height_px = max(self.sky_rows * PX_Y, 1)
+        self.grids: dict[str, Air] = {
+            name: Air(width_px, height_px, self.rng, getattr(self.config, name), GRID_BAND_REGION[name])
+            for name in GRID_ORDER
+        }
+
+    def apply(self, config: SkyConfig) -> None:
+        """Swap tuning constants into the running grids without resetting
+        them — their drawn bands and current weather stay exactly as they
+        are; only the live physics/render knobs change."""
+        self.config = config
+        for name in GRID_ORDER:
+            self.grids[name].config = getattr(config, name)
 
     def resize(self, cols: int, sky_rows: int) -> None:
-        self.cols = cols
+        self.cols = max(cols, 0)
         self.sky_rows = max(sky_rows, 0)
-        self._bake()
+        width_px = max(self.cols * PX_X, 1)
+        height_px = max(self.sky_rows * PX_Y, 1)
+        for grid in self.grids.values():
+            grid.resize(width_px, height_px)
 
-    def tick(self) -> None:
-        for layer in self.layers.values():
-            layer.tick()
+    def tick(self, wind: float = 0.0) -> None:
+        cfg = self.config
+        for grid in self.grids.values():
+            grid.tick(wind, cfg.shear_floor, cfg.shear_base, cfg.shear_span)
 
     def render_cells(self) -> list[list[tuple[str, str | None]]]:
         if self.cols <= 0 or self.sky_rows <= 0:
             return []
-        ordered = [self.layers[name] for name in LAYER_ORDER]
-        self.canvas.composite(ordered)
-        return downsample(self.canvas, ordered, self.palette, self.sky_rows)
+        return downsample(self.grids, self.palette, self.sky_rows, self.cols, self.config)

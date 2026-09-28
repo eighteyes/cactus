@@ -5,16 +5,17 @@ Responsibilities:
 - Hold a small world (a noise-rendered parallax sky, wind, bird flocks, ground
   speckle, and the settled cactus structure) in sub-cell resolution, two
   sub-cells per terminal cell in each axis.
-- Advance the world one tick: scroll the sky's depth layers, wander the wind,
+- Advance the world one tick: tick the sky's three cellular-automaton air
+  grids (passing this tick's wind for their parallax drift), wander the wind,
   fly and despawn flocks (and lone birds) at one of the sky's three depths,
   and fall seeds under gravity and wind until they anchor.
 - Drop a seed into a column; anchor it to the floor or beside the structure,
   including the two "reverse pawn" diagonals below it. Count every drop, so
   the structure can carry age in decisions rather than in time.
-- Hold the colour palette (`Palette`, default `MONO_PLUS`): cloud depth
-  bands, the haze colour clouds fade toward, cactus age bands, seed, bird,
-  and sand-speckle colours. No sky background anywhere — shade comes only
-  from glyph colour.
+- Hold the colour palette (`Palette`, default `MONO_PLUS`): each sky grid's
+  dark/light tone-ramp pair, the haze colour clouds fade toward, cactus age
+  bands, seed, bird, and sand-speckle colours. No sky background anywhere —
+  shade comes only from glyph colour.
 - Render the world as a styled rich.text.Text: the structure and falling
   seeds are quadrant-sampled from their four sub-cells (block glyphs), the
   sky is `Sky.render_cells()`'s braille/punctuation/stroke glyphs, and birds
@@ -63,7 +64,7 @@ GLIDE_P = 0.125  # 1 in 8 birds glides instead of flapping
 JITTER_STEP = 0.05  # sub-cells/tick, a follower's wander around its rank slot
 JITTER_CLAMP = 0.6
 SPACING_Y = (0.4, 0.8)  # sub-cells, vertical rank spacing, every depth
-DEPTH_BAND = {"far": 0.9, "mid": 0.6, "near": 0.2}  # matches sky.BANDS' depths
+DEPTH_BAND = {"far": 0.9, "mid": 0.6, "near": 0.2}  # matches sky.GRID_DEPTH
 DEPTH_SPEED = {"far": 0.08, "mid": 0.15, "near": 0.25}  # sub-cells/tick
 DEPTH_SPACING_X = {"far": (1.0, 1.5), "mid": (1.5, 2.5), "near": (2.5, 3.5)}
 # (down-beat, up-beat, gliding) glyphs; "near" spans 3 cells, (left, centre, right).
@@ -79,9 +80,12 @@ class Palette:
     """Colours for the field. `MONO_PLUS`: mono-plus — no backgrounds, only
     depth-shaded clouds and age-shaded cacti."""
 
-    cloud_far: str = "#6a7690"
-    cloud_mid: str = "#9aa2b4"
-    cloud_near: str = "#e2dccb"
+    cloud_far_dark: str = "#4e5668"
+    cloud_far_light: str = "#aab0c0"
+    cloud_mid_dark: str = "#5c6478"
+    cloud_mid_light: str = "#d0ccc0"
+    cloud_near_dark: str = "#6a6e7c"
+    cloud_near_light: str = "#f0ebdc"
     haze: str = "#3a4256"
     bird: str = "#d0d4de"
     seed: str = "#b8ff9a"
@@ -108,7 +112,7 @@ class Bird:
     x: float
     y: float
     vx: float
-    band: str = "mid"  # "far" / "mid" / "near" — sky.BANDS' depth, speed, colour
+    band: str = "mid"  # "far" / "mid" / "near" — matches sky.GRID_DEPTH's depth, own speed/colour
     depth: float = 0.6
     phase: int = 0  # ticks added before the //4 wing-beat check, ripples the flock
     glide: bool = False
@@ -182,7 +186,7 @@ class World:
     def tick(self) -> None:
         self._tick_count += 1
         self._tick_wind()
-        self.sky.tick()
+        self.sky.tick(self.wind)
         self._tick_birds()
         self._tick_seeds()
 

@@ -1216,6 +1216,19 @@ def cmd_where(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
     return EXIT_OK
 
 
+def cmd_sky(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Inspect or write the field's sky tuning config (unrelated to the
+    inbox; ignores `store`, kept only for the usual `cmd_*` signature)."""
+    from .sky import SkyConfig, config_path
+
+    if args.dump:
+        path = SkyConfig().dump()
+        print(str(path))
+        return EXIT_OK
+    print(str(config_path()))
+    return EXIT_OK
+
+
 # ---- parser ---------------------------------------------------------------
 
 
@@ -1477,6 +1490,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     wh = verb("where", help="print the db path and resolved project")
     wh.set_defaults(fn=cmd_where)
+
+    sk = verb("sky", help="inspect or write the field's sky tuning config")
+    sk.add_argument("--dump", action="store_true",
+                    help="write the default sky tuning constants to the config path")
+    sk.set_defaults(fn=cmd_sky)
 
     return p
 
