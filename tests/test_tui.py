@@ -21,7 +21,7 @@ from textual.widgets import Footer, Static
 from textual.widgets._footer import FooterKey
 
 from cactus.store import Choice, Store
-from cactus.tui import CactusApp
+from cactus.tui import CactusApp, QuestionBlock
 
 # The projects pane (P / I / A) is a separate change; until it lands these
 # tests skip rather than fail, and start running the moment it does.
@@ -165,6 +165,22 @@ async def test_digit_answers_choice_row(store: Store, project: str) -> None:
     fresh = store.get(q.key, project=project)
     assert fresh.status == "answered"
     assert fresh.answer.selected == ["a"]
+
+
+async def test_blocking_acp_row_is_labeled_and_raised(store: Store, project: str) -> None:
+    ordinary = store.ask("ordinary", project=project, cwd=project, agent=AGENT)
+    acp = store.ask(
+        "ACP needs this", project=project, cwd=project, agent=AGENT,
+        blocked=True, source="acp",
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.questions[0].key == acp.key
+        row = app.query_one(f"#row-{acp.key}", QuestionBlock)
+        assert "BLOCKING · ACP" in str(row._text.content)
+        assert app.questions[1].key == ordinary.key
 
 
 @needs_projects_pane
@@ -455,4 +471,3 @@ async def test_card_shows_numbered_file_list(store: Store, project: str) -> None
 
     assert f"  {'files':<8}1 /tmp/a" in text
     assert f"  {'':<8}2 /tmp/b" in text
-

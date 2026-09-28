@@ -405,8 +405,12 @@ class QuestionBlock(ListItem):
             parts.append("live")
         elif q.status == "elaborate":
             parts.append("wants more")
-        if not q.blocked and q.status == "open":
+        if q.blocked and q.status == "open":
+            parts.append("BLOCKING")
+        elif not q.blocked and q.status == "open":
             parts.append("not blocking")
+        if q.source:
+            parts.append(q.source.upper())
         if draft:
             parts.append("draft")
         return " · ".join(parts)
@@ -835,6 +839,7 @@ class CactusApp(App[int]):
             status=list(ACTIONABLE),
             all_projects=self.current_project is None,
         )
+        self.questions = self._raise_blocking_acp(self.questions)
         if self.questions or self.scoped_project is not None:
             return
         live = self._live_projects()
@@ -843,6 +848,30 @@ class CactusApp(App[int]):
             self.questions = self.store.tree(
                 project=self.current_project, status=list(ACTIONABLE)
             )
+            self.questions = self._raise_blocking_acp(self.questions)
+
+    @staticmethod
+    def _raise_blocking_acp(rows: list[Question]) -> list[Question]:
+        """Put a blocking ACP request before ordinary root question groups.
+
+        ``Store.tree`` deliberately keeps insertion order for stable board
+        letters.  The answering surface can still elevate protocol requests
+        whose agent is waiting, while moving each root and all its children as
+        one block so thread structure never changes.
+        """
+        groups: list[list[Question]] = []
+        current: list[Question] = []
+        for q in rows:
+            if q.depth == 0:
+                if current:
+                    groups.append(current)
+                current = [q]
+            else:
+                current.append(q)
+        if current:
+            groups.append(current)
+        urgent = [g for g in groups if g[0].source == "acp" and g[0].blocked and g[0].status == "open"]
+        return [q for group in urgent + [g for g in groups if g not in urgent] for q in group]
 
     async def _reload(self, *, force: bool = False) -> None:
         cursor = self.store.cursor()

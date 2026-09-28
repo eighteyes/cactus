@@ -18,6 +18,12 @@ limit (about 366 seconds):
 
     cactus get KEY --wait --timeout 300 --json
 
+For a blocking structured choice in an ACP-capable Codex client, ask through
+the ACP bridge instead. It turns the elicitation into a Cactus row marked
+`BLOCKING · ACP` at the top of the board, holds the ACP request while the
+human answers, and returns that answer as the response that resumes the
+session. Use native `cactus ask` for durable, async, or richer Cactus work.
+
 Never run `cactus --monitor` without `--once` here: it is a stream that
 returns only when killed.
 

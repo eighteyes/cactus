@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS questions (
     title        TEXT,
     chosen       TEXT,
     blocked      INTEGER NOT NULL DEFAULT 1,
+    source       TEXT,
     choices      TEXT    NOT NULL DEFAULT '[]',
     allow_free   INTEGER NOT NULL DEFAULT 1,
     recommend    TEXT,
@@ -306,6 +307,7 @@ class Question:
     title: str | None
     chosen: str | None
     blocked: bool
+    source: str | None
     choices: list[Choice]
     allow_free: bool
     context: str | None
@@ -358,6 +360,7 @@ class Question:
             "title": self.title,
             "chosen": self.chosen,
             "blocked": self.blocked,
+            "source": self.source,
             "choices": [c.as_dict() for c in self.choices],
             "allow_free": self.allow_free,
             "recommend": self.recommend or None,
@@ -442,6 +445,8 @@ class Store:
             self.conn.execute(
                 "ALTER TABLE questions ADD COLUMN blocked INTEGER NOT NULL DEFAULT 1"
             )
+        if "source" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN source TEXT")
         if "recommend" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN recommend TEXT")
         if "confidence" not in cols:
@@ -697,6 +702,7 @@ class Store:
         title: str | None = None,
         chosen: str | None = None,
         blocked: bool | None = None,
+        source: str | None = None,
         choices: Sequence[Choice] | None = None,
         allow_free: bool = True,
         recommend: Sequence[str] | None = None,
@@ -816,15 +822,15 @@ class Store:
                 """
                 INSERT INTO questions
                     (key, num, project, cwd, thread, parent_id, text, kind, act, agent,
-                     word, workspace, tab, pane, session, title, chosen, blocked,
+                     word, workspace, tab, pane, session, title, chosen, blocked, source,
                      choices, allow_free, recommend, confidence, recommend_why,
                      context, asked_by, status, created_at, updated_at, files)
-                VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     num, project, cwd, thread, parent_id, text, kind, act, agent, word,
                     workspace, tab, pane, session, title,
-                    chosen, 1 if blocked else 0,
+                    chosen, 1 if blocked else 0, source,
                     json.dumps([c.as_dict() for c in choices]),
                     1 if allow_free else 0,
                     json.dumps(recommend) if recommend else None,
@@ -1866,6 +1872,7 @@ class Store:
             title=row["title"],
             chosen=row["chosen"],
             blocked=bool(row["blocked"]),
+            source=row["source"],
             choices=[Choice.parse(c) for c in json.loads(row["choices"] or "[]")],
             allow_free=bool(row["allow_free"]),
             recommend=json.loads(row["recommend"]) if row["recommend"] else [],
