@@ -75,7 +75,8 @@ def _remind_about_monitor(args: argparse.Namespace) -> None:
         return
     print(
         f"cactus: no monitor is running for --agent {agent}; "
-        f"start `cactus --monitor --json --agent {agent}` so answers reach you.",
+        f"arm `cactus --monitor --json --agent {agent} --once` in the background "
+        f"so answers reach you.",
         file=sys.stderr,
     )
 
@@ -113,13 +114,18 @@ NAME
   cactus — durable question inbox between agents and a human
 
 WORKFLOW (required)
-  1  cactus --monitor --agent ID      foreground, before the first ask;
-                                     never echoes your own asked
+  1  cactus --monitor --agent ID --once
+                                     background (Bash run_in_background),
+                                     before the first ask; exits on the
+                                     first event and wakes you; re-arm on
+                                     every wake. Never echoes your own
+                                     asked or edited
   2  cactus ask ... --agent ID        every decision, not chat
   3  work; act on each event
   4  cactus clear KEY --agent ID      own rows only
 
-  --monitor --agent ID --once        background wait after a time cap
+  --monitor --agent ID               unbounded stream, for a host that can
+                                     hold one open without a time cap
   blocked by a permission prompt -> cactus run CMD --agent ID
   elaborate event -> cactus edit KEY --agent ID
 

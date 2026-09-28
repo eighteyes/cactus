@@ -22,3 +22,13 @@
 - [x] Rail click focuses instead of answering. a977caa.
 - [ ] #34 keys after `i` landing as hotkeys: not reproduced under Pilot; may need real terminal timing.
 - [ ] #26 poke to an unknown agent: installed herdr exits 1, so cactus already exits 1; premise did not hold.
+
+## Wake-up durability (q338, q339)
+
+- [x] Monitor's 30-min cap is the killer; probes: background Bash lived 35 min, idle session woke 2.5 h later. Once-loop is the recipe. Hook, skill, agent-help, invariant updated.
+- [x] Own `edited` never echoes under `--agent` (q334). 6705861.
+- [ ] Channel follow-up: .ai/plan/cactus-channel/. Three probes before code.
+- [ ] `--once` exit-to-re-arm gap: a `--since CURSOR` on `--monitor` would close it. Only if the gap bites.
+- [ ] Own `cleared` via CLI still echoes; needs a `last_change` stamp to tell it from a TUI `c`.
+- [ ] `cactus edit` has no `--recommend`; `-c` drops the old one and nothing can set a new one.
+- [ ] Codex plugin hook (plugins/cactus/hooks/session-start.sh) still says Monitor; Codex wake-up mechanics unverified.

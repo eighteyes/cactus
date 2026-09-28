@@ -300,8 +300,15 @@ scope.
   `run` row's automatic `approve`.
 - `cactus --monitor` requires `--agent ID`; humans use `--tui`/`--watch`
   instead. `--once` returns as soon as it emits the first non-`asked` event
-  (or a `gone`) — inside the same tick, not after a further poll — for an
-  agent waiting in the background once the Monitor tool's own time cap hits.
+  (or a `gone`) — inside the same tick, not after a further poll — and is
+  the primary wake-up on Claude Code (q339): the agent arms it with Bash
+  `run_in_background`, and its exit re-invokes the agent, mid-turn or hours
+  later on an idle session (probed 2026-09-27: a background process lived
+  35 min and an idle session woke 2.5 h after its last turn). The Monitor
+  tool is not used: its 30-minute cap dies unattended once the turn ends.
+  The recipe re-arms first thing on every wake; the exit-to-re-arm gap is
+  the one window an event can slip through, so the agent reads the row with
+  `get` rather than trusting the event line alone.
 - Threads are agent-scoped: a thread name is only unique within one agent's
   rows, not project-wide. The TUI card and `watch` show `agent/thread`
   wherever they show the thread; `list`/`feed -t NAME --agent ID` narrow to

@@ -3,16 +3,23 @@
 # Inject the required cactus workflow, the agent's identity, and the project's open rows at session start.
 # Responsibilities:
 #   - stay silent when cactus is not installed
-#   - open with a ready-to-run Monitor command when no monitor runs for this agent
+#   - open with a ready-to-run once-loop command when no monitor runs for this agent
 #   - print the five-step workflow every agent follows: monitor, ask, work, act, clear
 #   - resolve the --agent value through identity.sh and print it
 #   - rehome rows this pane posted under a previous identity (after /clear or --resume)
-#   - teach the two escapes: --once when Monitor's cap expires, cactus run when a permission prompt blocks
+#   - teach the escape: cactus run when a permission prompt blocks
 #   - print the open rows for this project so an unanswered thread is not forgotten
 set -u
 command -v cactus >/dev/null 2>&1 || exit 0
 # Read first: identity.sh takes the session id from this payload.
 input=$(cat)
+
+enabled=$(cactus project status --json 2>/dev/null \
+  | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
+if [ "${enabled:-true}" != "true" ]; then
+  printf '%s\n' "Cactus is disabled for this project. Run \`cactus project activate\` to reactivate it."
+  exit 0
+fi
 
 # shellcheck source=identity.sh
 . "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
@@ -23,18 +30,19 @@ if [ -n "$agent" ]; then
   watching=$(ps -ax -o command= | grep -F -- "--monitor" \
     | awk -v id="$agent" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
   if [ "$watching" = "0" ]; then
-    echo "FIRST, before anything else: set up your cactus monitor with the Monitor tool:"
-    echo "  Monitor(command=\"cactus --monitor --json --agent $agent\", timeout_ms=1800000)"
+    echo "FIRST, before anything else: arm your cactus once-loop with the Bash tool in the background:"
+    echo "  Bash(command=\"cactus --monitor --json --agent $agent --once\", run_in_background=true)"
+    echo "It exits on the first event for your rows and wakes you, even hours later on an idle session. Re-arm it first thing on every wake, before acting. Not the Monitor tool: that dies at 30 minutes."
   else
-    echo "Your cactus monitor is running (--agent $agent)."
+    echo "Your cactus once-loop is armed (--agent $agent)."
   fi
 else
-  echo "FIRST: choose one stable --agent value for this session and start the Monitor tool on \`cactus --monitor --json --agent <that value>\`."
+  echo "FIRST: choose one stable --agent value for this session and arm \`cactus --monitor --json --agent <that value> --once\` with the Bash tool in the background."
 fi
 
 cat <<EOF
 cactus is installed. Its workflow is required, not optional:
-  1 monitor  start \`cactus --monitor --json --agent ID\` with the Monitor tool before your first ask; --agent is required. When Monitor's 30-minute cap expires, run \`cactus --monitor --json --agent ID --once\` in the background (it exits on the first event that is not asked); go back to Monitor once the user is active again
+  1 monitor  arm \`cactus --monitor --json --agent ID --once\` with the Bash tool, run_in_background, before your first ask; --agent is required. It exits on the first event for your rows and wakes you; re-arm it first thing on every wake, then act. Never the Monitor tool: its 30-minute cap leaves the inbox deaf
   2 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend when you have a pick, --agent on every row
   3 work     do everything the answer does not block
   4 act      on each event as it lands: answered, elaborate (rewrite the row with \`cactus edit KEY --agent ID --context ...\`), reopened, cleared
