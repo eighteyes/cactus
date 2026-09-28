@@ -478,3 +478,10 @@ scope.
   second view. The verdict column is `_verdict_repr` on the latest answer,
   except a `cleared` row always reads `cleared` there regardless of what
   that last answer actually was.
+- `p` on the projects page (`P`, q370-q372) pokes the selected project: one
+  `poke.poke(webhook=False)` per distinct herdr `pane` on its
+  `open`/`live`/`elaborate` rows (`Store.project_panes`), each carrying
+  `PROJECT_POKE_MESSAGE`. Herdr only — no webhook, no owner-only fallback;
+  `CACTUS_POKE` still overrides. A project with no stamped pane flashes
+  `no herdr panes (K rows unstamped)`. `check_action` admits `poke` while
+  `projects_open`; the inbox `p` row poke is unchanged.
