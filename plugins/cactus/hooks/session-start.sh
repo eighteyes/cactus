@@ -17,8 +17,7 @@ fi
 
 open=$(cactus list -s open --agent "$agent" 2>/dev/null || true)
 printf '%s\n' "Cactus is available. Use --agent $agent for every Cactus row."
-printf '%s\n' "Before the first ask, arm the once-loop as a background command: cactus --monitor --json --agent $agent --once"
-printf '%s\n' "It exits on the first event for your rows and wakes you. Re-arm it first thing on every wake, then act. Never run it in the foreground."
+printf '%s\n' "Codex has no wake-up from idle: answers reach you on your next turn through the frontier hook. Do not arm a background monitor. When the next step needs an answer now, block in the foreground: cactus get KEY --wait --timeout 300 --json"
 if [ -n "$open" ]; then
   printf '%s\n%s\n' "Open Cactus rows for this Codex session:" "$open"
 fi

@@ -111,10 +111,10 @@ Or register the server by absolute path in `claude_desktop_config.json`:
 ```
 hook               host          does
 SessionStart       Claude Code   resolve identity; rehome rows after /clear; arm-the-once-loop line; open rows
-                   Codex         session id as identity; arm-the-once-loop line
-UserPromptSubmit   both          inject open and answered-but-unacted rows; name the once-loop if none is armed
+                   Codex         session id as identity; no wake-up from idle, answers surface next turn
+UserPromptSubmit   both          inject open and answered-but-unacted rows; Claude Code: name the once-loop if none is armed
 Stop (opt-in)      Claude Code   hold a turn with open rows and no once-loop; hold a turn that posted no ask
-                   Codex         hold a turn with open rows and no once-loop
+                   Codex         no-op: there is no monitor to demand
 PermissionDenied   Claude Code   post the denied command as a `cactus run` row
 PermissionRequest  Codex         post the requested command as a `cactus run` row, decline the transient prompt
 ```

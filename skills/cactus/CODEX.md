@@ -5,18 +5,21 @@ hook event's `session_id` as the Cactus owner identity. Pass that exact value
 on every `ask`, `edit`, and `clear`; it is session-scoped and avoids handing
 rows to a later agent in the same terminal.
 
-The SessionStart hook injects the resolved command. Arm the once-loop as a
-background command before your first row:
+Codex has no wake-up from idle. A background command's completion is
+delivered at your next model request, not as a new turn, so a `--once`
+waiter that exits while the session is idle wakes nobody (probed q342,
+2026-09-27). Do not arm one and claim to be listening.
 
-    cactus --monitor --json --agent "$AGENT" --once
+Answers reach you on the next turn: the `UserPromptSubmit` frontier hook
+lists every answered-but-unacted row when the human next prompts you. Act
+on those first. Inside a turn, when the very next step needs the answer,
+block on the row in the foreground with a timeout under Codex's shell
+limit (about 366 seconds):
 
-It exits on the first event for your rows, and that exit is the wake-up. On
-every wake, re-arm it first, then act on the event. Never run it in the
-foreground: without `--once` it is a stream that returns only when killed.
+    cactus get KEY --wait --timeout 300 --json
 
-If the execution environment cannot keep a background command alive across
-turns, configure a webhook owner as described in [GROK.md](GROK.md). Do not
-pretend a waiter is armed when it is not.
+Never run `cactus --monitor` without `--once` here: it is a stream that
+returns only when killed.
 
 Codex hooks provide the frontier at `UserPromptSubmit` and, with
 `CACTUS_STOP_HOOK=1`, check open rows at `Stop`. A `PermissionRequest` hook can post a durable `cactus run` approval

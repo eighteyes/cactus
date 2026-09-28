@@ -211,7 +211,10 @@ def test_codex_enabled_project(cli, hook_env, project):
     agent = "codex-session-2"
 
     start = run_hook(CODEX_HOOKS / "session-start.sh", {"session_id": agent, "cwd": project}, hook_env, project)
-    assert "--monitor" in start.stdout
+    # Codex has no wake-up from idle (q342): the hook must not tell it to arm
+    # a monitor, and must name the foreground block for an answer it needs now.
+    assert "--monitor" not in start.stdout
+    assert "--wait" in start.stdout
 
     asked = cli("ask", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
     assert asked.returncode == 0
@@ -222,7 +225,7 @@ def test_codex_enabled_project(cli, hook_env, project):
     assert key in frontier.stdout
 
     stop = run_hook(CODEX_HOOKS / "stop.sh", {"session_id": agent, "cwd": project}, hook_env, project)
-    assert "block" in stop.stdout
+    assert stop.stdout.strip() == ""  # never blocks on Codex (q342)
 
     before = list_all(cli, project)
     payload = {
@@ -280,8 +283,13 @@ def test_stop_hooks_are_opt_in(cli, hook_env, project):
     off = {k: v for k, v in hook_env.items() if k != "CACTUS_STOP_HOOK"}
     off["CACTUS_AGENT"] = agent
     payload = {"session_id": agent, "cwd": project}
-    for script in (ROOT_HOOKS / "stop-fork.sh", CODEX_HOOKS / "stop.sh"):
-        assert run_hook(script, payload, off, project).stdout.strip() == ""
-        on = run_hook(script, payload, dict(off, CACTUS_STOP_HOOK="1"), project)
-        assert "block" in on.stdout
+    script = ROOT_HOOKS / "stop-fork.sh"
+    assert run_hook(script, payload, off, project).stdout.strip() == ""
+    on = run_hook(script, payload, dict(off, CACTUS_STOP_HOOK="1"), project)
+    assert "block" in on.stdout
+    # The Codex Stop hook never blocks (q342): Codex has no wake-up from idle,
+    # so there is no monitor to demand and a block would repeat on every stop.
+    script = CODEX_HOOKS / "stop.sh"
+    assert run_hook(script, payload, off, project).stdout.strip() == ""
+    assert run_hook(script, payload, dict(off, CACTUS_STOP_HOOK="1"), project).stdout.strip() == ""
 

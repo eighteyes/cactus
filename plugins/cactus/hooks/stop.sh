@@ -17,7 +17,8 @@ enabled=$(cactus project-status --json --cwd "${hook_cwd:-$PWD}" 2>/dev/null \
 
 open=$(cactus list -s any --agent "$agent" --json 2>/dev/null \
   | jq '[.[] | select(.status == "open" or .status == "live" or .status == "elaborate")] | length' 2>/dev/null || printf '0')
-watching=$(ps -ax -o command= 2>/dev/null | awk -v id="$agent" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
-if [ "${open:-0}" -gt 0 ] && [ "$watching" = "0" ]; then
-  jq -nc --arg agent "$agent" --argjson open "$open" '{decision:"block",reason:("You have \($open) open Cactus row(s) and no once-loop armed. Run cactus --monitor --json --agent \($agent) --once as a background command, then continue." )}'
-fi
+# Codex has no wake-up from idle (q342), so there is no monitor to demand and
+# a block here would repeat on every stop. Open rows are the normal state
+# between turns: the frontier hook lists them on the next prompt.
+[ "${open:-0}" -gt 0 ] || exit 0
+exit 0

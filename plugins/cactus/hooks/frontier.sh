@@ -14,8 +14,7 @@ enabled=$(cactus project-status --json --cwd "${hook_cwd:-$PWD}" 2>/dev/null \
 
 rows=$(cactus list -s any --agent "$agent" --json 2>/dev/null) || exit 0
 [ -n "$rows" ] || exit 0
-watching=$(ps -ax -o command= 2>/dev/null | awk -v id="$agent" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
-jq -r --arg agent "$agent" --arg watching "$watching" '
+jq -r --arg agent "$agent" '
   [ .[] | select(.status == "elaborate") ] as $elaborate |
   [ .[] | select(.status == "answered") ] as $answered |
   [ .[] | select(.status == "open" or .status == "live") ] as $open |
@@ -24,6 +23,6 @@ jq -r --arg agent "$agent" --arg watching "$watching" '
     "cactus frontier (--agent \($agent)):",
     ($all[:5][] | "  \(.key) \(.status) \(.word // (.text | .[0:60]))"),
     "  \($elaborate | length) to elaborate, \($answered | length) answered to act on and clear, \($open | length) open",
-    (if (($elaborate | length) + ($open | length)) > 0 and $watching == "0" then "  no once-loop is armed: run cactus --monitor --json --agent \($agent) --once as a background command" else empty end)
+    (if ($open | length) > 0 then "  Codex has no wake-up from idle: answers surface here on your next turn. If the next step needs one now, block: cactus get KEY --wait --timeout 300 --json" else empty end)
   end
 ' <<<"$rows"
