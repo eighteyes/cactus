@@ -15,6 +15,7 @@ Responsibilities:
   rows with a verdict — newest verdict first.
 - Let a human ask an agent to rewrite a row (`e`) and withdraw that request
   (`u`) before the agent addresses it.
+- Drop a block onto the pachinko field strip below the card on every answer.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import random
 import subprocess
+from collections import deque
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -33,7 +36,9 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
+from textual.widgets._footer import FooterKey
 
+from .field import Field
 from .scope import project_label
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
@@ -376,6 +381,10 @@ def _card_lines(
     return "\n".join(lines)
 
 
+class FieldView(Static):
+    """The pachinko field strip; content is set by CactusApp._render_field."""
+
+
 class RailList(ListView):
     """The question rail. A click moves the highlight; only a key submits.
 
@@ -578,6 +587,11 @@ class CactusApp(App[int]):
         color: $text;
         padding: 0 1;
     }
+    #field {
+        height: 6;
+        width: 1fr;
+        background: $surface;
+    }
     """
 
     BINDINGS = [
@@ -682,6 +696,11 @@ class CactusApp(App[int]):
         self.file_pending: str | None = None
         self.file_pending_key: str | None = None
         self.file_pending_timer = None
+        # Pachinko field: in-memory only, one block falls at a time; further
+        # drops queue their column until the falling block anchors.
+        self.field = Field(rows=6)
+        self._field_queue: deque[int] = deque()
+        self._field_timer = None
 
     @property
     def pending_text(self) -> str:
@@ -719,6 +738,7 @@ class CactusApp(App[int]):
         yield Static(id="projects-panel", markup=False)
         yield Static(id="answers-panel", markup=False)
         yield Static(id="status-bar", markup=False)
+        yield FieldView(id="field", markup=False)
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -735,6 +755,7 @@ class CactusApp(App[int]):
         # focused; re-ask once the screen has settled.
         self.call_after_refresh(self.refresh_bindings)
         self.set_interval(POLL_INTERVAL, self._poll)
+        self._render_field()
 
     def _apply_tui_settings(self) -> None:
         body = self.query_one("#body", Horizontal)
@@ -1637,7 +1658,7 @@ class CactusApp(App[int]):
             self.flash = f"{q.key} is act={q.act}, not a dismissable notice"
             self._rebuild_status_bar()
             return
-        await self._submit_answer(q, selected=[], text=None, skipped=True, label="dismissed")
+        await self._submit_answer(q, selected=[], text=None, skipped=True, label="dismissed", key="d")
 
     def _auto_poke_webhook(self, agent: str | None) -> None:
         """After an answer, wake webhook-mapped agents only (never herdr)."""
@@ -2175,7 +2196,7 @@ class CactusApp(App[int]):
                 self.flash = f"copy failed: {exc}"
                 self._rebuild_status_bar()
                 return
-            await self._submit_answer(q, selected=[choice.label], text=None)
+            await self._submit_answer(q, selected=[choice.label], text=None, key="1")
             self.flash = f"copied {n}) {choice.label} via {tool}"
             self._rebuild_status_bar()
             return
@@ -2189,7 +2210,7 @@ class CactusApp(App[int]):
                 self.flash = f"{q.key} has no choice {n}"
                 self._rebuild_status_bar()
                 return
-            await self._confirm(n - 1)
+            await self._confirm(n - 1, key="1")
             return
         if n < 1 or n > len(q.choices):
             self.flash = f"{q.key} has no choice {n}"
@@ -2197,7 +2218,7 @@ class CactusApp(App[int]):
             return
         label = q.choices[n - 1].label
         if q.kind == "choice":
-            await self._submit_answer(q, selected=[label], text=self.pending_text or None)
+            await self._submit_answer(q, selected=[label], text=self.pending_text or None, key="1")
         else:
             if label in self.multi_selected:
                 self.multi_selected.discard(label)
@@ -2350,6 +2371,7 @@ class CactusApp(App[int]):
             return
         self._auto_poke_webhook(q.agent)
         self._push_undo(q.key, "noted", [], text, project=q.project)
+        self._field_drop("i")
         self.pending_text = ""
         self.free_text_mode = False
         self._hide_input()
@@ -2380,6 +2402,7 @@ class CactusApp(App[int]):
             return
         self._auto_poke_webhook(q.agent)
         self._push_undo(q.key, "noted", [], text, project=q.project)
+        self._field_drop("i")
         self.pending_text = ""
         self.free_text_mode = False
         self._hide_input()
@@ -2403,6 +2426,7 @@ class CactusApp(App[int]):
                 return
             self._auto_poke_webhook(q.agent)
             self._push_undo(q.key, "noted", [], text, project=q.project)
+            self._field_drop("1")
             self.pending_text = ""
             self.free_text_mode = False
             self._hide_input()
@@ -2423,12 +2447,12 @@ class CactusApp(App[int]):
         return f"pick with {_digit_range(len(q.choices))}"
 
     async def action_confirm_yes(self) -> None:
-        await self._confirm(0)
+        await self._confirm(0, key="y")
 
     async def action_confirm_no(self) -> None:
-        await self._confirm(1)
+        await self._confirm(1, key="n")
 
-    async def _confirm(self, index: int) -> None:
+    async def _confirm(self, index: int, *, key: str = "y") -> None:
         q = self._current_question()
         if q is None or q.kind != "confirm":
             return
@@ -2442,13 +2466,13 @@ class CactusApp(App[int]):
             # keypress — see _run_and_record.
             self._run_and_record(q)
             return
-        await self._submit_answer(q, selected=[label], text=self.pending_text or None)
+        await self._submit_answer(q, selected=[label], text=self.pending_text or None, key=key)
 
     async def action_skip(self) -> None:
         q = self._current_question()
         if q is None:
             return
-        await self._submit_answer(q, selected=[], text=None, skipped=True)
+        await self._submit_answer(q, selected=[], text=None, skipped=True, key="s")
 
     async def action_clear_focused(self) -> None:
         q = self._current_question()
@@ -2466,6 +2490,7 @@ class CactusApp(App[int]):
         text: str | None,
         skipped: bool = False,
         label: str | None = None,
+        key: str = "i",
     ) -> None:
         try:
             self.store.answer(q.key, project=q.project, selected=selected, text=text, skipped=skipped)
@@ -2477,6 +2502,7 @@ class CactusApp(App[int]):
         self._auto_poke_webhook(q.agent)
         self._push_undo(q.key, label or ("skipped" if skipped else "answered"), selected, text,
                         project=q.project)
+        self._field_drop(key)
         await self._advance_after(q.key)
 
     async def _refuse(self, exc: Exception) -> None:
@@ -2513,6 +2539,56 @@ class CactusApp(App[int]):
         self._rebuild_status_bar()
         self._synced_key = None
         self._sync_input_focus()
+
+    # ---- field ----------------------------------------------------------
+
+    def _field_column(self, key: str) -> int:
+        """Resolve the drop column for a binding key via its footer glyph.
+
+        Falls back to the `i` binding's column, then a random column, when
+        no footer key matches — e.g. the footer is not mounted yet.
+        """
+        footer_keys = {fk.key: fk for fk in self.query(FooterKey)}
+        target = footer_keys.get(key) or footer_keys.get("i")
+        if target is not None:
+            return target.region.x + 1
+        width = max(self.query_one("#field", FieldView).size.width, 1)
+        return random.randrange(width)
+
+    def _field_drop(self, key: str) -> None:
+        """Drop a block for the column named by `key`, queuing behind any faller."""
+        width = max(self.query_one("#field", FieldView).size.width, 1)
+        x = max(0, min(self._field_column(key), width - 1))
+        if self.field.falling is not None:
+            self._field_queue.append(x)
+        else:
+            self.field.drop(x)
+        self._render_field()
+        self._start_field_timer()
+
+    def _start_field_timer(self) -> None:
+        if self._field_timer is None:
+            self._field_timer = self.set_interval(0.05, self._field_tick, name="field")
+
+    def _stop_field_timer(self) -> None:
+        if self._field_timer is not None:
+            self._field_timer.stop()
+            self._field_timer = None
+
+    def _field_tick(self) -> None:
+        still_falling = self.field.step()
+        self._render_field()
+        if still_falling:
+            return
+        if self._field_queue:
+            self.field.drop(self._field_queue.popleft())
+            return
+        self._stop_field_timer()
+
+    def _render_field(self) -> None:
+        widget = self.query_one("#field", FieldView)
+        width = max(widget.size.width, 1)
+        widget.update(self.field.render(width))
 
     # ---- undo -----------------------------------------------------------
 

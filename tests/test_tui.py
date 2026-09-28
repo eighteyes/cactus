@@ -10,6 +10,7 @@ Responsibilities:
   enabled switch, but only while not typing.
 - Undo restores an answered row to open.
 - An empty multi submit records nothing and flashes instead.
+- Answering drops a block onto the pachinko field; clearing a row does not.
 """
 
 from __future__ import annotations
@@ -471,6 +472,34 @@ async def test_card_shows_numbered_file_list(store: Store, project: str) -> None
 
     assert f"  {'files':<8}1 /tmp/a" in text
     assert f"  {'':<8}2 /tmp/b" in text
+
+
+async def test_answering_choice_drops_a_field_block(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.field.cells
+        await pilot.press("1")
+        await pilot.pause(0.6)
+        assert len(app.field.cells) == 1
+        assert app.field.falling is None
+
+
+async def test_clear_drops_no_field_block(store: Store, project: str) -> None:
+    store.ask("pick one", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.pause(0.6)
+        assert not app.field.cells
+        assert app.field.falling is None
 
 
 # The answers view and projects pane (sublists) are a separate change; until
