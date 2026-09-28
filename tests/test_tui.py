@@ -474,7 +474,7 @@ async def test_card_shows_numbered_file_list(store: Store, project: str) -> None
     assert f"  {'':<8}2 /tmp/b" in text
 
 
-async def test_answering_choice_drops_a_field_block(store: Store, project: str) -> None:
+async def test_answering_choice_drops_a_field_seed(store: Store, project: str) -> None:
     store.ask(
         "pick one", project=project, cwd=project, agent=AGENT,
         kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
@@ -483,23 +483,68 @@ async def test_answering_choice_drops_a_field_block(store: Store, project: str) 
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert not app.field.cells
+        assert not app.world.seeds
         await pilot.press("1")
-        await pilot.pause(0.6)
-        assert len(app.field.cells) == 1
-        assert app.field.falling is None
+        await pilot.pause()
+        assert len(app.world.seeds) == 1
 
 
-async def test_clear_drops_no_field_block(store: Store, project: str) -> None:
+async def test_clear_drops_no_field_seed(store: Store, project: str) -> None:
     store.ask("pick one", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
 
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("c")
-        await pilot.pause(0.6)
-        assert not app.field.cells
-        assert app.field.falling is None
+        await pilot.pause()
+        assert not app.world.seeds
+
+
+async def test_field_column_matches_the_pressed_key(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        col_1 = app._field_column("1")
+        col_i = app._field_column("i")
+        # Verified against the real footer layout (see probe report): `i` is
+        # bound early in BINDINGS and rendered left of the digit group, which
+        # is declared last — so `1`'s footer key sits to the right of `i`'s.
+        assert col_1 != col_i
+        assert col_i < col_1
+
+
+async def test_teardown_with_a_seed_in_flight_does_not_raise(store: Store, project: str) -> None:
+    """Exiting run_test with a seed still falling and the sky timer still
+    running must not leak an exception or leave a dangling timer."""
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+
+    assert app._field_timer is None
+
+
+async def test_render_field_after_widget_removed_stops_the_timer(store: Store, project: str) -> None:
+    store.ask("pick one", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#field").remove()
+        await pilot.pause()
+        app._render_field()
+        assert app._field_timer is None
 
 
 # The answers view and projects pane (sublists) are a separate change; until

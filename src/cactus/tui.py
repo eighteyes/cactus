@@ -15,7 +15,8 @@ Responsibilities:
   rows with a verdict — newest verdict first.
 - Let a human ask an agent to rewrite a row (`e`) and withdraw that request
   (`u`) before the agent addresses it.
-- Drop a block onto the pachinko field strip below the card on every answer.
+- Grow a small sky/weather/cactus simulation under the card, dropping a seed
+  on every answer.
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ import json
 import os
 import random
 import subprocess
-from collections import deque
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -39,7 +39,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 from textual.widgets._footer import FooterKey
 
-from .field import Field
+from .field import World
 from .scope import project_label
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
@@ -589,7 +589,8 @@ class CactusApp(App[int]):
         padding: 0 1;
     }
     #field {
-        height: 6;
+        dock: bottom;
+        height: 10;
         width: 1fr;
         background: $surface;
     }
@@ -697,10 +698,10 @@ class CactusApp(App[int]):
         self.file_pending: str | None = None
         self.file_pending_key: str | None = None
         self.file_pending_timer = None
-        # Pachinko field: in-memory only, one block falls at a time; further
-        # drops queue their column until the falling block anchors.
-        self.field = Field(rows=6)
-        self._field_queue: deque[int] = deque()
+        # Field: an in-memory sky/weather/cactus simulation under the card,
+        # one row of seeds per answer. Sized 1x10 until the first render,
+        # when the FieldView's actual width is known.
+        self.world = World(cols=1, rows=10)
         self._field_timer = None
 
     @property
@@ -735,11 +736,11 @@ class CactusApp(App[int]):
                 yield Static(id="card", markup=False)
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
                 yield Static("inbox empty — waiting for questions", id="empty-state")
+                yield FieldView(id="field", markup=False)
         yield Static(id="settings-panel", markup=False)
         yield Static(id="projects-panel", markup=False)
         yield Static(id="answers-panel", markup=False)
         yield Static(id="status-bar", markup=False)
-        yield FieldView(id="field", markup=False)
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -756,6 +757,7 @@ class CactusApp(App[int]):
         # focused; re-ask once the screen has settled.
         self.call_after_refresh(self.refresh_bindings)
         self.set_interval(POLL_INTERVAL, self._poll)
+        self._field_timer = self.set_interval(0.1, self._field_tick, name="field")
         self._render_field()
 
     def _apply_tui_settings(self) -> None:
@@ -2544,59 +2546,64 @@ class CactusApp(App[int]):
     # ---- field ----------------------------------------------------------
 
     def _field_column(self, key: str) -> int:
-        """Resolve the drop column for a binding key via its footer glyph.
+        """Resolve the drop column for a binding key via its footer glyph's x.
 
-        Falls back to the `i` binding's column, then a random column, when
-        no footer key matches — e.g. the footer is not mounted yet.
+        `FooterKey.region.x` is the key's position in the footer's *virtual*
+        (scrollable) content, which regularly overflows the visible screen
+        width — the v1 bug fell every column past that width onto the
+        rightmost one. Scaling `x` by the footer's virtual width into the
+        field pane's own column space keeps that proportion. Falls back to a
+        column chosen uniformly at random — never to `i`'s column — when no
+        footer key carries the pressed key, e.g. the footer is not mounted
+        yet, or the key names a hidden binding (digits 2-9 are never shown).
         """
-        footer_keys = {fk.key: fk for fk in self.query(FooterKey)}
-        target = footer_keys.get(key) or footer_keys.get("i")
-        if target is not None:
-            return target.region.x + 1
-        width = max(self.query_one("#field", FieldView).size.width, 1)
-        return random.randrange(width)
+        try:
+            pane_cols = max(self.query_one("#field", FieldView).size.width, 1)
+        except NoMatches:
+            return 0
+        try:
+            footer = self.query_one(Footer)
+        except NoMatches:
+            return random.randrange(pane_cols)
+        footer_keys = {fk.key: fk for fk in footer.query(FooterKey)}
+        target = footer_keys.get(key)
+        if target is None:
+            return random.randrange(pane_cols)
+        footer_width = max(footer.virtual_size.width, footer.size.width, 1)
+        col = int(target.region.x / footer_width * pane_cols)
+        return max(0, min(col, pane_cols - 1))
 
     def _field_drop(self, key: str) -> None:
-        """Drop a block for the column named by `key`, queuing behind any faller."""
-        width = max(self.query_one("#field", FieldView).size.width, 1)
-        x = max(0, min(self._field_column(key), width - 1))
-        if self.field.falling is not None:
-            self._field_queue.append(x)
-        else:
-            self.field.drop(x)
+        """Drop a seed for the column named by `key`.
+
+        Several seeds may be in flight at once; there is no queue — the sky
+        timer (started in `on_mount`) keeps ticking whether or not one is
+        falling.
+        """
+        self.world.drop(self._field_column(key))
         self._render_field()
-        self._start_field_timer()
 
-    def _start_field_timer(self) -> None:
-        if self._field_timer is None:
-            self._field_timer = self.set_interval(0.05, self._field_tick, name="field")
+    def _field_tick(self) -> None:
+        self.world.tick()
+        self._render_field()
 
-    def _stop_field_timer(self) -> None:
+    def on_unmount(self) -> None:
         if self._field_timer is not None:
             self._field_timer.stop()
             self._field_timer = None
-
-    def _field_tick(self) -> None:
-        still_falling = self.field.step()
-        self._render_field()
-        if still_falling:
-            return
-        if self._field_queue:
-            self.field.drop(self._field_queue.popleft())
-            return
-        self._stop_field_timer()
-
-    def on_unmount(self) -> None:
-        self._stop_field_timer()
 
     def _render_field(self) -> None:
         try:
             widget = self.query_one("#field", FieldView)
         except NoMatches:
-            self._stop_field_timer()
+            if self._field_timer is not None:
+                self._field_timer.stop()
+                self._field_timer = None
             return
         width = max(widget.size.width, 1)
-        widget.update(self.field.render(width))
+        if width != self.world.cols:
+            self.world.resize(width, self.world.rows)
+        widget.update(self.world.render())
 
     # ---- undo -----------------------------------------------------------
 
