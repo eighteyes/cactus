@@ -34,3 +34,4 @@
 - [ ] Codex plugin hook (plugins/cactus/hooks/session-start.sh) still says Monitor; Codex wake-up mechanics unverified.
 - [x] q340: keep the unbounded --monitor stream as a CLI mode; docs-only removal. 3b4abac.
 - [ ] BUG record collision: per-project keys (q166) reuse qN numbers that old global-key rows already used, and record.py picks up the existing `qN-*.md`, so q340 (mon-scope) overwrote q340-grok-wake.md from fb8ca4b. Records need a key that cannot repeat: the row id, or project-scoped numbering that starts above the old global max.
+- [x] Codex probe (q342, 2026-09-27 22:19): Codex armed the background --once, the process survived its turn end and exited on the answer, but Codex was not re-invoked. Codex has no exit-wakes-agent semantic. Wake path decision: q343.
