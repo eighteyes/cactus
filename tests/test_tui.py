@@ -11,6 +11,7 @@ Responsibilities:
 - Undo restores an answered row to open.
 - An empty multi submit records nothing and flashes instead.
 - Answering drops a block onto the pachinko field; clearing a row does not.
+- Backtick/tilde drop a seed anytime except while typing, empty inbox included.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import Footer, Static
+from textual.widgets import Footer, Input, Static
 from textual.widgets._footer import FooterKey
 
 from cactus.store import Choice, Store
@@ -545,6 +546,60 @@ async def test_render_field_after_widget_removed_stops_the_timer(store: Store, p
         await pilot.pause()
         app._render_field()
         assert app._field_timer is None
+
+
+async def test_backtick_drops_a_seed_on_any_row(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.world.seeds
+        await pilot.press("grave_accent")
+        await pilot.pause()
+        assert len(app.world.seeds) == 1
+
+
+async def test_tilde_also_drops_a_seed(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("tilde")
+        await pilot.pause()
+        assert len(app.world.seeds) == 1
+
+
+async def test_backtick_drops_a_seed_with_an_empty_inbox(store: Store, project: str) -> None:
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.questions
+        await pilot.press("grave_accent")
+        await pilot.pause()
+        assert len(app.world.seeds) == 1
+
+
+async def test_backtick_in_free_text_mode_types_instead_of_dropping(store: Store, project: str) -> None:
+    store.ask("say something", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert app.free_text_mode
+        await pilot.press("grave_accent")
+        await pilot.pause()
+        assert not app.world.seeds
+        assert "`" in app.query_one("#answer-input", Input).value
 
 
 # The answers view and projects pane (sublists) are a separate change; until

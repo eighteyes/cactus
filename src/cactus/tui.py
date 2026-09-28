@@ -16,7 +16,8 @@ Responsibilities:
 - Let a human ask an agent to rewrite a row (`e`) and withdraw that request
   (`u`) before the agent addresses it.
 - Grow a small sky/weather/cactus simulation under the card, dropping a seed
-  on every answer.
+  on every answer, or manually via backtick/tilde at any time outside
+  free-text mode.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 from textual.widgets._footer import FooterKey
 
-from .field import World
+from .field import TICK_SECONDS, World
 from .scope import project_label
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
@@ -629,6 +630,10 @@ class CactusApp(App[int]):
         Binding("F", "edit_file", "Edit file"),
         Binding("d", "dismiss", "Dismiss"),
         Binding("r", "refresh_view", "Refresh"),
+        # Manual seed drop (q368): both the bare and shifted glyph of the same
+        # physical key fire it; only the unshifted one shows in the footer.
+        Binding("grave_accent", "drop_seed", "seed", key_display="`"),
+        Binding("tilde", "drop_seed", "seed", show=False, key_display="`"),
         Binding("q", "quit_app", "Quit"),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         # Neutral label: the digits pick a choice on an ask row but toggle a
@@ -757,7 +762,7 @@ class CactusApp(App[int]):
         # focused; re-ask once the screen has settled.
         self.call_after_refresh(self.refresh_bindings)
         self.set_interval(POLL_INTERVAL, self._poll)
-        self._field_timer = self.set_interval(0.1, self._field_tick, name="field")
+        self._field_timer = self.set_interval(TICK_SECONDS, self._field_tick, name="field")
         self._render_field()
 
     def _apply_tui_settings(self) -> None:
@@ -1282,6 +1287,11 @@ class CactusApp(App[int]):
         no command is a promise the row cannot keep, and finding that out by
         pressing it is worse than never seeing it.
         """
+        # Manual seed drop (q368): reachable from every screen state — panels
+        # open, an elaborate row, even an empty inbox — except while typing,
+        # where the same physical key must reach the input instead.
+        if action == "drop_seed":
+            return not self.free_text_mode
         # Each of the three panel-open keys stays reachable from inside any of
         # the others (`_close_other_panels` makes the switch itself a no-op
         # extra step, not the reader's job to close-then-reopen).
@@ -2544,6 +2554,12 @@ class CactusApp(App[int]):
         self._sync_input_focus()
 
     # ---- field ----------------------------------------------------------
+
+    def action_drop_seed(self) -> None:
+        """Backtick/tilde (q368): drop a seed at a random column, any time
+        outside free-text mode — no answer recorded, nothing else changes."""
+        self.world.drop(self.world.rng.randrange(self.world.cols))
+        self._render_field()
 
     def _field_column(self, key: str) -> int:
         """Resolve the drop column for a binding key via its footer glyph's x.
