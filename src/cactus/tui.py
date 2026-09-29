@@ -608,7 +608,7 @@ class CactusApp(App[int]):
     }
     #card-text {
         height: auto;
-        max-height: 60%;
+        max-height: 35%;
         overflow-y: auto;
         padding: 0 2;
     }
@@ -624,7 +624,7 @@ class CactusApp(App[int]):
     }
     #field {
         height: 1fr;
-        min-height: 4;
+        min-height: 8;
         width: 100%;
         background: $surface;
     }
