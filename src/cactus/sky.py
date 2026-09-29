@@ -42,8 +42,10 @@ Responsibilities:
   `tuning_fields()` flattens both shapes, the whole set (far/mid/near/shared),
   into `TuneField` rows for tui.py's `T` overlay. Nine save/recall slots
   (v6g) live beside `config_path()` as `sky-slot-N.toml`: `save_slot`/
-  `load_slot` round-trip through the same sparse `dump`/`load`, and
-  `slots_present()` reports which are filled for the overlay to show.
+  `load_slot` round-trip through the same sparse `dump`/`load`, each slot
+  optionally carrying a human `name` (a top-level TOML key, written first,
+  ignored by `overlay()`); `slots_present()` reports which are filled,
+  `slot_name`/`slots()` report their names, for the overlay to show.
 - Downsample the composited canvas, `PX_X` by `PX_Y` pixels per terminal
   cell, to one toned glyph: blank, a fringe speck, an ordered-dither braille
   pattern, a flat cirrus stroke, a tapering edge stroke, or a solid core —
@@ -102,7 +104,25 @@ _DEFAULT_DT = 0.1
 DENSITY_FLOOR = 0.02
 
 CORE_GLYPH = "⣿"  # "⣿" — all eight braille dots, same bits an all-lit dither gives
-_SPECK_GLYPHS = ". · ˙".split()  # ". · ˙"
+_SPECK_GLYPHS = ". · ˙ , ' `".split()  # fringe specks, one per cell by hash
+# Grain (v8): a flat plateau of density would otherwise render one identical
+# dither glyph across a whole run of cells, which reads as a coarse slab.
+# One dither cell in three (by hash) takes a small marker from its density
+# tier instead, so a slab breaks into texture; a band edge's identical
+# vertical gradient would otherwise repeat one glyph the whole way across.
+_GRAIN_TIERS = (
+    (0.35, (",", ".", "'")),
+    (0.60, ("-", "*", "`")),
+    (1.01, ("*", "#", "-")),
+)
+
+
+def _grain_glyph(m: float, x0: int, y0: int) -> str:
+    h = _cell_hash(x0, y0 + 7)
+    for top, glyphs in _GRAIN_TIERS:
+        if m < top:
+            return glyphs[h % len(glyphs)]
+    return "#"
 
 # Compositing order, nearest first — the first grid whose pixel clears
 # DENSITY_FLOOR owns it, exactly as v5's near/mid/far layers did.
@@ -139,6 +159,35 @@ def slot_path(n: int) -> Path:
 def slots_present() -> dict[int, bool]:
     """`{n: slot_path(n).exists()}` for every slot, 1..`SLOT_COUNT`."""
     return {n: slot_path(n).exists() for n in range(1, SLOT_COUNT + 1)}
+
+
+def slot_name(n: int) -> str | None:
+    """The `name` key stored in slot `n`'s file, or `None` if the slot is
+    empty, has no name, or fails to parse."""
+    p = slot_path(n)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "rb") as fh:
+            data = tomllib.load(fh)
+    except tomllib.TOMLDecodeError:
+        return None
+    name = data.get("name")
+    return name if isinstance(name, str) else None
+
+
+def slots() -> dict[int, str | None]:
+    """`{n: name}` for every slot, 1..`SLOT_COUNT`: the slot's `name` (`""`
+    when the file exists but carries none), or `None` when the slot is
+    empty."""
+    result: dict[int, str | None] = {}
+    for n in range(1, SLOT_COUNT + 1):
+        p = slot_path(n)
+        if not p.exists():
+            result[n] = None
+            continue
+        result[n] = slot_name(n) or ""
+    return result
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -285,6 +334,7 @@ _SHARED_COMMENTS = {
     "cloud_count": "puffs engine population scale: 1.0 is one cloud per band per ~40 columns",
     "cloud_drift": "puffs engine top drift speed, pixels per second, before a band's own wind_scale; each cloud picks its own direction",
     "cloud_life": "puffs engine seconds a cloud lives, unfold to recede",
+    "seed_wind": "a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)",
 }
 
 
@@ -356,6 +406,10 @@ class SkyConfig:
     cloud_count: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.2, "hi": 4.0})
     cloud_drift: float = field(default=1.5, metadata={"step": 0.25, "lo": 0.0, "hi": 12.0})
     cloud_life: float = field(default=90.0, metadata={"step": 10.0, "lo": 10.0, "hi": 900.0})
+    # A falling seed's share of the wind (v8): the near deck's wind times
+    # this, so a sky tuned to creep does not leave the seeds swaying in a
+    # gale — `World.seed_wind()` is the one reader.
+    seed_wind: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.0, "hi": 5.0})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkyConfig":
@@ -389,13 +443,15 @@ class SkyConfig:
             _set_typed(shared, key, value, f"shared.{key}")
         return shared
 
-    def dump(self, path: str | Path | None = None) -> Path:
+    def dump(self, path: str | Path | None = None, *, name: str | None = None) -> Path:
         """Write only the keys that differ from `SkyConfig()`'s defaults to
         `path` (or `config_path()`), as live lines; every other key still
         appears, commented out, so the file documents every lever without
         pinning it. Sparse on purpose: a file dumped under one set of
-        defaults must not freeze them past a later default change. Returns
-        the path written."""
+        defaults must not freeze them past a later default change. When
+        `name` is given, a top-level `name = "<escaped>"` line is written
+        first, before `[far]` — `overlay()` ignores unknown top-level keys,
+        so it never affects loading. Returns the path written."""
         p = Path(path) if path is not None else config_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         default = SkyConfig()
@@ -405,6 +461,10 @@ class SkyConfig:
             "# a commented line shows the current default; uncomment and edit to pin it",
             "",
         ]
+        if name is not None:
+            escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'name = "{escaped}"')
+            lines.append("")
         for gname in ("far", "mid", "near"):
             lines.append(f"[{gname}]")
             gcfg = getattr(self, gname)
@@ -428,9 +488,10 @@ class SkyConfig:
         p.write_text("\n".join(lines) + "\n")
         return p
 
-    def save_slot(self, n: int) -> Path:
-        """Dump this config to slot `n`, same sparse format as `dump`."""
-        return self.dump(slot_path(n))
+    def save_slot(self, n: int, name: str | None = None) -> Path:
+        """Dump this config to slot `n`, same sparse format as `dump`, with
+        `name` written as the top-level `name` key when given."""
+        return self.dump(slot_path(n), name=name)
 
     @classmethod
     def load_slot(cls, n: int) -> "SkyConfig | None":
@@ -930,8 +991,8 @@ def downsample(
                 glyph = CORE_GLYPH if _cell_hash(x0, y0) % 2 == 0 else _ordered_dither(pixels)
             elif abs(gx) > cfg.flat_gx and abs(gy) <= cfg.flat_gy_max and cfg.flat_mean_lo <= m < cfg.flat_mean_hi:
                 glyph = "-" if _cell_hash(x0, y0) % 2 == 0 else "~"
-            elif m < cfg.edge_mean_hi and abs(gx) > cfg.edge_gx and abs(gy) > cfg.edge_gy:
-                glyph = "/" if (gx > 0) == (gy > 0) else "\\"
+            elif _cell_hash(x0, y0) % 3 == 0:
+                glyph = _grain_glyph(m, x0, y0)
             else:
                 glyph = _ordered_dither(pixels)
             owner_name = _majority_owner(block_owner, x0)

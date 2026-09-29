@@ -1,10 +1,10 @@
 # every rate below is per second (v6b); a v6 file's numbers still load,
 # but now mean 10x less per frame at the default 0.1s sampling
-# 6-storm-front: fluid engine, fast sheared wind, heavy growth, slow evaporation
+# 6-storm-front: fluid engine, a heavy sheared deck that creeps: storm front at a tenth speed
 # a commented line shows the current default; uncomment and edit to pin it
 
 [far]
-wind_scale = 0.6  # fraction of the world's wind this grid drifts at
+wind_scale = 0.06  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 growth = 40.0  # logistic growth rate per second inside a band
@@ -23,7 +23,7 @@ band_count = 3  # how many bands this grid draws at startup
 # allee = 0.15  # density a streak must reach to grow; below it, it thins away
 
 [mid]
-wind_scale = 1.2  # fraction of the world's wind this grid drifts at
+wind_scale = 0.12  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 growth = 40.0  # logistic growth rate per second inside a band
@@ -42,7 +42,7 @@ band_count = 3  # how many bands this grid draws at startup
 # allee = 0.15  # density a streak must reach to grow; below it, it thins away
 
 [near]
-wind_scale = 2.5  # fraction of the world's wind this grid drifts at
+wind_scale = 0.25  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 growth = 40.0  # logistic growth rate per second inside a band
@@ -64,8 +64,8 @@ band_count = 3  # how many bands this grid draws at startup
 # pile_style = 'blocks'  # landed-cactus rendering: 'blocks' (quadrant blocks) or 'dots' (splatted, dithered)
 # stick_distance = 1.4  # how close two falling seeds' members must be, in sub-cells, to merge into one clump
 # shear_floor = 0.3  # minimum drift speed per row, pixels/second, so drift never stalls
-shear_base = 12.0  # row shear's base fraction of a grid's own wind, per second
-shear_span = 6.0  # row shear's extra fraction at the bottom of the sky, per second
+shear_base = 1.2  # row shear's base fraction of a grid's own wind, per second
+shear_span = 0.6  # row shear's extra fraction at the bottom of the sky, per second
 tone_exp = 0.9  # block-mean lift before the 16-step tone ramp
 # haze_depth_weight = 0.55  # how much a grid's fixed depth mixes toward haze
 # haze_row_weight = 0.3  # how much a cell's height mixes toward haze

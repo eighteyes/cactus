@@ -1,60 +1,60 @@
 # every rate below is per second (v6b); a v6 file's numbers still load,
 # but now mean 10x less per frame at the default 0.1s sampling
-# 5-wide-bands: fluid engine, four fat bands per grid, eager nucleation: a full fluid sky
+# 5-wide-bands: fluid engine, three wide bands, unhurried: a full but calm fluid sky
 # a commented line shows the current default; uncomment and edit to pin it
 
 [far]
-# wind_scale = 0.25  # fraction of the world's wind this grid drifts at
-# kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
+wind_scale = 0.025  # fraction of the world's wind this grid drifts at
+kx = 0.3  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band
 evaporation = 0.1  # decay rate per second everywhere, strongest outside a band
-nucleate_p = 1.2  # probability per second of a new puff
+# nucleate_p = 0.5  # probability per second of a new puff
 # puff_lo = 0.5  # a puff's minimum added density
 # puff_hi = 0.8  # a puff's maximum added density
 puff_width = 60  # a puff's width in pixels
 puff_height = 3  # a puff's height in pixels
 # band_sigma_lo = 1.5  # a band's minimum vertical spread in pixels
-band_sigma_hi = 5.0  # a band's maximum vertical spread in pixels
-band_count = 4  # how many bands this grid draws at startup
+band_sigma_hi = 4.0  # a band's maximum vertical spread in pixels
+band_count = 3  # how many bands this grid draws at startup
 # uptake = 2.5  # moisture a unit of growth spends; higher means shorter-lived streaks
 # replenish = 0.02  # moisture return rate per second toward 1
 # floor = 0.03  # density below this snaps to zero, so evaporation leaves no haze
 # allee = 0.15  # density a streak must reach to grow; below it, it thins away
 
 [mid]
-# wind_scale = 0.55  # fraction of the world's wind this grid drifts at
-# kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
+wind_scale = 0.055  # fraction of the world's wind this grid drifts at
+kx = 0.3  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band
 evaporation = 0.1  # decay rate per second everywhere, strongest outside a band
-nucleate_p = 1.2  # probability per second of a new puff
+# nucleate_p = 0.5  # probability per second of a new puff
 # puff_lo = 0.5  # a puff's minimum added density
 # puff_hi = 0.8  # a puff's maximum added density
 puff_width = 60  # a puff's width in pixels
 puff_height = 3  # a puff's height in pixels
 # band_sigma_lo = 1.5  # a band's minimum vertical spread in pixels
-band_sigma_hi = 5.0  # a band's maximum vertical spread in pixels
-band_count = 4  # how many bands this grid draws at startup
+band_sigma_hi = 4.0  # a band's maximum vertical spread in pixels
+band_count = 3  # how many bands this grid draws at startup
 # uptake = 2.5  # moisture a unit of growth spends; higher means shorter-lived streaks
 # replenish = 0.02  # moisture return rate per second toward 1
 # floor = 0.03  # density below this snaps to zero, so evaporation leaves no haze
 # allee = 0.15  # density a streak must reach to grow; below it, it thins away
 
 [near]
-# wind_scale = 1.0  # fraction of the world's wind this grid drifts at
-# kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
+wind_scale = 0.1  # fraction of the world's wind this grid drifts at
+kx = 0.3  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band
 evaporation = 0.1  # decay rate per second everywhere, strongest outside a band
-nucleate_p = 1.0  # probability per second of a new puff
+nucleate_p = 0.4  # probability per second of a new puff
 # puff_lo = 0.5  # a puff's minimum added density
 # puff_hi = 0.8  # a puff's maximum added density
 puff_width = 60  # a puff's width in pixels
 puff_height = 4  # a puff's height in pixels
 # band_sigma_lo = 1.5  # a band's minimum vertical spread in pixels
-band_sigma_hi = 5.0  # a band's maximum vertical spread in pixels
-band_count = 4  # how many bands this grid draws at startup
+band_sigma_hi = 4.0  # a band's maximum vertical spread in pixels
+band_count = 3  # how many bands this grid draws at startup
 # uptake = 2.5  # moisture a unit of growth spends; higher means shorter-lived streaks
 # replenish = 0.02  # moisture return rate per second toward 1
 # floor = 0.03  # density below this snaps to zero, so evaporation leaves no haze
@@ -64,8 +64,8 @@ band_count = 4  # how many bands this grid draws at startup
 # pile_style = 'blocks'  # landed-cactus rendering: 'blocks' (quadrant blocks) or 'dots' (splatted, dithered)
 # stick_distance = 1.4  # how close two falling seeds' members must be, in sub-cells, to merge into one clump
 # shear_floor = 0.3  # minimum drift speed per row, pixels/second, so drift never stalls
-shear_base = 4.0  # row shear's base fraction of a grid's own wind, per second
-# shear_span = 2.9999999999999996  # row shear's extra fraction at the bottom of the sky, per second
+shear_base = 0.5  # row shear's base fraction of a grid's own wind, per second
+shear_span = 0.2  # row shear's extra fraction at the bottom of the sky, per second
 # tone_exp = 0.45  # block-mean lift before the 16-step tone ramp
 # haze_depth_weight = 0.55  # how much a grid's fixed depth mixes toward haze
 # haze_row_weight = 0.3  # how much a cell's height mixes toward haze

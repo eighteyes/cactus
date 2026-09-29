@@ -99,6 +99,23 @@ Same setup and env as above.
 9. `cactus garden`. Expect: the path and a cell count. `cactus garden
    --clear`. Expect: `cleared <path>`. Relaunch. Expect: an empty field.
 
+## v8b: names, grain, seed wind, charge
+
+10. `T`. Expect: a `saved skies` grid at the top, three per row, every slot
+    named (`1 still-bloom` … `9 crisp-dots`). `S`, `2`, type `wisp`,
+    enter. Expect: the grid reads `2 wisp`, flash `saved slot 2 as wisp`.
+    `2`. Expect: flash `recalled slot 2: wisp`. `S`, `3`, `j`, `k`, esc.
+    Expect: cursor unmoved, nothing saved, flash `save cancelled`.
+11. `5`, `6`, `7`, `8` in turn, watch 20 s each. Expect: clouds creep, no
+    slab of one repeated glyph wider than ~10 cells, no `/` or `\` anywhere
+    in the sky, small markers (`, . ' - * # \``) sprinkled through the
+    dither. Seeds sway gently, not in a gale, while the clouds creep.
+12. Charge. Under `2` (busy-drift), answer a row whose key sits under a
+    cloud. Expect: the falling fleck fattens by one cell as it enters the
+    cloud; on landing one extra fleck bursts off sideways and up, then
+    lands nearby. A fleck that crosses two clouds and a bird bursts three.
+    Exploded flecks never burst again.
+
 ## Fail
 
 - No field under the question, or the field still sits above the footer.
@@ -111,6 +128,8 @@ Same setup and env as above.
 - v8: a recalled slot does not survive `q` and relaunch.
 - v8: two TUIs on one DB show different piles after a landing.
 - v8: backtick drops a seed while the field is hidden.
+- v8b: a `/` or `\` in the sky; a slot without a name after the installer.
+- v8b: an exploded fleck bursts again on landing.
 
 ## Teardown
 

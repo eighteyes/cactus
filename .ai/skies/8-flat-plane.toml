@@ -4,7 +4,7 @@
 # a commented line shows the current default; uncomment and edit to pin it
 
 [far]
-# wind_scale = 0.25  # fraction of the world's wind this grid drifts at
+wind_scale = 0.025  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band
@@ -23,7 +23,7 @@
 # allee = 0.15  # density a streak must reach to grow; below it, it thins away
 
 [mid]
-# wind_scale = 0.55  # fraction of the world's wind this grid drifts at
+wind_scale = 0.055  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band
@@ -42,7 +42,7 @@
 # allee = 0.15  # density a streak must reach to grow; below it, it thins away
 
 [near]
-# wind_scale = 1.0  # fraction of the world's wind this grid drifts at
+wind_scale = 0.1  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band
@@ -64,8 +64,8 @@
 # pile_style = 'blocks'  # landed-cactus rendering: 'blocks' (quadrant blocks) or 'dots' (splatted, dithered)
 # stick_distance = 1.4  # how close two falling seeds' members must be, in sub-cells, to merge into one clump
 # shear_floor = 0.3  # minimum drift speed per row, pixels/second, so drift never stalls
-# shear_base = 6.999999999999999  # row shear's base fraction of a grid's own wind, per second
-# shear_span = 2.9999999999999996  # row shear's extra fraction at the bottom of the sky, per second
+shear_base = 0.7  # row shear's base fraction of a grid's own wind, per second
+shear_span = 0.3  # row shear's extra fraction at the bottom of the sky, per second
 # tone_exp = 0.45  # block-mean lift before the 16-step tone ramp
 # haze_depth_weight = 0.55  # how much a grid's fixed depth mixes toward haze
 # haze_row_weight = 0.3  # how much a cell's height mixes toward haze

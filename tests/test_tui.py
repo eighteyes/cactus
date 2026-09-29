@@ -1218,6 +1218,11 @@ async def test_tuning_overlay_save_and_recall_slot(
         await pilot.press("2")
         await pilot.pause()
         assert app.tuning_save_armed is False
+        assert app.tuning_name_slot == 2
+        assert not slot_path(2).exists()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.tuning_name_slot is None
         assert slot_path(2).exists()
         saved_cfg = SkyConfig.load_slot(2)
         assert saved_cfg is not None
@@ -1238,6 +1243,65 @@ async def test_tuning_overlay_save_and_recall_slot(
         await pilot.press("3")
         await pilot.pause()
         assert "slot 3 is empty" in app.flash
+
+
+async def test_tuning_overlay_named_slot_save_and_recall(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v6h: `S`, a digit, then typed text names the slot before saving; the
+    grid at the top of the overlay shows the name, the flash mentions it, and
+    a bare digit recall's flash names it back."""
+    from cactus.sky import slot_path
+
+    path = tmp_path / "sky.toml"
+    monkeypatch.setenv("CACTUS_SKY", str(path))
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+
+        await pilot.press("S")
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.pause()
+        assert app.tuning_name_slot == 2
+        for ch in "wisp":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert app.tuning_name_buf == "wisp"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.tuning_name_slot is None
+        assert slot_path(2).exists()
+        assert 'name = "wisp"' in slot_path(2).read_text()
+        assert "wisp" in app.flash
+
+        text = app._tuning_text()
+        assert "2 wisp" in text
+        assert text.index("2 wisp") < text.index("[far]")
+
+        # Save, arm, then bail out without saving: cursor/nudge untouched.
+        default_index = app.tuning_index
+        await pilot.press("S")
+        await pilot.pause()
+        await pilot.press("3")
+        await pilot.pause()
+        assert app.tuning_name_slot == 3
+        await pilot.press("j")
+        await pilot.press("k")
+        await pilot.pause()
+        assert app.tuning_index == default_index
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.tuning_name_slot is None
+        assert "save cancelled" in app.flash
+        assert not slot_path(3).exists()
+
+        await pilot.press("2")
+        await pilot.pause()
+        assert "recalled slot 2: wisp" in app.flash
 
 
 # ---- perf (v6f) -------------------------------------------------------
@@ -1329,7 +1393,7 @@ async def test_tuning_overlay_arrows_move_and_nudge(
         await pilot.pause()
         assert getattr(app._tuning_obj(row.group), row.name) == pytest.approx(min(before + 10 * row.step, row.hi))
         text = app._tuning_text()
-        assert "saved skies" in text and "load that saved sky" in text
+        assert "saved skies" in text and "digit loads one" in text
         await pilot.press("S")
         await pilot.pause()
-        assert "press a digit 1-9 to save" in app._tuning_text()
+        assert "press a digit 1-9 to name and save" in app._tuning_text()

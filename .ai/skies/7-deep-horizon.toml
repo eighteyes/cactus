@@ -4,7 +4,7 @@
 # a commented line shows the current default; uncomment and edit to pin it
 
 [far]
-# wind_scale = 0.25  # fraction of the world's wind this grid drifts at
+wind_scale = 0.025  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band
@@ -23,7 +23,7 @@ nucleate_p = 1.0  # probability per second of a new puff
 # allee = 0.15  # density a streak must reach to grow; below it, it thins away
 
 [mid]
-# wind_scale = 0.55  # fraction of the world's wind this grid drifts at
+wind_scale = 0.055  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band
@@ -42,7 +42,7 @@ nucleate_p = 1.0  # probability per second of a new puff
 # allee = 0.15  # density a streak must reach to grow; below it, it thins away
 
 [near]
-# wind_scale = 1.0  # fraction of the world's wind this grid drifts at
+wind_scale = 0.1  # fraction of the world's wind this grid drifts at
 # kx = 0.5  # horizontal diffusion per second — spreads mass along a streak
 # ky = 0.03  # vertical diffusion per second — spreads mass across a streak (keep small)
 # growth = 30.0  # logistic growth rate per second inside a band

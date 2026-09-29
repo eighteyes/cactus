@@ -44,6 +44,13 @@ Responsibilities:
   bottom endpoints drift sideways with `Sky.camera_x`. They sit under the
   sand speckle and under every cactus cell — the lowest-priority layer,
   drawn only where nothing else claims the cell.
+- Charge (hidden rule, no UI text): a falling clump gains +1 charge and +1
+  member on each clear-sky-to-cloud entry (once per entry, not per frame
+  spent inside one) and +1 charge per distinct bird it shares a terminal
+  cell with; landing explodes `charge` single-member clumps off the landing
+  point (`bounty=False`, so they can never re-collect and cascade). Cloud
+  sampling reads the cached glyph grid from the last `render()`
+  (`World.cloud_at`/`self._sky_cells`), never the sky engine directly.
 - Perf (v6f): `_seed_splat_canvas`/`_pile_splat_canvas` also return the set of
   terminal cells they actually touched, so `_sample_cell` only ever asks the
   (otherwise empty) splat canvas about a cell in that set — a frame with no
@@ -150,6 +157,15 @@ SEED_SPLAT_FLOOR = 0.02
 PILE_SPLAT_SIGMA = 1.2
 PILE_SPLAT_RADIUS_PX = 3
 
+# Charge (hidden rule): a clump gains +1 charge (and +1 member, cloud mass)
+# on each clear-sky-to-cloud entry, and +1 charge per distinct bird it shares
+# a terminal cell with while falling. Landing explodes `charge` single-member
+# clumps off the landing point; `bounty=False` on those keeps the cascade
+# from ever restarting.
+EXPLODE_VX_RANGE = (1.5, 4.0)  # sub-cells/s magnitude, random sign
+EXPLODE_VY_FRACTION = 1.0 / 3.0  # of sky height per second, upward kick
+CLOUD_MASS_OFFSETS = ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))
+
 
 @dataclass(frozen=True)
 class Palette:
@@ -204,6 +220,15 @@ class Clump:
     angle: float = 0.0  # radians, added to every member's own baked angle
     spin: float = 0.0  # radians/second, drawn once at drop; see SEED_SPIN_RANGE
     members: list[Member] = field(default_factory=lambda: [Member()])
+    # Charge (hidden rule): `charge` counts cloud entries plus distinct birds
+    # touched; `in_cloud` tracks the clear-to-cloud edge so a long pass through
+    # one cloud counts once; `bounty=False` on an exploded seed (see
+    # `World._explode`) means it never collects, so an explosion can't
+    # cascade; `birds_hit` is the set of `id(bird)` already credited.
+    charge: int = 0
+    in_cloud: bool = False
+    bounty: bool = True
+    birds_hit: set = field(default_factory=set)
 
 
 @dataclass
@@ -249,6 +274,10 @@ class World:
     sky_config: SkyConfig | None = None
     sky: Sky | TextureSky | PuffSky = field(init=False)
     terminal_vy: float = field(init=False)
+    # Charge (hidden rule): the sky's rendered glyph grid, cached each
+    # `render()` for `cloud_at` — engine-agnostic, and `None` before the
+    # first render (headless `advance()` in that case awards nothing).
+    _sky_cells: list[list[tuple[str, str | None]]] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.width = self.cols * SUB_X
@@ -289,13 +318,22 @@ class World:
 
     # ---- dropping ---------------------------------------------------------
 
+    def seed_wind(self) -> float:
+        """The wind a falling seed feels (v8): the world's wind through the
+        near deck's own `wind_scale`, times the shared `seed_wind` lever —
+        so a sky tuned to creep does not leave its seeds swaying in a gale.
+        The stock config (`near.wind_scale == 1.0`, `seed_wind == 1.0`)
+        reads exactly the old raw `self.wind`."""
+        cfg = self.sky.config
+        return self.wind * cfg.near.wind_scale * cfg.seed_wind
+
     def drop(self, col: int) -> None:
         """Spawn a seed above column `col`. Several seeds may be in flight at once."""
         self.drops += 1
         x = (col * SUB_X + SUB_X / 2 + self.rng.uniform(-0.5, 0.5)) % self.width
         spin = self.rng.uniform(*SEED_SPIN_RANGE) * self.rng.choice((-1.0, 1.0))
         angle = self.rng.uniform(0.0, 2 * math.pi)
-        self.seeds.append(Clump(x=x, y=float(self.height - 1), vx=self.wind, vy=0.0, angle=angle, spin=spin))
+        self.seeds.append(Clump(x=x, y=float(self.height - 1), vx=self.seed_wind(), vy=0.0, angle=angle, spin=spin))
 
     # ---- advance ------------------------------------------------------
 
@@ -372,22 +410,110 @@ class World:
         self._flocks.append(Flock(band=band, leader=leader, followers=followers))
 
     def _advance_seeds(self, dt: float) -> None:
+        wind = self.seed_wind()
         for clump in self.seeds:
             self._maybe_nudge(clump)
             n = len(clump.members)
             clump.vy -= GRAVITY * dt
-            clump.vx += self.wind * WIND_COUPLING * dt / math.sqrt(n)
+            clump.vx += wind * WIND_COUPLING * dt / math.sqrt(n)
             clump.vx *= math.exp(-SEED_DRAG_THETA * dt)
             clump.vy = max(clump.vy, self.terminal_vy)
-            clump.angle += (clump.spin + self.wind * SEED_WOBBLE_PER_WIND) * dt
+            clump.angle += (clump.spin + wind * SEED_WOBBLE_PER_WIND) * dt
             clump.x = (clump.x + clump.vx * dt) % self.width
             clump.y += clump.vy * dt
+        self._collect_charge()
         self._merge_clumps()
         remaining = []
+        exploded: list[Clump] = []
         for clump in self.seeds:
-            if not self._anchor(clump):
-                remaining.append(clump)
+            if self._anchor(clump, exploded):
+                continue
+            remaining.append(clump)
+        remaining.extend(exploded)
         self.seeds = remaining
+
+    # ---- charge (hidden rule) ----------------------------------------------
+
+    def _member_cell(self, clump: Clump, member: Member) -> tuple[int, int]:
+        """`member`'s terminal `(col, row)`, `row` from the bottom like
+        `structure`/`render` — the same SUB_X/SUB_Y conversion `_anchor` and
+        `render` use, just one step coarser (sub-cell to terminal cell)."""
+        x = (clump.x + member.dx) % self.width
+        y = clump.y + member.dy
+        return int(x) // SUB_X, int(y) // SUB_Y
+
+    def cloud_at(self, col: int, row_from_bottom: int) -> bool:
+        """True when the cached rendered sky glyph at terminal `(col,
+        row_from_bottom)` is not blank — any speck, dither, stroke, or core
+        counts as cloud. Reads `self._sky_cells`, the grid `render()` cached
+        last frame, not the sky engine directly; before the first render, or
+        inside the ground band, always False."""
+        if self._sky_cells is None or row_from_bottom < GROUND_ROWS:
+            return False
+        r = self.rows - 1 - row_from_bottom
+        if r < 0 or r >= len(self._sky_cells):
+            return False
+        cells = self._sky_cells[r]
+        col %= self.cols
+        if col >= len(cells):
+            return False
+        glyph, _ = cells[col]
+        return glyph != " "
+
+    def _grow_clump(self, clump: Clump, anchor: Member) -> None:
+        """Cloud mass: a new `Member` adjacent to `anchor`, so the clump
+        visibly fattens as it falls through a cloud."""
+        off_dx, off_dy = self.rng.choice(CLOUD_MASS_OFFSETS)
+        clump.members.append(Member(
+            dx=anchor.dx + off_dx, dy=anchor.dy + off_dy,
+            angle=self.rng.uniform(0.0, 2 * math.pi),
+        ))
+
+    def _collect_charge(self) -> None:
+        """Right after clumps move, before landing checks: cloud-entry and
+        bird-touch charge for every bounty-bearing falling clump."""
+        for clump in self.seeds:
+            if not clump.bounty:
+                continue
+            entered: Member | None = None
+            for m in clump.members:
+                col, row = self._member_cell(clump, m)
+                if self.cloud_at(col, row):
+                    entered = m
+                    break
+            if entered is not None and not clump.in_cloud:
+                clump.charge += 1
+                self._grow_clump(clump, entered)
+            clump.in_cloud = entered is not None
+
+            for bird in self.birds:
+                bid = id(bird)
+                if bid in clump.birds_hit:
+                    continue
+                bird_cell = (int(bird.x) // SUB_X, int(bird.y) // SUB_Y)
+                for m in clump.members:
+                    if self._member_cell(clump, m) == bird_cell:
+                        clump.charge += 1
+                        clump.birds_hit.add(bid)
+                        break
+
+    def _explode(self, clump: Clump) -> list[Clump]:
+        """Landing: `clump.charge` single-member clumps launched from the
+        landing point, spread horizontally at random signs and magnitudes,
+        an upward kick (positive `vy` — seeds fall toward y=0) of about a
+        third of the sky height per second so they arc up and out before
+        falling and landing nearby under the ordinary gravity/terminal-
+        velocity code. `bounty=False`: an exploded seed never collects
+        charge, so an explosion cannot cascade."""
+        sky_height = max((self.rows - GROUND_ROWS) * SUB_Y, 0)
+        vy = sky_height * EXPLODE_VY_FRACTION
+        seeds = []
+        for _ in range(clump.charge):
+            vx = self.rng.uniform(*EXPLODE_VX_RANGE) * self.rng.choice((-1.0, 1.0))
+            angle = self.rng.uniform(0.0, 2 * math.pi)
+            spin = self.rng.uniform(*SEED_SPIN_RANGE) * self.rng.choice((-1.0, 1.0))
+            seeds.append(Clump(x=clump.x, y=clump.y, vx=vx, vy=vy, angle=angle, spin=spin, bounty=False))
+        return seeds
 
     def _maybe_nudge(self, clump: Clump) -> None:
         if clump.nudged:
@@ -462,10 +588,12 @@ class World:
                 if merged:
                     break
 
-    def _anchor(self, clump: Clump) -> bool:
+    def _anchor(self, clump: Clump, exploded: list[Clump]) -> bool:
         """Land the whole clump when any member's cell floors or sits beside
         the structure, then add every member's own cell to the structure
-        (an already-taken cell just re-stamps its age)."""
+        (an already-taken cell just re-stamps its age). A landing with
+        charge appends `charge` exploded clumps (see `_explode`) to
+        `exploded`."""
         lands = False
         for m in clump.members:
             cx, cy = int(clump.x + m.dx), int(clump.y + m.dy)
@@ -483,6 +611,8 @@ class World:
             cell = (cx, 0) if cy <= 0 else (cx, cy)
             self.structure[cell] = self.drops
         self.landed_since_save += 1
+        if clump.bounty and clump.charge:
+            exploded.extend(self._explode(clump))
         return True
 
     # ---- age / colour -----------------------------------------------------
@@ -724,6 +854,7 @@ class World:
             )
             ground_line_cells = self._ground_line_cells()
             sky_grid = self.sky.render_cells()
+            self._sky_cells = sky_grid
         text = Text()
         for r in range(self.rows):
             cy = self.rows - 1 - r

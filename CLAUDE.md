@@ -488,8 +488,14 @@ scope.
 - Sky config save/recall slots (v6g): nine files beside `sky.toml`,
   `sky-slot-N.toml`, sparse-dumped the same way `sky.toml` itself is. The `T`
   overlay's bare digit `1`-`9` recalls a slot (applies live, rewrites
-  `sky.toml`, flashes empty when unset); `S` arms, and the next digit saves
-  the live config there instead. The overlay shows which slots are filled.
+  `sky.toml`, flashes empty when unset); `S` arms, and the next digit opens
+  a name prompt (v6h) rather than saving at once — `enter` saves with the
+  typed name (or none), `escape` cancels. A slot's name is a plain
+  top-level `name` key in its TOML file (`overlay()` ignores unknown
+  top-level keys, so it never affects loading). The overlay's saved-skies
+  grid sits at the very top, right under the "tuning" title, one `N name`
+  cell per slot (`—` empty, `(unnamed)` filled but nameless) — the ~75 key
+  rows below it push the grid off-screen otherwise.
 - The garden (the field's landed cactus pile) is a shared, persistent file
   (`garden.py`), `garden.json` beside the database — every TUI on the same
   database reads and writes the same one, and it survives a restart.
@@ -504,3 +510,10 @@ scope.
   skipped, so an answer's seed still lands and reaches the file. `cactus
   garden` prints the file's path, cell count, and drop count (or "empty");
   `--clear` removes it (`nothing to clear` if it was already gone).
+- A falling clump has hidden `charge` (no UI text): +1 and +1 member on each
+  clear-sky-to-cloud entry (`in_cloud`'s False->True edge, not per frame
+  spent inside one), +1 per distinct bird it shares a terminal cell with.
+  Landing explodes `charge` single-member clumps off the landing point;
+  those are `bounty=False` so they can never collect and cascade. Cloud
+  presence is read off `World._sky_cells`, the glyph grid `render()` cached
+  last frame — never a live query against the sky engine.

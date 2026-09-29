@@ -30,6 +30,10 @@ Responsibilities:
 - Two seeds within `stick_distance` merge into one rigid clump that falls,
   lands, and leaves a structure cell per member; seeds far apart never merge
   (v6e).
+- Charge (hidden rule): a clump gains charge and a member once per cloud
+  entry, not per frame spent inside one; gains charge once per bird it
+  touches; an exploded seed (`bounty=False`) never collects; landing with
+  charge explodes that many bounty-free clumps that arc up and land nearby.
 - Ground lines (v7): the two outermost lines' columns converge toward centre
   as the row rises toward the horizon; `ground_lines == 0` disables them.
 - Perf (v6f): a world with 3 seeds falling at 100x20 renders under the 4 ms
@@ -319,6 +323,103 @@ def test_merged_clump_has_two_members_and_a_centre_between_the_originals() -> No
     assert 5.0 < merged.x < 6.0
 
 
+# ---- charge (hidden rule) --------------------------------------------------
+
+
+def make_sky_cells(world: World, cloud_cells: list[tuple[int, int]]) -> list[list[tuple[str, str | None]]]:
+    """A `world._sky_cells`-shaped grid (sky rows only, top row first), " "
+    everywhere except each `(r, col)` in `cloud_cells`."""
+    grid = [[(" ", None) for _ in range(world.cols)] for _ in range(world.rows - GROUND_ROWS)]
+    for r, c in cloud_cells:
+        grid[r][c] = ("⣿", "#ffffff")
+    return grid
+
+
+def test_cloud_entry_awards_charge_and_member_once_per_entry() -> None:
+    world = World(cols=10, rows=10, rng=random.Random(1))
+    # col 4 (x=9 // SUB_X): row_from_bottom 7 -> r=2, row_from_bottom 3 -> r=6
+    world._sky_cells = make_sky_cells(world, [(2, 4), (6, 4)])
+    clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0)  # row_from_bottom 7: cloud
+    world.seeds = [clump]
+
+    world._collect_charge()
+    assert clump.charge == 1
+    assert len(clump.members) == 2
+    assert clump.in_cloud is True
+
+    for _ in range(20):
+        world._collect_charge()
+    assert clump.charge == 1
+    assert len(clump.members) == 2
+
+    clump.y = 12.0  # row_from_bottom 6: clear
+    world._collect_charge()
+    assert clump.in_cloud is False
+    assert clump.charge == 1
+
+    clump.y = 6.0  # row_from_bottom 3: cloud again
+    world._collect_charge()
+    assert clump.charge == 2
+    assert len(clump.members) == 3
+
+
+def test_bird_touch_awards_charge_once_per_bird() -> None:
+    world = World(cols=10, rows=10, rng=random.Random(2))
+    clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0)
+    world.seeds = [clump]
+    bird = Bird(x=9.0, y=14.0, vx=0.0)
+    world.birds = [bird]
+
+    world._collect_charge()
+    assert clump.charge == 1
+    assert len(clump.birds_hit) == 1
+
+    world._collect_charge()  # same bird, same cell: no double count
+    assert clump.charge == 1
+
+    world.birds = [bird, Bird(x=9.0, y=14.0, vx=0.0)]
+    world._collect_charge()
+    assert clump.charge == 2
+    assert len(clump.birds_hit) == 2
+
+
+def test_exploded_seed_never_collects_charge() -> None:
+    world = World(cols=10, rows=10, rng=random.Random(3))
+    world._sky_cells = make_sky_cells(world, [(2, 4)])
+    clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0, bounty=False)
+    world.seeds = [clump]
+    world.birds = [Bird(x=9.0, y=14.0, vx=0.0)]
+
+    world._collect_charge()
+    assert clump.charge == 0
+    assert clump.in_cloud is False
+    assert len(clump.members) == 1
+
+
+def test_landing_with_charge_explodes_into_bounty_free_clumps() -> None:
+    world = World(cols=10, rows=8, rng=random.Random(4))
+    clump = Clump(x=9.0, y=0.4, vx=0.0, vy=-1.0, charge=3)
+    world.seeds = [clump]
+    prior_drops = world.drops
+
+    world._advance_seeds(TICK_SECONDS)
+
+    exploded = [c for c in world.seeds if not c.bounty]
+    assert len(exploded) == 3
+    assert all(c.charge == 0 for c in exploded)
+    assert any(c.vx > 0 for c in exploded)
+    assert any(c.vx < 0 for c in exploded)
+    assert all(c.vy > 0 for c in exploded)
+    assert world.drops == prior_drops
+
+    for _ in range(20_000):
+        if not world.seeds:
+            break
+        world._advance_seeds(TICK_SECONDS)
+    assert not world.seeds
+    assert len(world.structure) > 1
+
+
 def test_flock_spawns_with_a_plausible_bird_count() -> None:
     world = World(cols=20, rows=10, rng=random.Random(41))
     world._spawn_flock()
@@ -516,7 +617,10 @@ def test_no_seeds_never_calls_seed_pixel_block() -> None:
 def test_render_matches_fixture_before_the_v6f_perf_pass() -> None:
     """Same seed, same frame count, same default fps — a render before and
     after the v6f perf pass must be bit-for-bit identical (the fixture was
-    generated from HEAD before that pass touched anything)."""
+    generated from HEAD before that pass touched anything). Re-baked at v8
+    when the renderer gained grain markers and lost the edge slashes — a
+    deliberate look change, so the fixture follows it; the test still pins
+    every render change after that."""
     with open(FIXTURES / "field_render_v6f.json") as fh:
         expected = json.load(fh)
 
@@ -548,3 +652,22 @@ def test_apply_sky_config_swaps_engine_class_on_sky_engine_change() -> None:
     cfg2.sky_engine = "fluid"
     world.apply_sky_config(cfg2)
     assert not isinstance(world.sky, TextureSky)
+
+
+def test_seed_wind_follows_the_near_deck_and_the_seed_wind_lever() -> None:
+    """v8: a seed feels world wind x near.wind_scale x seed_wind, so a sky
+    tuned to creep does not leave its seeds swaying at full strength."""
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture")
+    world = World(cols=20, rows=10, rng=random.Random(3), sky_config=cfg)
+    world.wind = 0.5
+    assert world.seed_wind() == pytest.approx(0.5)
+    cfg.near.wind_scale = 0.1
+    world.apply_sky_config(cfg)
+    assert world.seed_wind() == pytest.approx(0.05)
+    cfg.seed_wind = 3.0
+    world.apply_sky_config(cfg)
+    assert world.seed_wind() == pytest.approx(0.15)
+    world.drop(5)
+    assert world.seeds[-1].vx == pytest.approx(0.15)

@@ -51,7 +51,7 @@ from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 from . import garden
 from .field import World
 from .scope import project_label
-from .sky import SkyConfig, TuneField, config_path as sky_config_path, slots_present, tuning_fields
+from .sky import SkyConfig, TuneField, config_path as sky_config_path, slots as sky_slots, tuning_fields
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
 
@@ -741,7 +741,12 @@ class CactusApp(App[int]):
         self.tuning_index = 0
         # Save/recall slots (v6g): armed by `S`, a following digit 1-9 saves
         # the live config to that slot; a bare digit (not armed) recalls it.
+        # A named slot (v6h) takes one more step: the digit opens a name
+        # prompt (tuning_name_slot set, tuning_name_buf the typed text)
+        # rather than saving immediately.
         self.tuning_save_armed = False
+        self.tuning_name_slot: int | None = None
+        self.tuning_name_buf = ""
         self._figlet_label: str | None = None
         self._figlet_text = ""
         self.free_text_mode = False
@@ -1222,10 +1227,35 @@ class CactusApp(App[int]):
         self._render_tuning()
         self._rebuild_status_bar()
 
+    def _slot_grid_lines(self) -> list[str]:
+        """The named-slot grid, three per row: `N label` cells padded to
+        line up, an empty slot reads `N —`, a nameless one `N (unnamed)`."""
+        names = sky_slots()
+        cells = []
+        for n in sorted(names):
+            name = names[n]
+            if name is None:
+                label = "—"
+            elif name == "":
+                label = "(unnamed)"
+            else:
+                label = name if len(name) <= 18 else name[:17] + "…"
+            cells.append(f"{n} {label}")
+        width = max((len(c) for c in cells), default=0)
+        cells = [c.ljust(width) for c in cells]
+        return ["  " + "  ".join(cells[i:i + 3]) for i in range(0, len(cells), 3)]
+
     def _tuning_text(self) -> str:
         if not self.tuning_rows:
             return "tuning\n\nno tunable keys\n\nesc or T  return to inbox"
         lines = ["tuning", ""]
+        lines.append("saved skies      digit loads one    S then digit saves the current sky")
+        lines.extend(self._slot_grid_lines())
+        if self.tuning_name_slot is not None:
+            lines.append(f"  name for slot {self.tuning_name_slot}: {self.tuning_name_buf}▏   enter saves   esc cancels")
+        elif self.tuning_save_armed:
+            lines.append("  press a digit 1-9 to name and save the current sky there (esc cancels)")
+        lines.append("")
         current_group: str | None = None
         for i, row in enumerate(self.tuning_rows):
             if row.group != current_group:
@@ -1234,14 +1264,6 @@ class CactusApp(App[int]):
             marker = "▸" if i == self.tuning_index else " "
             value = getattr(self._tuning_obj(row.group), row.name)
             lines.append(f"{marker} {row.name}  {value!r}  # {row.comment}")
-        lines.append("")
-        present = slots_present()
-        lines.append("saved skies  " + " ".join(f"{n}{'●' if present[n] else '○'}" for n in sorted(present))
-                     + "     ● saved  ○ empty")
-        if self.tuning_save_armed:
-            lines.append("  press a digit 1-9 to save the current sky there (esc cancels)")
-        else:
-            lines.append("  digit 1-9  load that saved sky      S then digit  save the current sky there")
         lines.extend([
             "",
             "j/k or ↑↓  move   h/l or ←→  nudge   H/L or shift+←→  nudge x10   r  reset",
@@ -2204,6 +2226,26 @@ class CactusApp(App[int]):
         This runs after bindings, so an enabled `u`/`y`/`n` never reaches here.
         """
         if self.tuning_open:
+            if self.tuning_name_slot is not None:
+                n = self.tuning_name_slot
+                if event.key == "escape":
+                    self.tuning_name_slot = None
+                    self.tuning_name_buf = ""
+                    self.flash = "save cancelled"
+                elif event.key == "enter":
+                    name = self.tuning_name_buf.strip() or None
+                    self.world.sky.config.save_slot(n, name=name)
+                    self.flash = f"saved slot {n} as {name}" if name else f"saved slot {n}"
+                    self.tuning_name_slot = None
+                    self.tuning_name_buf = ""
+                elif event.key == "backspace":
+                    self.tuning_name_buf = self.tuning_name_buf[:-1]
+                elif event.character and event.is_printable and len(self.tuning_name_buf) < 40:
+                    self.tuning_name_buf += event.character
+                self._render_tuning()
+                self._rebuild_status_bar()
+                event.stop()
+                return
             if self.tuning_save_armed:
                 if event.key == "escape":
                     self.tuning_save_armed = False
@@ -2215,8 +2257,9 @@ class CactusApp(App[int]):
                 if event.key.isdigit() and event.key != "0":
                     n = int(event.key)
                     self.tuning_save_armed = False
-                    self.world.sky.config.save_slot(n)
-                    self.flash = f"saved slot {n}"
+                    existing = sky_slots().get(n) or ""
+                    self.tuning_name_slot = n
+                    self.tuning_name_buf = existing
                     self._render_tuning()
                     self._rebuild_status_bar()
                     event.stop()
@@ -2255,7 +2298,8 @@ class CactusApp(App[int]):
                 else:
                     self.world.apply_sky_config(cfg)
                     self._apply_and_dump_tuning()
-                    self.flash = f"recalled slot {n}"
+                    name = sky_slots().get(n)
+                    self.flash = f"recalled slot {n}: {name}" if name else f"recalled slot {n}"
                     self._render_tuning()
                     self._rebuild_status_bar()
             else:

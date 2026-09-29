@@ -53,7 +53,9 @@ from cactus.sky import (
     _project_composite,
     _screen_projection_row,
     downsample,
+    slot_name,
     slot_path,
+    slots,
     slots_present,
     tuning_fields,
 )
@@ -299,7 +301,7 @@ def test_alphabet_glyphs_are_all_single_cell_width() -> None:
     """Every glyph the sky can draw must be one terminal cell wide in a
     monospace font — a double-width character would desync the field's
     column grid from the canvas it was downsampled from."""
-    alphabet = list(" .·˙:∘•-~") + [CORE_GLYPH]
+    alphabet = list(" .·˙:∘•-~,'`*#") + [CORE_GLYPH]
     alphabet += [chr(0x2800 | bits) for bits in range(256)]
     for glyph in alphabet:
         assert cell_len(glyph) == 1, repr(glyph)
@@ -432,6 +434,37 @@ def test_slots_present_reflects_files_on_disk(tmp_path, monkeypatch) -> None:
     present = slots_present()
     assert present[2] is True
     assert all(v is False for n, v in present.items() if n != 2)
+
+
+# ---- named slots (v6h) -----------------------------------------------------
+
+
+def test_dump_with_name_round_trips_through_slot_name(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    SkyConfig().save_slot(5, name="wisp")
+    assert slot_name(5) == "wisp"
+    assert SkyConfig.load_slot(5) == SkyConfig()
+
+
+def test_slots_reports_none_empty_and_named(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    SkyConfig().save_slot(1, name="wisp")
+    SkyConfig().save_slot(2)
+    result = slots()
+    assert result[1] == "wisp"
+    assert result[2] == ""
+    assert result[3] is None
+
+
+def test_slot_with_top_level_name_still_loads(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    p = slot_path(6)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('name = "storm"\n\n[shared]\nfps = 9\n')
+    loaded = SkyConfig.load_slot(6)
+    assert loaded is not None
+    assert loaded.fps == 9
+    assert slot_name(6) == "storm"
 
 
 # ---- perspective (v7) -----------------------------------------------------
