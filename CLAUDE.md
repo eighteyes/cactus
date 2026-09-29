@@ -565,4 +565,12 @@ scope.
   `bird_rate` the spawns per second, `bird_max` how many flocks fly at once
   (0 grounds them). `FLOCK_SPAWN_P`/`FLOCK_MAX_ALIVE` are only the defaults'
   documentation now. The glyph set per depth stays `field.DEPTH_GLYPHS`.
+- Pile shape levers (v8) on `SkyConfig`, read off `World.sky.config` like
+  `seed_wind`: `seed_mass` (`accrete`, a cloud pass adds a block via
+  `_grow_clump`; `single`, the seed stays one block, charge still counts)
+  and `pile_settle` (`drop`: `World._settle`, the arm adjustment — a landed
+  shelf of two or more side-by-side blocks in the clump's lowest row that
+  rests only on a diagonal drops a row at a time until something is
+  directly under it or a target cell is taken; a lone block keeps its
+  perch; `keep`: lands as it hit). Both always show on the T page.
 

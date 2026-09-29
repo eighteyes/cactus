@@ -337,6 +337,8 @@ _SHARED_COMMENTS = {
     "bird_max": "how many flocks may be aloft at once (0 grounds every bird)",
     "band_gap": "bands style: the empty share of each lane's height (0 = lanes touch)",
     "band_flow": "bands style: how neighbouring lanes flow: 'alternate' (opposite ways), 'same', or 'random'",
+    "seed_mass": "'accrete': a falling seed gains a block per cloud it enters; 'single': it stays one block (charge still counts)",
+    "pile_settle": "'drop': a landed shelf of 2+ blocks resting only on a diagonal drops a row to close the gap; 'keep': lands as it hit",
     "seed_wind": "a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)",
 }
 
@@ -413,6 +415,11 @@ class SkyConfig:
     # A falling seed's share of the wind (v8): the near deck's wind times
     # this, so a sky tuned to creep does not leave the seeds swaying in a
     # gale — `World.seed_wind()` is the one reader.
+    # Pile shape (v8): whether a cloud pass fattens a seed, and whether a
+    # shelf that landed on a diagonal settles down a row. `field.py` reads
+    # both off `World.sky.config`.
+    seed_mass: str = field(default="accrete", metadata={"choices": ("accrete", "single")})
+    pile_settle: str = field(default="drop", metadata={"choices": ("drop", "keep")})
     # Planetary bands (v8, `cloud_style == "bands"`): how much of each lane
     # stays empty, and whether neighbouring lanes flow opposite ways.
     band_gap: float = field(default=0.3, metadata={"step": 0.05, "lo": 0.0, "hi": 0.8})
@@ -562,7 +569,7 @@ def tuning_fields() -> list[TuneField]:
 # (braille only, v8); the keys stay so an older sky.toml still loads.
 _TUNE_ALWAYS = frozenset((
     "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind",
-    "birds", "bird_rate", "bird_max",
+    "birds", "bird_rate", "bird_max", "seed_mass", "pile_settle",
     "tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
     "blank_mean", "core_mean", "semi_core_mean",
 ))

@@ -507,7 +507,8 @@ class World:
                     break
             if entered is not None and not clump.in_cloud:
                 clump.charge += 1
-                self._grow_clump(clump, entered)
+                if self.sky.config.seed_mass == "accrete":
+                    self._grow_clump(clump, entered)
             clump.in_cloud = entered is not None
             if clump.in_cloud:
                 self._scatter_sky(clump)
@@ -649,14 +650,38 @@ class World:
                 break
         if not lands:
             return False
-        for m in clump.members:
-            cx, cy = int(clump.x + m.dx), int(clump.y + m.dy)
-            cell = (cx, 0) if cy <= 0 else (cx, cy)
+        cells = [(int(clump.x + m.dx), max(int(clump.y + m.dy), 0)) for m in clump.members]
+        if self.sky.config.pile_settle == "drop":
+            cells = self._settle(cells)
+        for cell in cells:
             self.structure[cell] = self.drops
         self.landed_since_save += 1
         if clump.bounty and clump.charge and clump.birds_hit:
             exploded.extend(self._explode(clump))
         return True
+
+    def _settle(self, cells: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """The arm adjustment (v8, `pile_settle == "drop"`): a landed shelf
+        — two or more blocks side by side in the clump's lowest row — that
+        rests only on a diagonal (nothing directly under any of its cells)
+        drops one row at a time until something is under it, the ground
+        or a block, or a target cell is taken. `(0,0) (1,0) (2,1) (3,1)`
+        becomes a flat `(0,0) (1,0) (2,0) (3,0)`. A lone block keeps its
+        diagonal perch: the jar is the shelf, not the step."""
+        low = min(cy for _, cy in cells)
+        bottom = sorted(cx for cx, cy in cells if cy == low)
+        shelf = any(b - a == 1 for a, b in zip(bottom, bottom[1:]))
+        if not shelf:
+            return cells
+        while low > 0:
+            if any((cx, cy - 1) in self.structure for cx, cy in cells if cy == low):
+                break
+            dropped = [(cx, cy - 1) for cx, cy in cells]
+            if any(c in self.structure for c in dropped):
+                break
+            cells = dropped
+            low -= 1
+        return cells
 
     # ---- age / colour -----------------------------------------------------
 

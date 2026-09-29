@@ -785,3 +785,63 @@ def test_birds_lever_picks_which_depths_spawn_and_none_grounds_them() -> None:
     for _ in range(200):
         world2.advance(0.5)
     assert not world2.birds
+
+
+def _land(world: World, cells: list[tuple[int, int]]) -> None:
+    """Drop a clump whose members sit exactly on `cells` (sub-cell coords),
+    already touching the structure or the ground, and anchor it."""
+    from cactus.field import Member
+
+    x0, y0 = cells[0]
+    clump = Clump(x=float(x0), y=float(y0), vx=0.0, vy=0.0, angle=0.0, spin=0.0)
+    clump.members = [Member(dx=float(cx - x0), dy=float(cy - y0)) for cx, cy in cells]
+    exploded: list[Clump] = []
+    assert world._anchor(clump, exploded)
+
+
+def test_pile_settle_drops_a_shelf_resting_on_a_diagonal() -> None:
+    """v8 arm adjustment: (0,0) (1,0) landed, a two-block shelf hitting at
+    (2,1) (3,1) rests only on (1,0)'s diagonal, so it drops to (2,0) (3,0).
+    A lone block at (2,1) keeps its perch; `pile_settle = keep` lands as hit."""
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture", pile_settle="drop")
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    world.structure = {(0, 0): 0, (1, 0): 0}
+    _land(world, [(2, 1), (3, 1)])
+    assert (2, 0) in world.structure and (3, 0) in world.structure
+    assert (2, 1) not in world.structure and (3, 1) not in world.structure
+
+    world.structure = {(0, 0): 0, (1, 0): 0}
+    _land(world, [(2, 1)])
+    assert (2, 1) in world.structure, "a lone block keeps the diagonal"
+
+    world.structure = {(0, 0): 0, (1, 0): 0, (2, 0): 0}
+    _land(world, [(2, 1), (3, 1)])
+    assert (2, 1) in world.structure and (3, 1) in world.structure, "directly supported: no drop"
+
+    world.structure = {(0, 0): 0, (1, 0): 0, (2, 0): 0, (3, 0): 0, (1, 1): 0, (2, 1): 0, (3, 2): 0}
+    _land(world, [(4, 3), (5, 3)])
+    assert (4, 3) not in world.structure and (4, 0) in world.structure and (5, 0) in world.structure, "drops until the ground"
+
+    cfg.pile_settle = "keep"
+    world.apply_sky_config(cfg)
+    world.structure = {(0, 0): 0, (1, 0): 0}
+    _land(world, [(2, 1), (3, 1)])
+    assert (2, 1) in world.structure and (3, 1) in world.structure
+
+
+def test_seed_mass_single_keeps_a_seed_one_block_but_still_charges() -> None:
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture", seed_mass="single")
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    sky_rows = world.rows - GROUND_ROWS
+    world._sky_cells = [[("⣿", None)] * world.cols for _ in range(sky_rows)]
+    world.drop(5)
+    clump = world.seeds[0]
+    n0 = len(clump.members)
+    for _ in range(5):
+        world.advance(0.2)
+    assert len(clump.members) == n0
+    assert clump.charge == 1
