@@ -85,9 +85,11 @@ Responsibilities:
   `field.py` once per falling member per frame while its clump is inside a
   cloud. `Sky` pushes each grid's density outward from the point
   (`Air.scatter`, mass-conserving, `py` mapped to each grid by fraction of
-  height); `PuffSky` pushes every covering cloud away from the point and
-  ages it past its rise so it thins (a `bands` lane only ages); `TextureSky`
-  is a no-op — baked layers cannot scatter.
+  height); `PuffSky` dents only the patch pixels the seed displaces
+  (`_dent_patch`: raw value within `radius` moves `radius` further out into
+  a rim, both morph patches, a `bands` lane the same way), the cloud itself
+  neither moving nor ageing; `TextureSky` is a no-op — baked layers cannot
+  scatter.
 """
 
 from __future__ import annotations
@@ -1770,9 +1772,41 @@ class _Puff:
         return 0.5 - 0.5 * math.cos(2.0 * math.pi * self.age / self.p["morph"])
 
 
-# Share of a puff's life one scatter touch spends once it is past its rise
-# (v8). At 5 fps a two-member seed inside for two seconds is ~20 touches.
-_SCATTER_AGE = 0.01
+def _dent_patch(patch: list[list[float]], c0: int, r0: int, radius: int, strength: float) -> None:
+    """Push raw patch values outward from `(c0, r0)`: each pixel within
+    `radius` gives `strength * (1 - d / radius)` of its value to the pixel
+    `radius` further out along the same direction (clamped inside the
+    patch; the centre pixel gives sideways, to the right). Moves values,
+    never conjures them, so the cloud's total raw mass holds."""
+    h = len(patch)
+    w = len(patch[0]) if h else 0
+    if not h or not w:
+        return
+    moves: list[tuple[int, int, int, int, float]] = []
+    for dr in range(-radius, radius + 1):
+        rr = r0 + dr
+        if not 0 <= rr < h:
+            continue
+        for dc in range(-radius, radius + 1):
+            cc = c0 + dc
+            if not 0 <= cc < w:
+                continue
+            d = math.hypot(dc, dr)
+            if d > radius:
+                continue
+            share = strength * (1.0 - d / radius) * patch[rr][cc]
+            if share <= 0.0:
+                continue
+            if d == 0.0:
+                ux, uy = 1.0, 0.0
+            else:
+                ux, uy = dc / d, dr / d
+            tr = min(max(int(round(rr + uy * radius)), 0), h - 1)
+            tc = min(max(int(round(cc + ux * radius)), 0), w - 1)
+            moves.append((rr, cc, tr, tc, share))
+    for rr, cc, tr, tc, share in moves:
+        patch[rr][cc] -= share
+        patch[tr][tc] = min(1.0, patch[tr][tc] + share)
 
 
 class PuffSky:
@@ -1912,27 +1946,26 @@ class PuffSky:
         self.advance(_DEFAULT_DT, wind)
 
     def scatter(self, px: float, py: float, radius: float = 6.0, strength: float = 0.6) -> None:
-        """A falling seed at pixel `(px, py)` (top-down) pushes every cloud
-        whose patch covers that pixel: `vx += strength * 4.0` away from `px`
-        relative to the cloud's centre, and — once past its `rise` — `age`
-        advanced by `_SCATTER_AGE * life` (never past `life`) so it thins
-        a little per touch — a seed falls through in a couple of seconds
-        and should dent a cloud, not delete it. A `bands`
-        lane spans the whole width, so it has no centre to push from and
-        only ages. `radius` is accepted for interface parity; coverage is
-        the patch itself."""
+        """A falling seed at pixel `(px, py)` (top-down) dents every cloud
+        whose patch covers that pixel — and only the part it displaces:
+        within `radius` of the point, `strength * (1 - d / radius)` of each
+        patch pixel's raw value (both morph patches) moves to the pixel
+        `radius` further out along the same direction, clamped to the
+        patch, so the seed leaves a hole ringed by a rim as it falls. The
+        cloud as a whole neither moves nor ages; a `bands` lane dents the
+        same way. Cheap: one `(2r)^2` window per covering cloud."""
         W = self.width_px
+        r = max(int(radius), 1)
         for puffs in self.puffs.values():
             for puff in puffs:
                 if not (puff.y0 <= py < puff.y0 + puff.h):
                     continue
-                if puff.lane is None:
-                    if (px - puff.x) % W >= puff.w:
-                        continue
-                    rel = (puff.x + puff.w / 2.0 - px + W / 2.0) % W - W / 2.0
-                    puff.vx += (1.0 if rel >= 0.0 else -1.0) * strength * 4.0
-                if puff.age >= puff.p["rise"] * puff.life:
-                    puff.age = min(puff.age + _SCATTER_AGE * puff.life, puff.life)
+                c0 = int((px - puff.x) % W)
+                if c0 >= puff.w:
+                    continue
+                r0 = int(py) - puff.y0
+                _dent_patch(puff.patch_a, c0, r0, r, strength)
+                _dent_patch(puff.patch_b, c0, r0, r, strength)
 
     # ---- draw -------------------------------------------------------
 

@@ -266,33 +266,41 @@ def test_bands_style_lays_full_width_lanes_flowing_opposite_ways() -> None:
 # ---- scatter (a falling seed pushes the cloud aside) -----------------------
 
 
-def test_scatter_pushes_a_covering_puff_away_and_ages_it() -> None:
+def test_scatter_dents_only_the_displaced_part_of_a_cloud() -> None:
+    """v8: a seed inside a cloud dents the patch pixels it displaces — the
+    raw value under the point drops and the ring `radius` out gains it —
+    while the cloud itself keeps its place and its age."""
     sky = _puffs(cloud_life=100.0)
     puff = sky.puffs["mid"][0]
-    puff.x, puff.vx, puff.age = 10.0, 0.0, 50.0  # mid-life, well past rise
-    px = puff.x + puff.w * 0.25  # left of centre: the cloud goes right
-    py = puff.y0 + puff.h // 2
+    puff.x, puff.vx, puff.age = 10.0, 0.0, 50.0
+    c0, r0 = puff.w // 2, puff.h // 2
+    for patch in (puff.patch_a, puff.patch_b):
+        for row in patch:
+            for i in range(len(row)):
+                row[i] = 0.5
+    before = sum(v for row in puff.patch_a for v in row)
+    px, py = puff.x + c0, puff.y0 + r0
 
-    sky.scatter(px, py, radius=6.0, strength=0.6)
+    sky.scatter(px, py, radius=4.0, strength=0.6)
 
-    assert puff.vx == pytest.approx(0.6 * 4.0)
-    from cactus.sky import _SCATTER_AGE
+    assert puff.patch_a[r0][c0] < 0.5 and puff.patch_b[r0][c0] < 0.5
+    ring = [puff.patch_a[r0][min(c0 + 4, puff.w - 1)], puff.patch_a[r0][max(c0 - 4, 0)]]
+    assert max(ring) > 0.5, "the pushed value lands a radius out"
+    after = sum(v for row in puff.patch_a for v in row)
+    assert after == pytest.approx(before, abs=1e-6), "value moves, it is not lost"
+    assert puff.vx == 0.0 and puff.age == 50.0
+    far_c = (c0 + 12) % puff.w
+    assert puff.patch_a[r0][far_c] == pytest.approx(0.5), "pixels the seed never touched are untouched"
 
-    assert puff.age == pytest.approx(50.0 + _SCATTER_AGE * 100.0)
-    x0 = puff.x
-    sky.advance(1.0)
-    assert puff.x > x0, "pushed away from the seed"
 
-
-def test_scatter_on_a_bands_lane_only_ages_it() -> None:
-    from cactus.sky import _SCATTER_AGE
-
+def test_scatter_on_a_bands_lane_dents_it_the_same_way() -> None:
     sky = _puffs("bands", cols=60, rows=20)
     lane = next(p for band in GRID_ORDER for p in sky.puffs[band])
-    lane.age = lane.p["rise"] * lane.life + 1.0
     age0, vx0, x0 = lane.age, lane.vx, lane.x
-
-    sky.scatter(5.0, lane.y0, radius=6.0, strength=0.6)
-
-    assert lane.vx == vx0 and lane.x == x0
-    assert lane.age == pytest.approx(min(age0 + _SCATTER_AGE * lane.life, lane.life))
+    c0, r0 = 5, lane.h // 2
+    for row in lane.patch_a:
+        for i in range(len(row)):
+            row[i] = 0.5
+    sky.scatter(lane.x + c0, lane.y0 + r0, radius=3.0, strength=0.6)
+    assert lane.vx == vx0 and lane.x == x0 and lane.age == age0
+    assert lane.patch_a[r0][c0] < 0.5

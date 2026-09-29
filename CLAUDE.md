@@ -527,8 +527,9 @@ scope.
   `bounty=False` so they can never collect and cascade. Every frame a clump
   is inside a cloud, each member calls `sky.scatter(px, py, ...)` once at
   its sky-pixel position: fluid pushes density outward (mass-conserving),
-  puffs push covering clouds away and age them (a `bands` lane only ages),
-  texture is a no-op. Cloud
+  puffs dent only the patch pixels the seed displaces, pushing that raw
+  value outward into a rim (`_dent_patch`; the cloud itself never moves or
+  ages, a `bands` lane dents the same way), texture is a no-op. Cloud
   presence is read off `World._sky_cells`, the glyph grid `render()` cached
   last frame — never a live query against the sky engine.
 - `perspective` (v8) is a `SkyConfig` choices lever for the fluid engine
