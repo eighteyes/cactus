@@ -27,6 +27,9 @@ Responsibilities:
   changes as it spins in place.
 - `pile_style == "dots"` (v6d) renders a landed cell as a splatted, dithered
   braille glyph instead of a quadrant block, same age colour either way.
+- Two seeds within `stick_distance` merge into one rigid clump that falls,
+  lands, and leaves a structure cell per member; seeds far apart never merge
+  (v6e).
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ from cactus.field import (
     Bird,
     Flock,
     MONO_PLUS,
-    Seed,
+    Clump,
     World,
 )
 from cactus.sky import PX_X, PX_Y
@@ -76,7 +79,7 @@ def test_seed_dropped_over_flat_ground_lands() -> None:
 def test_seed_dropped_above_structure_cell_anchors_on_top() -> None:
     world = World(cols=10, rows=8, rng=random.Random(1))
     world.structure[(8, 0)] = 0
-    world.seeds.append(Seed(x=8.0, y=float(world.height - 1), vx=0.0, vy=0.0))
+    world.seeds.append(Clump(x=8.0, y=float(world.height - 1), vx=0.0, vy=0.0))
     run_seed_ticks(world, 900)
     assert (8, 1) in world.structure
 
@@ -84,7 +87,7 @@ def test_seed_dropped_above_structure_cell_anchors_on_top() -> None:
 def test_seed_passing_beside_tall_column_anchors_to_its_side() -> None:
     world = World(cols=10, rows=8, rng=random.Random(3))
     world.structure |= {(8, 0): 0, (8, 1): 0, (8, 2): 0}
-    world.seeds.append(Seed(x=7.0, y=float(world.height - 1), vx=0.0, vy=0.0))
+    world.seeds.append(Clump(x=7.0, y=float(world.height - 1), vx=0.0, vy=0.0))
     run_seed_ticks(world, 900)
     assert (7, 3) in world.structure
 
@@ -109,7 +112,7 @@ def test_sky_air_density_stays_within_bounds() -> None:
 def test_bird_near_a_seed_changes_its_vx() -> None:
     world = World(cols=10, rows=8, rng=random.Random(9))
     world.wind = 0.0
-    seed = Seed(x=10.0, y=10.0, vx=0.0, vy=0.0)
+    seed = Clump(x=10.0, y=10.0, vx=0.0, vy=0.0)
     world.seeds.append(seed)
     world.birds.append(Bird(x=10.5, y=10.0, vx=0.8))
     before = seed.vx
@@ -249,6 +252,54 @@ def test_seed_takes_about_a_minute_to_land() -> None:
         raise AssertionError("seed never landed")
 
 
+# ---- clumps (v6e) --------------------------------------------------------
+
+
+def test_two_close_seeds_merge_and_land_as_one_clump() -> None:
+    world = World(cols=20, rows=10, rng=random.Random(101))
+    world.seeds = [
+        Clump(x=5.0, y=float(world.height - 1), vx=0.0, vy=0.0),
+        Clump(x=6.0, y=float(world.height - 1), vx=0.0, vy=0.0),
+    ]
+    merged = False
+    for _ in range(20):
+        world._advance_seeds(TICK_SECONDS)
+        if len(world.seeds) == 1 and len(world.seeds[0].members) == 2:
+            merged = True
+            break
+    assert merged, "two seeds 1 sub-cell apart never merged"
+
+    run_seed_ticks(world, 900)
+    assert not world.seeds
+    assert len(world.structure) == 2
+
+
+def test_far_apart_seeds_never_merge() -> None:
+    world = World(cols=60, rows=10, rng=random.Random(103))
+    world.seeds = [
+        Clump(x=5.0, y=float(world.height - 1), vx=0.0, vy=0.0),
+        Clump(x=45.0, y=float(world.height - 1), vx=0.0, vy=0.0),
+    ]
+    for _ in range(900):
+        world._advance_seeds(TICK_SECONDS)
+        assert all(len(c.members) == 1 for c in world.seeds)
+    assert not world.seeds
+    assert len(world.structure) == 2
+
+
+def test_merged_clump_has_two_members_and_a_centre_between_the_originals() -> None:
+    world = World(cols=20, rows=10, rng=random.Random(105))
+    world.seeds = [
+        Clump(x=5.0, y=10.0, vx=0.0, vy=0.0),
+        Clump(x=6.0, y=10.0, vx=0.0, vy=0.0),
+    ]
+    world._advance_seeds(TICK_SECONDS)
+    assert len(world.seeds) == 1
+    merged = world.seeds[0]
+    assert len(merged.members) == 2
+    assert 5.0 < merged.x < 6.0
+
+
 def test_flock_spawns_with_a_plausible_bird_count() -> None:
     world = World(cols=20, rows=10, rng=random.Random(41))
     world._spawn_flock()
@@ -304,8 +355,8 @@ def test_two_half_steps_move_a_terminal_velocity_seed_as_one_full_step() -> None
     world_a = World(cols=10, rows=20, rng=random.Random(61))
     world_b = World(cols=10, rows=20, rng=random.Random(61))
     world_a.wind = world_b.wind = 0.0
-    seed_a = Seed(x=5.0, y=30.0, vx=0.0, vy=world_a.terminal_vy, nudged=True)
-    seed_b = Seed(x=5.0, y=30.0, vx=0.0, vy=world_b.terminal_vy, nudged=True)
+    seed_a = Clump(x=5.0, y=30.0, vx=0.0, vy=world_a.terminal_vy, nudged=True)
+    seed_b = Clump(x=5.0, y=30.0, vx=0.0, vy=world_b.terminal_vy, nudged=True)
     world_a.seeds = [seed_a]
     world_b.seeds = [seed_b]
 
@@ -334,7 +385,7 @@ def test_wind_integration_is_step_size_stable() -> None:
     assert world_a.wind == pytest.approx(0.5 * math.exp(-WIND_THETA * 10.0), rel=0.05)
 
 
-def _seed_cell(world: World, seed: Seed) -> tuple[int, int]:
+def _seed_cell(world: World, seed: Clump) -> tuple[int, int]:
     bx = seed.x * (PX_X / 2)
     by = seed.y * (PX_Y / 2)
     return int(bx) // PX_X, int(by) // PX_Y
@@ -342,7 +393,7 @@ def _seed_cell(world: World, seed: Seed) -> tuple[int, int]:
 
 def test_falling_seed_renders_a_partial_dot_glyph_not_a_full_block() -> None:
     world = World(cols=6, rows=6, rng=random.Random(71))
-    seed = Seed(x=2.5, y=7.5, vx=0.0, vy=0.0, angle=0.3)
+    seed = Clump(x=2.5, y=7.5, vx=0.0, vy=0.0, angle=0.3)
     world.seeds = [seed]
     canvas = world._seed_splat_canvas()
     cx, cy = _seed_cell(world, seed)
@@ -357,7 +408,7 @@ def test_falling_seed_renders_a_partial_dot_glyph_not_a_full_block() -> None:
 
 def test_spinning_seed_held_still_renders_different_glyphs_as_it_tumbles() -> None:
     world = World(cols=6, rows=6, rng=random.Random(73))
-    seed = Seed(x=3.3, y=7.7, vx=0.0, vy=0.0, angle=0.0, spin=2.0)
+    seed = Clump(x=3.3, y=7.7, vx=0.0, vy=0.0, angle=0.0, spin=2.0)
     world.seeds = [seed]
     cx, cy = _seed_cell(world, seed)
     from cactus.sky import _ordered_dither

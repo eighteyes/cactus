@@ -200,6 +200,7 @@ _GRID_COMMENTS = {
 
 _SHARED_COMMENTS = {
     "pile_style": "landed-cactus rendering: 'blocks' (quadrant blocks) or 'dots' (splatted, dithered)",
+    "stick_distance": "how close two falling seeds' members must be, in sub-cells, to merge into one clump",
     "shear_floor": "minimum drift speed per row, pixels/second, so drift never stalls",
     "shear_base": "row shear's base fraction of a grid's own wind, per second",
     "shear_span": "row shear's extra fraction at the bottom of the sky, per second",
@@ -239,6 +240,11 @@ class SkyConfig:
     # A style lever, not a numeric knob (v6d): no step/lo/hi, just the two
     # values a T-overlay `h`/`l` press cycles between (see TuneField.choices).
     pile_style: str = field(default="blocks", metadata={"choices": ("blocks", "dots")})
+
+    # A falling-seed merge lever (v6e), in the same sub-cell units as a
+    # `Seed`/`Clump`'s own `x`/`y` — not a pixel-space knob like the splat
+    # radii above it.
+    stick_distance: float = field(default=1.4, metadata={"step": 0.1, "lo": 0.0, "hi": 6.0})
 
     shear_floor: float = field(default=0.03 / _DEFAULT_DT, metadata={"step": 0.015, "lo": 0.0, "hi": 3.0})
     shear_base: float = field(default=0.7 / _DEFAULT_DT, metadata={"step": 0.35, "lo": 0.0, "hi": 70.0})

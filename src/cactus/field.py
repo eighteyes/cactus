@@ -15,6 +15,13 @@ Responsibilities:
 - Drop a seed into a column; anchor it to the floor or beside the structure,
   including the two "reverse pawn" diagonals below it. Count every drop, so
   the structure can carry age in decisions rather than in time.
+- Merge seeds that touch during the fall into a rigid `Clump` (v6e): every
+  frame, after motion, any two clumps with a member pair within
+  `stick_distance` (a shared `SkyConfig` lever) combine into one — mass-
+  weighted centre and velocity, averaged and mass-damped spin, member
+  offsets re-expressed around the new centre with each member's current
+  tumble angle baked in. `World.seeds` stays the flat list render and nudge
+  iterate; a lone seed is a clump of one member.
 - Hold the colour palette (`Palette`, default `MONO_PLUS`): each sky grid's
   dark/light tone-ramp pair, the haze colour clouds fade toward, cactus age
   bands, seed, bird, and sand-speckle colours. No sky background anywhere —
@@ -150,14 +157,33 @@ MONO_PLUS = Palette()
 
 
 @dataclass
-class Seed:
+class Member:
+    """One seed's place inside its clump's local frame (v6e): a fixed offset
+    from the clump's centre and a tumble angle baked in at drop or merge —
+    the clump's own `angle` is added to it fresh every frame, so the member
+    still tumbles even after its offset is frozen."""
+
+    dx: float = 0.0
+    dy: float = 0.0
+    angle: float = 0.0
+
+
+@dataclass
+class Clump:
+    """A rigid group of one or more seeds (v6e): one centre, one velocity,
+    one spin, falling and landing as a unit. A freshly dropped seed is a
+    clump of one, its single `Member` at offset `(0, 0)` — so `x`/`y`/`vx`/
+    `vy`/`angle`/`spin`/`nudged` read exactly as a lone falling seed did
+    before clumps (v6e)."""
+
     x: float
     y: float
     vx: float
     vy: float
     nudged: bool = False
-    angle: float = 0.0  # radians, the tumble a Gaussian splat is rotated by
+    angle: float = 0.0  # radians, added to every member's own baked angle
     spin: float = 0.0  # radians/second, drawn once at drop; see SEED_SPIN_RANGE
+    members: list[Member] = field(default_factory=lambda: [Member()])
 
 
 @dataclass
@@ -193,7 +219,7 @@ class World:
     structure: dict[tuple[int, int], int] = field(default_factory=dict)
     drops: int = 0
     wind: float = 0.0
-    seeds: list[Seed] = field(default_factory=list)
+    seeds: list[Clump] = field(default_factory=list)
     birds: list[Bird] = field(default_factory=list)  # flat render/nudge surface; see `_flocks`
     _flocks: list[Flock] = field(default_factory=list, init=False)
     sky: Sky = field(init=False)
@@ -233,7 +259,7 @@ class World:
         x = (col * SUB_X + SUB_X / 2 + self.rng.uniform(-0.5, 0.5)) % self.width
         spin = self.rng.uniform(*SEED_SPIN_RANGE) * self.rng.choice((-1.0, 1.0))
         angle = self.rng.uniform(0.0, 2 * math.pi)
-        self.seeds.append(Seed(x=x, y=float(self.height - 1), vx=self.wind, vy=0.0, angle=angle, spin=spin))
+        self.seeds.append(Clump(x=x, y=float(self.height - 1), vx=self.wind, vy=0.0, angle=angle, spin=spin))
 
     # ---- advance ------------------------------------------------------
 
@@ -310,43 +336,116 @@ class World:
         self._flocks.append(Flock(band=band, leader=leader, followers=followers))
 
     def _advance_seeds(self, dt: float) -> None:
+        for clump in self.seeds:
+            self._maybe_nudge(clump)
+            n = len(clump.members)
+            clump.vy -= GRAVITY * dt
+            clump.vx += self.wind * WIND_COUPLING * dt / math.sqrt(n)
+            clump.vx *= math.exp(-SEED_DRAG_THETA * dt)
+            clump.vy = max(clump.vy, self.terminal_vy)
+            clump.angle += (clump.spin + self.wind * SEED_WOBBLE_PER_WIND) * dt
+            clump.x = (clump.x + clump.vx * dt) % self.width
+            clump.y += clump.vy * dt
+        self._merge_clumps()
         remaining = []
-        for seed in self.seeds:
-            self._maybe_nudge(seed)
-            seed.vy -= GRAVITY * dt
-            seed.vx += self.wind * WIND_COUPLING * dt
-            seed.vx *= math.exp(-SEED_DRAG_THETA * dt)
-            seed.vy = max(seed.vy, self.terminal_vy)
-            seed.angle += (seed.spin + self.wind * SEED_WOBBLE_PER_WIND) * dt
-            seed.x = (seed.x + seed.vx * dt) % self.width
-            seed.y += seed.vy * dt
-            if not self._anchor(seed):
-                remaining.append(seed)
+        for clump in self.seeds:
+            if not self._anchor(clump):
+                remaining.append(clump)
         self.seeds = remaining
 
-    def _maybe_nudge(self, seed: Seed) -> None:
-        if seed.nudged:
+    def _maybe_nudge(self, clump: Clump) -> None:
+        if clump.nudged:
             return
         for bird in self.birds:
-            dx = min(abs(bird.x - seed.x), self.width - abs(bird.x - seed.x))
-            dy = bird.y - seed.y
+            dx = min(abs(bird.x - clump.x), self.width - abs(bird.x - clump.x))
+            dy = bird.y - clump.y
             if (dx * dx + dy * dy) ** 0.5 <= 1.5:
-                seed.vx += self.rng.choice((-0.05, 0.05))
-                seed.vy += 0.02
-                seed.nudged = True
+                clump.vx += self.rng.choice((-0.05, 0.05))
+                clump.vy += 0.02
+                clump.nudged = True
                 return
 
-    def _anchor(self, seed: Seed) -> bool:
-        """Add the seed's cell to the structure, floor or beside it, and drop the seed."""
-        cx, cy = int(seed.x), int(seed.y)
-        if cy <= 0:
-            cell = (cx, 0)
-        else:
+    def _member_dx(self, ax: float, bx: float) -> float:
+        """Horizontal distance between two x positions, shortest way around
+        the world's wraparound — matches `_maybe_nudge`'s bird distance."""
+        raw = abs(ax - bx)
+        return min(raw, self.width - raw)
+
+    def _touching(self, a: Clump, b: Clump, stick_distance: float) -> bool:
+        """Any member of `a` within `stick_distance` of any member of `b`."""
+        thresh2 = stick_distance * stick_distance
+        for ma in a.members:
+            ax, ay = a.x + ma.dx, a.y + ma.dy
+            for mb in b.members:
+                bx, by = b.x + mb.dx, b.y + mb.dy
+                dx = self._member_dx(ax, bx)
+                dy = ay - by
+                if dx * dx + dy * dy <= thresh2:
+                    return True
+        return False
+
+    def _merge(self, a: Clump, b: Clump) -> Clump:
+        """Combine two touching clumps: mass-weighted centre and velocity
+        (mass is member count), spin averaged then damped by 1/n, and every
+        member re-expressed around the new centre with its current absolute
+        tumble angle baked in — the shape they touched in is the shape they
+        keep."""
+        na, nb = len(a.members), len(b.members)
+        total = na + nb
+        x = (a.x * na + b.x * nb) / total
+        y = (a.y * na + b.y * nb) / total
+        vx = (a.vx * na + b.vx * nb) / total
+        vy = (a.vy * na + b.vy * nb) / total
+        spin = (a.spin + b.spin) / 2.0 / total
+        members: list[Member] = []
+        for clump in (a, b):
+            for m in clump.members:
+                members.append(Member(
+                    dx=clump.x + m.dx - x,
+                    dy=clump.y + m.dy - y,
+                    angle=clump.angle + m.angle,
+                ))
+        return Clump(x=x, y=y, vx=vx, vy=vy, nudged=a.nudged or b.nudged, spin=spin, members=members)
+
+    def _merge_clumps(self) -> None:
+        """Every frame, after motion: merge any pair of clumps touching at
+        `stick_distance`, at most once per pair per frame — a clump may go
+        on to merge again with another later in the same pass."""
+        stick_distance = self.sky.config.stick_distance
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(self.seeds)):
+                for j in range(i + 1, len(self.seeds)):
+                    if self._touching(self.seeds[i], self.seeds[j], stick_distance):
+                        new_clump = self._merge(self.seeds[i], self.seeds[j])
+                        self.seeds = [c for k, c in enumerate(self.seeds) if k not in (i, j)]
+                        self.seeds.append(new_clump)
+                        merged = True
+                        break
+                if merged:
+                    break
+
+    def _anchor(self, clump: Clump) -> bool:
+        """Land the whole clump when any member's cell floors or sits beside
+        the structure, then add every member's own cell to the structure
+        (an already-taken cell just re-stamps its age)."""
+        lands = False
+        for m in clump.members:
+            cx, cy = int(clump.x + m.dx), int(clump.y + m.dy)
+            if cy <= 0:
+                lands = True
+                break
             neighbours = ((cx, cy - 1), (cx - 1, cy), (cx + 1, cy), (cx - 1, cy - 1), (cx + 1, cy - 1))
-            if not any(n in self.structure for n in neighbours):
-                return False
-            cell = (cx, cy)
-        self.structure[cell] = self.drops  # a duplicate cell just re-stamps its age
+            if any(n in self.structure for n in neighbours):
+                lands = True
+                break
+        if not lands:
+            return False
+        for m in clump.members:
+            cx, cy = int(clump.x + m.dx), int(clump.y + m.dy)
+            cell = (cx, 0) if cy <= 0 else (cx, cy)
+            self.structure[cell] = self.drops
         return True
 
     # ---- age / colour -----------------------------------------------------
@@ -447,21 +546,24 @@ class World:
 
     def _seed_splat_canvas(self) -> dict[tuple[int, int], float]:
         """This frame's `(px, py) -> density` in braille-pixel space (`PX_X`
-        by `PX_Y` per cell) for every airborne seed's tumbling, antialiased
-        footprint — an ellipse rotated by `seed.angle`. A landed seed is a
-        `structure` cell and never reaches here (see v6d)."""
+        by `PX_Y` per cell) for every airborne clump member's tumbling,
+        antialiased footprint — an ellipse rotated by the clump's own
+        `angle` plus the member's baked-in angle (v6e), so a multi-member
+        clump reads as a lumpy mass. A landed seed is a `structure` cell and
+        never reaches here (see v6d)."""
         canvas: dict[tuple[int, int], float] = {}
         if not self.seeds:
             return canvas
         width_px = self.cols * PX_X
         height_px = self.rows * PX_Y
-        for seed in self.seeds:
-            bx = seed.x * (PX_X / SUB_X)
-            by = seed.y * (PX_Y / SUB_Y)
-            self._splat_gaussian(
-                canvas, bx, by, SEED_SIGMA_A, SEED_SIGMA_B, seed.angle,
-                SEED_SPLAT_RADIUS_PX, SEED_SPLAT_FLOOR, width_px, height_px,
-            )
+        for clump in self.seeds:
+            for m in clump.members:
+                bx = (clump.x + m.dx) * (PX_X / SUB_X)
+                by = (clump.y + m.dy) * (PX_Y / SUB_Y)
+                self._splat_gaussian(
+                    canvas, bx, by, SEED_SIGMA_A, SEED_SIGMA_B, clump.angle + m.angle,
+                    SEED_SPLAT_RADIUS_PX, SEED_SPLAT_FLOOR, width_px, height_px,
+                )
         return canvas
 
     def _pile_splat_canvas(self) -> dict[tuple[int, int], float]:
