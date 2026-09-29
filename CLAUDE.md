@@ -551,8 +551,13 @@ scope.
   full-width `_Puff` per lane (`lane=(index, y0, h)`), its noise lattice
   fitted to the width so it wraps with no seam, neighbouring lanes flowing
   opposite ways (odd east, even west). A dead band respawns in its own lane;
-  a `cloud_count` change re-cuts every lane. Lanes colour by thirds: top far,
-  middle mid, bottom near.
+  a `cloud_count`, `band_gap`, or `band_flow` change re-cuts every lane.
+  Lanes colour by thirds: top far, middle mid, bottom near. A lane never
+  unfolds, recedes, or dies: its cutoff sits at rest (even lanes dense
+  zones, odd lanes sparse belts) and only its morph phase wraps.
+  `band_gap` is the empty share of each lane (0 = touching), `band_flow`
+  deals directions (`alternate`, `same`, `random`); both show on the T page
+  only under puffs/bands.
 - Birds are levers on `SkyConfig` (v8), read off `World.sky.config` like
   `seed_wind`: `birds` picks the depth bands a flock may spawn in (`all`,
   `far`, `mid`, `near`, `far+mid`, `mid+near`, `none`; `World.bird_bands`),

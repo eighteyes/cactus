@@ -236,15 +236,27 @@ def test_bands_style_lays_full_width_lanes_flowing_opposite_ways() -> None:
         assert a.y0 + a.h <= b.y0, "lanes never overlap"
         assert (a.vx > 0) != (b.vx > 0), "neighbouring lanes flow opposite ways"
     assert bands[0].band == "far" and bands[-1].band == "near"
+    # band_gap 0 makes lanes touch; band_flow same/random deal directions
+    touching = _puffs("bands", cols=60, rows=20, band_gap=0.0)
+    lanes = sorted((p for band in GRID_ORDER for p in touching.puffs[band]), key=lambda p: p.y0)
+    assert all(a.y0 + a.h >= b.y0 - 1 for a, b in zip(lanes, lanes[1:]))
+    same = _puffs("bands", cols=60, rows=20, band_flow="same")
+    assert len({p.vx > 0 for band in GRID_ORDER for p in same.puffs[band]}) == 1
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_gap=0.6))
+    regap = sorted((p for band in GRID_ORDER for p in sky.puffs[band]), key=lambda p: p.y0)
+    assert all(p.h <= 0.45 * sky.height_px / 7 + 1 for p in regap)
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands"))
+    bands = sorted((p for band in GRID_ORDER for p in sky.puffs[band]), key=lambda p: p.y0)
     # seamless wrap: the patch's first and last columns are neighbours in
     # the periodic lattice, so they differ by no more than one lattice step
     row = bands[3].patch_a[bands[3].h // 2]
     assert abs(row[0] - row[-1]) < 0.35
-    dead = bands[2]
-    dead.age = dead.life + 1.0
+    old = bands[2]
+    old.age = old.life - 0.05
     sky.advance(0.1)
-    reborn = next(p for band in GRID_ORDER for p in sky.puffs[band] if p.lane == dead.lane)
-    assert reborn is not dead and reborn.y0 == dead.y0
+    still = next(p for band in GRID_ORDER for p in sky.puffs[band] if p.lane == old.lane)
+    assert still is old and 0.0 <= old.age < 1.0, "a lane never dies; its morph phase wraps"
+    assert old.cutoff() == old.p["cutoff"], "a lane never unfolds or recedes"
     sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", cloud_count=2.0))
     assert sum(len(v) for v in sky.puffs.values()) == 14
     cells = sky.render_cells()

@@ -333,6 +333,8 @@ _SHARED_COMMENTS = {
     "birds": "which flocks spawn: 'all', one depth ('far' specks, 'mid' v/^, 'near' wide wingbeats), 'far+mid', 'mid+near', or 'none'",
     "bird_rate": "flock spawns per second while fewer than bird_max are aloft",
     "bird_max": "how many flocks may be aloft at once (0 grounds every bird)",
+    "band_gap": "bands style: the empty share of each lane's height (0 = lanes touch)",
+    "band_flow": "bands style: how neighbouring lanes flow: 'alternate' (opposite ways), 'same', or 'random'",
     "seed_wind": "a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)",
 }
 
@@ -409,6 +411,10 @@ class SkyConfig:
     # A falling seed's share of the wind (v8): the near deck's wind times
     # this, so a sky tuned to creep does not leave the seeds swaying in a
     # gale — `World.seed_wind()` is the one reader.
+    # Planetary bands (v8, `cloud_style == "bands"`): how much of each lane
+    # stays empty, and whether neighbouring lanes flow opposite ways.
+    band_gap: float = field(default=0.3, metadata={"step": 0.05, "lo": 0.0, "hi": 0.8})
+    band_flow: str = field(default="alternate", metadata={"choices": ("alternate", "same", "random")})
     # Birds (v8): which depth bands may spawn a flock, how often, how many.
     # `field.py` reads these off `World.sky.config`, the same way `seed_wind`
     # reaches it; the glyph sets per depth stay in `field.DEPTH_GLYPHS`.
@@ -577,6 +583,8 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
         return engine == "fluid"
     if row.name in _TUNE_ALWAYS:
         return True
+    if row.name in ("band_gap", "band_flow"):
+        return engine == "puffs" and cfg.cloud_style == "bands"
     if row.name in _TUNE_ENGINE.get(engine, frozenset()):
         return True
     return engine == "fluid" and cfg.perspective == "on" and row.name in _TUNE_PERSPECTIVE
@@ -1643,17 +1651,20 @@ _PUFF_STYLES: dict[str, dict[str, dict]] = {
         "near": dict(w=(28, 60), h=(10, 16), scale_x=10, scale_y=5, octaves=2, cutoff=0.28, gain=2.6,
                      drift=0.15, spacing=38, rise=0.45, fall=0.35, morph=90.0),
     },
-    # Planetary layers (v8): full-width bands stacked down the whole sky,
-    # each its own lane, neighbours flowing opposite ways like zonal jets.
-    # `w`/`h` are unused (the lane sets them); `lanes` is the band count at
-    # `cloud_count == 1.0`, `fill` how much of a lane's height a band takes.
+    # Planetary layers (v8): full-width bands tiling the whole sky, each its
+    # own lane, lanes touching, neighbours flowing opposite ways like zonal
+    # jets. Even lanes are dense *zones*, odd lanes sparse *belts*: a lane's
+    # resting cutoff is `cutoff + zone` or `cutoff + belt`. `w`/`h` are
+    # unused (the lane sets them); `lanes` is the band count at
+    # `cloud_count == 1.0`; `SkyConfig.band_gap`/`band_flow` set a lane's
+    # empty share and which way neighbours flow.
     "bands": {
-        "far": dict(w=(0, 0), h=(0, 0), scale_x=18, scale_y=2, octaves=2, cutoff=0.36, gain=2.4,
-                    drift=0.25, spacing=0, rise=0.20, fall=0.20, morph=150.0, lanes=7, fill=(0.45, 0.8)),
-        "mid": dict(w=(0, 0), h=(0, 0), scale_x=16, scale_y=2, octaves=2, cutoff=0.35, gain=2.4,
-                    drift=0.45, spacing=0, rise=0.20, fall=0.20, morph=130.0, lanes=7, fill=(0.45, 0.8)),
-        "near": dict(w=(0, 0), h=(0, 0), scale_x=14, scale_y=3, octaves=2, cutoff=0.34, gain=2.4,
-                     drift=0.7, spacing=0, rise=0.20, fall=0.20, morph=110.0, lanes=7, fill=(0.45, 0.8)),
+        "far": dict(w=(0, 0), h=(0, 0), scale_x=26, scale_y=3, octaves=2, cutoff=0.30, gain=2.0,
+                    drift=0.25, spacing=0, rise=0.10, fall=0.10, morph=180.0, lanes=7, belt=0.16, zone=-0.06),
+        "mid": dict(w=(0, 0), h=(0, 0), scale_x=24, scale_y=3, octaves=2, cutoff=0.30, gain=2.0,
+                    drift=0.45, spacing=0, rise=0.10, fall=0.10, morph=160.0, lanes=7, belt=0.16, zone=-0.06),
+        "near": dict(w=(0, 0), h=(0, 0), scale_x=22, scale_y=4, octaves=2, cutoff=0.30, gain=2.0,
+                     drift=0.7, spacing=0, rise=0.10, fall=0.10, morph=140.0, lanes=7, belt=0.16, zone=-0.06),
     },
     "streaks": {
         "far": dict(w=(70, 140), h=(2, 4), scale_x=14, scale_y=2, octaves=2, cutoff=0.40, gain=3.4,
@@ -1689,7 +1700,7 @@ def _puff_patch(rng: random.Random, w: int, h: int, p: dict, *, periodic: bool =
     lw = max(3, -(-w // p["scale_x"]) + 1)
     lh = max(3, -(-h // p["scale_y"]) + 1)
     noise = _TexNoise(rng, lw, lh)
-    ey = _plateau(h)
+    ey = _plateau(h, 0.15 if periodic else 0.3)
     sx, sy, octaves = float(p["scale_x"]), p["scale_y"], p["octaves"]
     if periodic:
         # A band wraps the whole sky: fit the lattice to `w` exactly so the
@@ -1712,18 +1723,17 @@ class _Puff:
 
     def __init__(self, band: str, p: dict, width_px: int, height_px: int, rng: random.Random,
                  drift: float, life: float, *, age: float | None = None,
-                 lane: tuple[int, int, int] | None = None) -> None:
+                 lane: tuple[int, int, int, float] | None = None) -> None:
         self.band = band
         self.p = p
         self.lane = lane
         if lane is not None:
-            # A planetary layer (`bands` style): `lane` is (index, y0, h);
-            # the band spans the whole width, wraps seamlessly, and flows the
-            # way its lane index says — odd lanes east, even lanes west.
-            index, self.y0, self.h = lane
+            # A planetary layer (`bands` style): `lane` is (index, y0, h,
+            # direction); the band spans the whole width, wraps seamlessly,
+            # and flows the way `PuffSky._bake_bands` dealt it from `band_flow`.
+            index, self.y0, self.h, direction = lane
             self.w = max(width_px, 1)
             self.x = rng.uniform(0.0, self.w)
-            direction = 1.0 if index % 2 else -1.0
             self.vx = direction * rng.uniform(0.6, 1.0) * drift * p["drift"]
         else:
             self.w = min(rng.randint(*p["w"]), max(width_px, 1))
@@ -1743,6 +1753,8 @@ class _Puff:
     def cutoff(self) -> float:
         """1.0 unborn, sinking to the style's resting cutoff as the cloud
         unfolds, climbing back as it recedes."""
+        if self.lane is not None:
+            return self.p["cutoff"]  # a planetary layer never unfolds or recedes
         t = self.age / self.life
         rise, fall = self.p["rise"], self.p["fall"]
         if t < rise:
@@ -1791,8 +1803,8 @@ class PuffSky:
     def _target_count(self, p: dict) -> int:
         return max(1, round(self.cols / p["spacing"] * self.config.cloud_count))
 
-    def _spawn(self, band: str, *, age: float | None = None, lane: tuple[int, int, int] | None = None) -> _Puff:
-        p = self._style()[band]
+    def _spawn(self, band: str, *, age: float | None = None, lane: tuple[int, int, int, float] | None = None) -> _Puff:
+        p = self._lane_params(band, lane[0]) if lane is not None else self._style()[band]
         return _Puff(band, p, self.width_px, self.height_px, self.rng,
                      self.config.cloud_drift, self.config.cloud_life, age=age, lane=lane)
 
@@ -1807,17 +1819,34 @@ class PuffSky:
 
     def _bake_bands(self) -> None:
         """Planetary layers: `lanes * cloud_count` equal lanes down the sky,
-        one full-width band per lane, each `fill` of its lane tall."""
+        one full-width band per lane, each `1 - band_gap` of its lane tall,
+        flowing the way `band_flow` deals."""
         style = self._style()
-        count = max(2, round(style["far"]["lanes"] * self.config.cloud_count))
+        cfg = self.config
+        count = max(2, round(style["far"]["lanes"] * cfg.cloud_count))
         lane_h = self.height_px / count
+        fill = 1.0 - _clamp(cfg.band_gap, 0.0, 0.95)
+        same_sign = self.rng.choice((-1.0, 1.0))
         self.puffs = {band: [] for band in GRID_ORDER}
         for i in range(count):
             band = self._lane_band(i, count)
-            p = style[band]
-            h = max(1, int(lane_h * self.rng.uniform(*p["fill"])))
+            h = max(1, int(lane_h * fill))
             y0 = int(i * lane_h + (lane_h - h) / 2.0)
-            self.puffs[band].append(self._spawn(band, lane=(i, y0, h)))
+            if cfg.band_flow == "same":
+                direction = same_sign
+            elif cfg.band_flow == "random":
+                direction = self.rng.choice((-1.0, 1.0))
+            else:
+                direction = 1.0 if i % 2 else -1.0
+            self.puffs[band].append(self._spawn(band, lane=(i, y0, h, direction)))
+        self._baked_bands = (cfg.band_gap, cfg.band_flow)
+
+    def _lane_params(self, band: str, index: int) -> dict:
+        """A lane's own copy of the style: even lanes are dense zones, odd
+        lanes sparse belts, by shifting the resting cutoff."""
+        p = dict(self._style()[band])
+        p["cutoff"] = _clamp(p["cutoff"] + (p["zone"] if index % 2 == 0 else p["belt"]), 0.05, 0.95)
+        return p
 
     def _bake(self) -> None:
         self.width_px = max(self.cols * PX_X, 1)
@@ -1840,6 +1869,9 @@ class PuffSky:
         self.config = config
         if config.cloud_style != self._baked_style:
             self._bake()
+            return
+        if self._is_bands() and (config.band_gap, config.band_flow) != getattr(self, "_baked_bands", None):
+            self._bake_bands()
             return
         if config.cloud_count != old.cloud_count:
             if self._is_bands():
@@ -1868,8 +1900,11 @@ class PuffSky:
             for i, puff in enumerate(puffs):
                 puff.age += dt
                 if puff.age >= puff.life:
-                    puffs[i] = self._spawn(band, age=0.0, lane=puff.lane)
-                    continue
+                    if puff.lane is not None:
+                        puff.age -= puff.life  # a lane lives on; only its morph phase wraps
+                    else:
+                        puffs[i] = self._spawn(band, age=0.0)
+                        continue
                 puff.x = (puff.x + puff.vx * dt) % w
 
     def tick(self, wind: float = 0.0) -> None:
