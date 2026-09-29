@@ -3,8 +3,8 @@ field.py — the answer strip's background simulation: sky, weather, cacti.
 
 Responsibilities:
 - Hold a small world (a noise-rendered parallax sky, wind, bird flocks, ground
-  speckle, and the settled cactus structure) in sub-cell resolution, two
-  sub-cells per terminal cell in each axis.
+  speckle, faint perspective ground lines, and the settled cactus structure)
+  in sub-cell resolution, two sub-cells per terminal cell in each axis.
 - Advance the world by `dt` wall-clock seconds (`World.advance`; `tick()` is a
   thin wrapper for tests, `advance(TICK_SECONDS)`): advance the sky's three
   cellular-automaton air grids (passing this frame's wind for their parallax
@@ -38,6 +38,12 @@ Responsibilities:
   wins over sky and structure. The sky is `Sky.render_cells()`'s braille/
   punctuation/stroke glyphs; birds and ground speckle render as single ASCII
   glyphs.
+- Ground lines (v7): `ground_lines` faint dotted lines cross the ground band,
+  converging on the sky's own vanishing point (`centre, horizon_row`, the
+  same shared `SkyConfig` levers the cloud deck projects through); their
+  bottom endpoints drift sideways with `Sky.camera_x`. They sit under the
+  sand speckle and under every cactus cell — the lowest-priority layer,
+  drawn only where nothing else claims the cell.
 
 Pure Python: no persistence, no store, no Textual import.
 """
@@ -151,6 +157,8 @@ class Palette:
     cactus_mid: str = "#3fae3f"
     cactus_old: str = "#2a7a2a"
     sand_dot: str = "grey42"
+    ground_line_near: str = "grey42"
+    ground_line_far: str = "grey30"
 
 
 MONO_PLUS = Palette()
@@ -506,6 +514,43 @@ class World:
             return ","
         return None
 
+    def _ground_line_x(self, i: int, n: int, screen_row: int) -> float:
+        """Line `i` of `n`'s column at `screen_row` (screen-row units, 0 at
+        the top): a straight interpolation from the sky's vanishing point
+        `(centre, horizon_row)` at `screen_row == horizon_row` out to this
+        line's own drifting point on the bottom edge at `screen_row == rows -
+        1`. The wind's low-passed drift (`Sky.camera_x`, converted from
+        pixels to columns) slides every line's bottom endpoint sideways in
+        lock-step, never the vanishing point itself."""
+        vp_col = self.cols / 2.0
+        vp_row = self.sky.sky_rows * self.sky.config.horizon
+        bottom_row = self.rows - 1
+        span = bottom_row - vp_row
+        t = 1.0 if span <= 0 else max(0.0, min(1.0, (screen_row - vp_row) / span))
+        drift = self.sky.camera_x / PX_X
+        base_x = (i + 0.5) / n * self.cols
+        bottom_x = (base_x + drift) % self.cols
+        return vp_col + t * (bottom_x - vp_col)
+
+    def _ground_line_cells(self) -> dict[tuple[int, int], tuple[str, str]]:
+        """This frame's `(cx, cy) -> (glyph, colour)` for every ground-line
+        hit, built once per `render()` (not once per cell) — `n` lines across
+        `GROUND_ROWS` rows is a handful of points, not a `cols`-wide scan."""
+        n = self.sky.config.ground_lines
+        cells: dict[tuple[int, int], tuple[str, str]] = {}
+        if n <= 0:
+            return cells
+        for cy in range(GROUND_ROWS):
+            screen_row = self.rows - 1 - cy
+            colour = self.palette.ground_line_near if cy == 0 else self.palette.ground_line_far
+            for i in range(n):
+                if ((i * 1000003 + cy * 97) & 0xFF) % 3 == 0:
+                    continue  # dotted: leave a gap rather than a solid run
+                x = self._ground_line_x(i, n, screen_row)
+                cx = int(round(x)) % self.cols
+                cells[(cx, cy)] = (".", colour)
+        return cells
+
     # ---- falling-seed splat -------------------------------------------------
 
     def _splat_gaussian(
@@ -612,6 +657,7 @@ class World:
         bird_cells = self._bird_cells()
         seed_canvas = self._seed_splat_canvas()
         pile_canvas = self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else {}
+        ground_line_cells = self._ground_line_cells()
         sky_grid = self.sky.render_cells()
         text = Text()
         for r in range(self.rows):
@@ -619,7 +665,7 @@ class World:
             sky_row = sky_grid[r] if r < len(sky_grid) else None
             runs: list[list[str | None]] = []
             for cx in range(self.cols):
-                ch, style = self._sample_cell(cx, cy, seed_canvas, bird_cells, sky_row, pile_canvas)
+                ch, style = self._sample_cell(cx, cy, seed_canvas, bird_cells, sky_row, pile_canvas, ground_line_cells)
                 if runs and runs[-1][1] == style:
                     runs[-1][0] += ch  # type: ignore[operator]
                 else:
@@ -641,6 +687,7 @@ class World:
         bird_cells: dict[tuple[int, int], tuple[str, str]],
         sky_row: list[tuple[str, str | None]] | None,
         pile_canvas: dict[tuple[int, int], float] | None = None,
+        ground_line_cells: dict[tuple[int, int], tuple[str, str]] | None = None,
     ) -> tuple[str, str | None]:
         if seed_canvas:
             block = self._seed_pixel_block(cx, cy, seed_canvas)
@@ -678,5 +725,10 @@ class World:
         speckle = self._ground_speckle(cx, cy)
         if speckle is not None:
             return speckle, self.palette.sand_dot
+
+        if ground_line_cells:
+            line = ground_line_cells.get((cx, cy))
+            if line is not None:
+                return line
 
         return " ", None

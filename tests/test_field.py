@@ -30,6 +30,8 @@ Responsibilities:
 - Two seeds within `stick_distance` merge into one rigid clump that falls,
   lands, and leaves a structure cell per member; seeds far apart never merge
   (v6e).
+- Ground lines (v7): the two outermost lines' columns converge toward centre
+  as the row rises toward the horizon; `ground_lines == 0` disables them.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from rich.cells import cell_len
 from rich.text import Text
 
 from cactus.field import (
+    GROUND_ROWS,
     LANDING_SECONDS,
     TICK_SECONDS,
     WIND_THETA,
@@ -421,3 +424,32 @@ def test_spinning_seed_held_still_renders_different_glyphs_as_it_tumbles() -> No
     glyph_2 = _ordered_dither(block_2)
 
     assert glyph_1 != glyph_2
+
+
+# ---- ground lines (v7) ----------------------------------------------------
+
+
+def test_ground_lines_converge_toward_centre_as_the_row_rises() -> None:
+    world = World(cols=40, rows=16, rng=random.Random(81))
+    world.sky.config.ground_lines = 5
+    n = world.sky.config.ground_lines
+    centre = world.cols / 2.0
+    bottom_row = world.rows - 1
+    top_ground_row = world.rows - GROUND_ROWS
+
+    def spread(screen_row: int) -> float:
+        xs = [world._ground_line_x(i, n, screen_row) for i in (0, n - 1)]
+        return abs(xs[1] - xs[0])
+
+    assert spread(top_ground_row) <= spread(bottom_row)
+    # every line's x moves toward centre (or stays put) as the row rises
+    for i in range(n):
+        x_bottom = world._ground_line_x(i, n, bottom_row)
+        x_top = world._ground_line_x(i, n, top_ground_row)
+        assert abs(x_top - centre) <= abs(x_bottom - centre) + 1e-9
+
+
+def test_ground_lines_disabled_when_lever_is_zero() -> None:
+    world = World(cols=20, rows=8, rng=random.Random(83))
+    world.sky.config.ground_lines = 0
+    assert world._ground_line_cells() == {}

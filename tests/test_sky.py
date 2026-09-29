@@ -20,6 +20,11 @@ Responsibilities:
   "blocks", overlays and round-trips through TOML like any other shared key,
   rejects an off-menu value, and `tuning_fields()` exposes its `choices`
   tuple instead of a numeric `step`.
+- Perspective (v7): `_screen_projection_row`'s `z` is monotonic (deeper rows
+  give smaller z) and a row at or above the horizon is open sky; a marker
+  read through `_project_composite` at a far row's `z` moves fewer screen
+  pixels per unit of camera drift than the same marker at a near row's; the
+  frame-time budget still stands with the projection in the loop.
 """
 
 from __future__ import annotations
@@ -41,6 +46,8 @@ from cactus.sky import (
     Sky,
     SkyConfig,
     _ordered_dither,
+    _project_composite,
+    _screen_projection_row,
     downsample,
     tuning_fields,
 )
@@ -146,13 +153,17 @@ def test_air_d_identity_is_stable_across_ticks_only_resize_rebuilds_it() -> None
 # ---- Sky: three grids composited, rendered, and timed ------------------
 
 
-def test_render_uses_at_least_24_distinct_colours() -> None:
+def test_render_uses_at_least_10_distinct_colours() -> None:
+    """v7: rows at or above the horizon are bare open sky (no glyph, no
+    colour at all — see `test_rows_above_horizon_render_blank_sky`), so a
+    sky this small no longer has every row's worth of tone/haze variety to
+    draw distinct colours from; the pre-v7 threshold here was 24."""
     sky = Sky(cols=100, sky_rows=14, rng=random.Random(1), palette=MONO_PLUS)
     for _ in range(300):
         sky.tick(0.1)
     grid = sky.render_cells()
     colours = {colour for row in grid for glyph, colour in row if glyph != " " and colour is not None}
-    assert len(colours) >= 24
+    assert len(colours) >= 10
 
 
 def test_frame_time_budget_at_100x20() -> None:
@@ -313,3 +324,78 @@ def test_tuning_fields_exposes_pile_style_choices() -> None:
     row = rows["pile_style"]
     assert row.choices == ("blocks", "dots")
     assert row.step is None
+
+
+# ---- perspective (v7) -----------------------------------------------------
+
+
+def test_z_is_monotonic_deeper_rows_give_smaller_z() -> None:
+    cfg = SkyConfig()
+    height_px = 72
+    zs = []
+    for py in range(height_px):
+        is_sky, z, _xscale = _screen_projection_row(py, height_px, cfg)
+        if not is_sky:
+            zs.append(z)
+    assert len(zs) > 1
+    assert all(a >= b for a, b in zip(zs, zs[1:]))
+
+
+def test_rows_at_or_above_the_horizon_are_open_sky() -> None:
+    cfg = SkyConfig()
+    height_px = 72
+    horizon_px = cfg.horizon * height_px
+    for py in range(height_px):
+        is_sky, _z, _xscale = _screen_projection_row(py, height_px, cfg)
+        assert is_sky == (py <= horizon_px)
+
+
+def test_rows_above_horizon_render_blank_sky() -> None:
+    sky = Sky(cols=40, sky_rows=14, rng=random.Random(3), palette=MONO_PLUS)
+    for _ in range(200):
+        sky.tick(0.1)
+    grid = sky.render_cells()
+    horizon_row = sky.sky_rows * sky.config.horizon
+    for row_i in range(int(horizon_row)):
+        assert all(glyph == " " for glyph, _colour in grid[row_i])
+
+
+def test_camera_drift_moves_a_near_z_marker_more_than_a_far_z_marker() -> None:
+    """A single-row grid removes the y axis entirely, isolating the
+    projection's x-scale: the same camera-x delta should shift a near row's
+    (small z, small xscale) peak column further than a far row's (large z,
+    large xscale) — `screen speed = wind / z(r)`."""
+    cfg = SkyConfig()
+    width_px = 200
+    grids = {
+        name: Air(width_px, 1, random.Random(i), _still_config(band_count=0), (0.0, 1.0), warm=False)
+        for i, name in enumerate(GRID_ORDER)
+    }
+    grids["near"].d[0][5] = 1.0  # near the wrap point: reachable at every xscale tried below
+
+    def build_rows(z: float) -> list:
+        xscale = z / cfg.focal
+        base_row = [(px - width_px / 2.0) * xscale for px in range(width_px)]
+        return [(False, z, 0, 0, 0.0, base_row)]
+
+    def peak_shift(z: float) -> int:
+        a, _owner, _z = _project_composite(grids, build_rows(z), width_px, 0.0)
+        b, _owner, _z = _project_composite(grids, build_rows(z), width_px, 10.0)
+        peak_a = max(range(width_px), key=lambda i: a[0][i])
+        peak_b = max(range(width_px), key=lambda i: b[0][i])
+        return abs(peak_b - peak_a)
+
+    near_shift = peak_shift(2.0)
+    far_shift = peak_shift(20.0)
+    assert far_shift > 0 and near_shift > 0
+    assert far_shift < near_shift
+
+
+def test_frame_time_budget_at_100x20_with_perspective() -> None:
+    sky = Sky(cols=100, sky_rows=20, rng=random.Random(1), palette=MONO_PLUS)
+    start = time.perf_counter()
+    for _ in range(20):
+        sky.tick(0.1)
+        sky.render_cells()
+    elapsed = (time.perf_counter() - start) / 20
+    assert elapsed < 0.040, f"{elapsed * 1000:.1f} ms/frame, over the 40 ms budget"

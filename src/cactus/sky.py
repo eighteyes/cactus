@@ -17,6 +17,20 @@ Responsibilities:
   density clears `DENSITY_FLOOR` owns a pixel. `advance(dt, wind)` steps
   every grid by `dt`; `tick(wind)` is a thin wrapper, `advance(_DEFAULT_DT,
   wind)`.
+- Perspective (v7): the three grids stay three decks (own wind_scale,
+  color pair, and `GRID_BAND_REGION`), but a grid's own row axis is now read
+  as world distance `z`, not screen row. `_screen_projection_row` turns a
+  screen pixel row into `(is_sky, z, xscale)` against the shared `horizon`/
+  `focal`/`z_far`/`deck_altitude_px` levers; `Sky._build_projection` caches
+  one row of that per pixel row of sky height, rebuilt on `resize`/`apply`.
+  `_project_composite` bilinear-samples every grid at each pixel's projected
+  `(x, z)` and composites nearest-first, same ownership rule as `_composite`
+  — `Sky.render_cells` feeds its output into `downsample` instead of the old
+  1:1 pixel copy, so far rows compress and crawl and near rows stretch and
+  move fast, and haze follows `z` instead of screen row. `Sky.camera_x`
+  drifts with the wind so the whole projected scene pans, never a fixed
+  frame. `downsample`'s old direct-array path (`density`/`owner` omitted)
+  is unchanged — every pre-v7 test still drives it pixel-for-pixel.
 - `GridConfig`/`SkyConfig`: every tunable constant, per grid and shared,
   as a dataclass rather than a module constant, so it can be loaded from a
   TOML file (`SkyConfig.load`), written back out with a one-line comment per
@@ -218,6 +232,11 @@ _SHARED_COMMENTS = {
     "edge_mean_hi": "tapering edge strokes are only tried below this mean",
     "edge_gx": "minimum x gradient for a tapering edge stroke",
     "edge_gy": "minimum y gradient for a tapering edge stroke",
+    "horizon": "the horizon line, as a fraction of sky height down from the top",
+    "focal": "perspective focal length in pixels — z(r) = focal / (r - horizon_px)",
+    "z_far": "world distance a grid's far edge (and the haze mix) clamps to",
+    "ground_lines": "how many faint perspective lines cross the ground band (0 disables)",
+    "deck_altitude_px": "the deck's world y — how far above the horizon its top peeks through",
 }
 
 
@@ -263,6 +282,16 @@ class SkyConfig:
     edge_mean_hi: float = field(default=0.65, metadata={"step": 0.0325, "lo": 0.0, "hi": 6.5})
     edge_gx: float = field(default=0.15, metadata={"step": 0.0075, "lo": 0.0, "hi": 1.5})
     edge_gy: float = field(default=0.10, metadata={"step": 0.005, "lo": 0.0, "hi": 1.0})
+
+    # Perspective (v7): the cloud deck's single shared projection. `horizon`
+    # is a fraction of sky height from the top; `focal` and `z_far` are in
+    # the same pixel units as a grid's own width/height; `ground_lines` is a
+    # count, `deck_altitude_px` a pixel offset — see `_screen_projection_row`.
+    horizon: float = field(default=0.36, metadata={"step": 0.02, "lo": 0.05, "hi": 0.9})
+    focal: float = field(default=24.0, metadata={"step": 2.0, "lo": 4.0, "hi": 200.0})
+    z_far: float = field(default=32.0, metadata={"step": 4.0, "lo": 8.0, "hi": 400.0})
+    ground_lines: int = field(default=7, metadata={"step": 1, "lo": 0, "hi": 9})
+    deck_altitude_px: float = field(default=0.0, metadata={"step": 2.0, "lo": 0.0, "hi": 64.0})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkyConfig":
@@ -611,10 +640,20 @@ def _majority_owner(owner_rows: list[list[str]], x0: int) -> str:
     return min(counts, key=lambda k: (-counts[k], rank[k]))
 
 
-def _cell_colour(cfg: SkyConfig, palette, owner: str, m: float, row_from_bottom: int, sky_rows: int) -> str:
+def _cell_colour(
+    cfg: SkyConfig, palette, owner: str, m: float, row_from_bottom: int, sky_rows: int,
+    z: float | None = None, z_far: float | None = None,
+) -> str:
+    """A cell's colour, haze-shifted either by screen row (pre-v7, `z` and
+    `z_far` omitted) or by world distance `z` (v7, `Sky.render_cells`'
+    perspective path) — same shape shift, `clamp(z / z_far)` standing in for
+    `row / (sky_rows - 1)`."""
     name = owner or "near"
     tone = m ** cfg.tone_exp
     base = _ramp16(getattr(palette, f"cloud_{name}_dark"), getattr(palette, f"cloud_{name}_light"), tone)
+    if z is not None and z_far:
+        t = cfg.haze_depth_weight * GRID_DEPTH[name] + cfg.haze_row_weight * _clamp(z / z_far, 0.0, 1.0)
+        return _lerp_hex(base, palette.haze, _clamp(t, 0.0, cfg.haze_clamp))
     return atmospheric_colour(
         base, GRID_DEPTH[name], row_from_bottom, sky_rows, palette,
         cfg.haze_depth_weight, cfg.haze_row_weight, cfg.haze_clamp,
@@ -641,18 +680,35 @@ def _composite(grids: dict[str, Air]) -> tuple[list[list[float]], list[list[str]
     return density, owner
 
 
-def downsample(grids: dict[str, Air], palette, sky_rows: int, cols: int, cfg: SkyConfig) -> list[list[tuple[str, str | None]]]:
-    """One `(glyph, colour)` per terminal cell from the grids' composited
-    `PX_X x PX_Y` pixel block, top row first."""
-    density, owner = _composite(grids)
-    density = density[::-1]  # Air is bottom-up; render top-down
-    owner = owner[::-1]
+def downsample(
+    grids: dict[str, Air], palette, sky_rows: int, cols: int, cfg: SkyConfig, *,
+    density: list[list[float]] | None = None,
+    owner: list[list[str]] | None = None,
+    z_by_row: list[float] | None = None,
+) -> list[list[tuple[str, str | None]]]:
+    """One `(glyph, colour)` per terminal cell from a composited `PX_X x
+    PX_Y` pixel block, top row first.
+
+    `density`/`owner` are already-built top-down pixel arrays — v7's
+    `Sky.render_cells` passes its perspective-projected canvas
+    (`_project_composite`) here instead of a 1:1 copy of the grids. Omitted
+    (every pre-v7 caller, including every direct-array test), this falls
+    back to `_composite(grids)` reversed, exactly as before. `z_by_row`, one
+    world distance per terminal row, drives the v7 z-based haze mix; omitted,
+    haze falls back to the old row/sky_rows shift.
+    """
+    if density is None or owner is None:
+        density, owner = _composite(grids)
+        density = density[::-1]  # Air is bottom-up; render top-down
+        owner = owner[::-1]
     out: list[list[tuple[str, str | None]]] = []
     for row_i in range(sky_rows):
         y0 = row_i * PX_Y
         block_density = density[y0: y0 + PX_Y]
         block_owner = owner[y0: y0 + PX_Y]
         row_from_bottom = (sky_rows - 1) - row_i
+        z_for_row = z_by_row[row_i] if z_by_row is not None else None
+        z_far_for_row = cfg.z_far if z_for_row is not None else None
         out_row: list[tuple[str, str | None]] = []
         for col_i in range(cols):
             x0 = col_i * PX_X
@@ -666,7 +722,7 @@ def downsample(grids: dict[str, Air], palette, sky_rows: int, cols: int, cfg: Sk
                     continue
                 glyph = _speck_glyph(x0, y0)
                 owner_name = _majority_owner(block_owner, x0)
-                colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows)
+                colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows, z_for_row, z_far_for_row)
                 out_row.append((glyph, colour))
                 continue
             gx, gy = _gradients(pixels)
@@ -681,10 +737,138 @@ def downsample(grids: dict[str, Air], palette, sky_rows: int, cols: int, cfg: Sk
             else:
                 glyph = _ordered_dither(pixels)
             owner_name = _majority_owner(block_owner, x0)
-            colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows)
+            colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows, z_for_row, z_far_for_row)
             out_row.append((glyph, colour))
         out.append(out_row)
     return out
+
+
+# ---- perspective (v7) ---------------------------------------------------
+
+
+def _screen_projection_row(py: int, height_px: int, cfg: SkyConfig) -> tuple[bool, float, float]:
+    """One screen pixel row's `(is_sky, z, xscale)`.
+
+    `horizon_px` is the horizon line in pixel-row units, `cfg.horizon` down
+    from the top of the sky. A row at or above it (`py <= horizon_px -
+    deck_altitude_px`) is open sky. `deck_altitude_px` (world y of the deck)
+    lets a thin sliver of rows just above the horizon still show the deck at
+    its farthest (`z_far`) — 0 by default, so the deck stays entirely below
+    the horizon. Below the horizon, `z = focal / (py - horizon_px)`: smaller
+    at the bottom of the screen (near), larger just below the horizon (far),
+    clamped to `z_far`. `xscale = z / focal` is the row's horizontal scale —
+    a world-x offset reads `xscale` screen pixels wide at this row."""
+    horizon_px = cfg.horizon * height_px
+    deck_start_px = horizon_px - cfg.deck_altitude_px
+    if py <= deck_start_px:
+        return True, 0.0, 0.0
+    if py <= horizon_px:
+        z = cfg.z_far
+    elif cfg.focal > 0:
+        z = min(cfg.focal / (py - horizon_px), cfg.z_far)
+    else:
+        z = 0.0
+    xscale = z / cfg.focal if cfg.focal > 0 else 0.0
+    return False, z, xscale
+
+
+def _build_projection_rows(
+    height_px: int, width_px: int, cfg: SkyConfig,
+) -> list[tuple[bool, float, int, int, float, list[float] | None]]:
+    """`Sky._build_projection`'s whole per-pixel-row cache, built once per
+    resize/`apply` and never touched per frame.
+
+    Each entry is `(is_sky, z, y0, y1, ty, base_row)`: `y0`/`y1`/`ty` are the
+    row's fixed grid-space bilinear tap (two grid rows and a weight between
+    them — every grid shares `height_px`, so one tap serves all three);
+    `base_row`, `[(px - centre) * xscale for px in range(width_px)]`, is the
+    row's whole horizontal sample pattern *before* the frame's `camera_x`
+    offset — the one part of a pixel's world-x that can't change without a
+    resize. A sky row's entry carries only `is_sky`; nothing else is read
+    for it. Frame time then only ever adds `camera_x` to a precomputed list
+    and taps two precomputed grid rows — no `math` calls, no per-pixel
+    function calls, in the per-frame path (`_project_composite`)."""
+    centre_px = width_px / 2.0
+    base_cols = [px - centre_px for px in range(width_px)]
+    rows: list[tuple[bool, float, int, int, float, list[float] | None]] = []
+    for py in range(height_px):
+        is_sky, z, xscale = _screen_projection_row(py, height_px, cfg)
+        if is_sky:
+            rows.append((True, 0.0, 0, 0, 0.0, None))
+            continue
+        z_frac = 0.0 if cfg.z_far <= 0 else _clamp(z / cfg.z_far, 0.0, 1.0)
+        gy = z_frac * (height_px - 1) if height_px > 1 else 0.0
+        y0 = int(gy)
+        y1 = min(height_px - 1, y0 + 1)
+        ty = gy - y0
+        base_row = [b * xscale for b in base_cols]
+        rows.append((False, z, y0, y1, ty, base_row))
+    return rows
+
+
+def _project_composite(
+    grids: dict[str, Air], proj_rows: list[tuple[bool, float, int, int, float, list[float] | None]],
+    width_px: int, camera_x: float,
+) -> tuple[list[list[float]], list[list[str]], list[float]]:
+    """Perspective-projected composite (v7), top row first (unlike
+    `_composite`'s bottom-up `Air.d`).
+
+    Per frame, per deck row: add `camera_x` to the row's precomputed
+    `base_row` (one list comprehension), split into integer/fractional parts
+    (two more), then bilinear-tap each grid's two precomputed rows at those
+    indices (one comprehension per grid) and pick nearest-first
+    (`GRID_ORDER`) with a final comprehension. Every step is a row-level list
+    comprehension over plain arithmetic and indexing — no per-pixel function
+    calls, no `math` module in this path at all.
+    """
+    g_width = next(iter(grids.values())).width
+    near_d, mid_d, far_d = grids["near"].d, grids["mid"].d, grids["far"].d
+    density: list[list[float]] = []
+    owner: list[list[str]] = []
+    z_by_pixel_row: list[float] = []
+    for is_sky, z, y0, y1, ty, base_row in proj_rows:
+        if is_sky:
+            density.append([0.0] * width_px)
+            owner.append([""] * width_px)
+            z_by_pixel_row.append(0.0)
+            continue
+        z_by_pixel_row.append(z)
+        xs = [(b + camera_x) % g_width for b in base_row]
+        x0 = [int(x) for x in xs]
+        tx = [x - i for x, i in zip(xs, x0)]
+        x1 = [i + 1 if i + 1 < g_width else 0 for i in x0]
+        oty = 1.0 - ty
+        near0, near1 = near_d[y0], near_d[y1]
+        mid0, mid1 = mid_d[y0], mid_d[y1]
+        far0, far1 = far_d[y0], far_d[y1]
+        near_v = [
+            (near0[a] + (near0[b] - near0[a]) * t) * oty + (near1[a] + (near1[b] - near1[a]) * t) * ty
+            for a, b, t in zip(x0, x1, tx)
+        ]
+        mid_v = [
+            (mid0[a] + (mid0[b] - mid0[a]) * t) * oty + (mid1[a] + (mid1[b] - mid1[a]) * t) * ty
+            for a, b, t in zip(x0, x1, tx)
+        ]
+        # The far deck only ever owns a pixel behind near and mid, and is the
+        # most compressed layer anyway — half the horizontal taps (every
+        # other column, nearest-neighbour-duplicated back to full width)
+        # keeps the frame budget without a visible loss (perf note, v7).
+        far_half = [
+            (far0[a] + (far0[b] - far0[a]) * t) * oty + (far1[a] + (far1[b] - far1[a]) * t) * ty
+            for a, b, t in zip(x0[::2], x1[::2], tx[::2])
+        ]
+        far_v = [far_half[i >> 1] for i in range(len(x0))]
+        picks = [
+            (nv, "near") if nv > DENSITY_FLOOR else
+            (mv, "mid") if mv > DENSITY_FLOOR else
+            (fv, "far") if fv > DENSITY_FLOOR else
+            (0.0, "")
+            for nv, mv, fv in zip(near_v, mid_v, far_v)
+        ]
+        drow, orow = zip(*picks) if picks else ((), ())
+        density.append(list(drow))
+        owner.append(list(orow))
+    return density, owner, z_by_pixel_row
 
 
 # ---- Sky ----------------------------------------------------------------
@@ -699,7 +883,9 @@ class Sky:
         self.rng = rng
         self.palette = palette
         self.config = config or SkyConfig()
+        self.camera_x = 0.0
         self._bake()
+        self._build_projection()
 
     def _bake(self) -> None:
         width_px = max(self.cols * PX_X, 1)
@@ -709,6 +895,15 @@ class Sky:
             for name in GRID_ORDER
         }
 
+    def _build_projection(self) -> None:
+        """v7: `_build_projection_rows`'s cache, one entry per pixel row of
+        sky height, rebuilt whenever the size or the shared projection
+        levers can have changed (`__init__`, `resize`, `apply`) — never per
+        frame."""
+        height_px = max(self.sky_rows * PX_Y, 1)
+        self._proj_width_px = max(self.cols * PX_X, 1)
+        self._proj_rows = _build_projection_rows(height_px, self._proj_width_px, self.config)
+
     def apply(self, config: SkyConfig) -> None:
         """Swap tuning constants into the running grids without resetting
         them — their drawn bands and current weather stay exactly as they
@@ -716,6 +911,7 @@ class Sky:
         self.config = config
         for name in GRID_ORDER:
             self.grids[name].config = getattr(config, name)
+        self._build_projection()
 
     def resize(self, cols: int, sky_rows: int) -> None:
         self.cols = max(cols, 0)
@@ -724,11 +920,17 @@ class Sky:
         height_px = max(self.sky_rows * PX_Y, 1)
         for grid in self.grids.values():
             grid.resize(width_px, height_px)
+        self._build_projection()
 
     def advance(self, dt: float, wind: float = 0.0) -> None:
         cfg = self.config
         for grid in self.grids.values():
             grid.advance(dt, wind, cfg.shear_floor, cfg.shear_base, cfg.shear_span)
+        # v7: the camera pans with the wind too, at the same base rate the
+        # grids' own row shear uses, so the whole projected scene drifts —
+        # never a perfectly fixed frame.
+        if self._proj_width_px:
+            self.camera_x = (self.camera_x + wind * cfg.shear_base * dt) % self._proj_width_px
 
     def tick(self, wind: float = 0.0) -> None:
         """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
@@ -737,4 +939,11 @@ class Sky:
     def render_cells(self) -> list[list[tuple[str, str | None]]]:
         if self.cols <= 0 or self.sky_rows <= 0:
             return []
-        return downsample(self.grids, self.palette, self.sky_rows, self.cols, self.config)
+        density, owner, z_by_pixel_row = _project_composite(
+            self.grids, self._proj_rows, self._proj_width_px, self.camera_x,
+        )
+        z_by_row = [z_by_pixel_row[min(row_i * PX_Y, len(z_by_pixel_row) - 1)] for row_i in range(self.sky_rows)]
+        return downsample(
+            self.grids, self.palette, self.sky_rows, self.cols, self.config,
+            density=density, owner=owner, z_by_row=z_by_row,
+        )
