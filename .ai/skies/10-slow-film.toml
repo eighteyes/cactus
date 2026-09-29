@@ -91,3 +91,5 @@ fps = 2  # how often the TUI samples and redraws the field, per second
 # cloud_count = 1.0  # puffs engine population scale: 1.0 is one cloud per band per ~40 columns
 # cloud_drift = 1.5  # puffs engine top drift speed, pixels per second, before a band's own wind_scale; each cloud picks its own direction
 # cloud_life = 90.0  # puffs engine seconds a cloud lives, unfold to recede
+# perspective = 'on'  # fluid engine: 'on' projects the three decks through horizon/focal/z_far (v7); 'off' draws each deck's bands flat across the sky, the v6 look
+# seed_wind = 1.0  # a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)

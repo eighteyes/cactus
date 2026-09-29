@@ -162,3 +162,34 @@ def test_tuning_fields_carry_the_cloud_levers() -> None:
     assert names["cloud_style"].choices == tuple(STYLES)
     for key in ("cloud_count", "cloud_drift", "cloud_life"):
         assert names[key].step is not None
+
+
+# ---- perspective lever (v8, fluid engine) ---------------------------------
+
+
+def test_perspective_off_draws_each_deck_flat_at_its_band_height() -> None:
+    """`perspective = 'off'` is the v6 look: `Sky.render_cells` skips the
+    projection and hands `downsample` the raw grids, so a marker in a grid
+    lands at that grid's own band height, full width, unprojected."""
+    from cactus.sky import Sky, downsample
+
+    off = SkyConfig(sky_engine="fluid", perspective="off")
+    on = SkyConfig(sky_engine="fluid", perspective="on")
+    sky_off = make_sky(40, 20, random.Random(2), MONO_PLUS, off)
+    sky_on = make_sky(40, 20, random.Random(2), MONO_PLUS, on)
+    assert isinstance(sky_off, Sky) and isinstance(sky_on, Sky)
+    for _ in range(20):
+        sky_off.advance(0.5)
+        sky_on.advance(0.5)
+    flat = sky_off.render_cells()
+    direct = downsample(sky_off.grids, MONO_PLUS, 20, 40, off)
+    assert flat == direct, "off must be exactly the direct (unprojected) path"
+    assert flat != sky_on.render_cells(), "on and off are different pictures"
+
+
+def test_perspective_is_a_choices_lever() -> None:
+    from cactus.sky import tuning_fields
+
+    row = next(f for f in tuning_fields() if f.group == "shared" and f.name == "perspective")
+    assert row.choices == ("on", "off")
+    assert SkyConfig().perspective == "on"

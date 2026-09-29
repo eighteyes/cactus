@@ -64,6 +64,9 @@ Responsibilities:
   `SkyConfig.fps` (shared group) is how often the TUI samples the field at
   all — `Air.advance`/`Sky.advance` still take the true elapsed `dt`, so
   raising or lowering it only changes the sampling rate, not the physics.
+  `SkyConfig.perspective` (v8, "on"/"off") keeps the v6 flat look reachable:
+  "off" makes `Sky.render_cells` skip the projection and feed `downsample`
+  the raw grids, each deck's bands drawn flat at their own band height.
   `SkyConfig.sky_engine` ("texture" default, "fluid", "puffs") picks the
   engine from `SKY_ENGINES` — this module's cellular automaton, `TextureSky`
   (v5's baked-noise sky restored behind the same four-method interface), or
@@ -334,6 +337,7 @@ _SHARED_COMMENTS = {
     "cloud_count": "puffs engine population scale: 1.0 is one cloud per band per ~40 columns",
     "cloud_drift": "puffs engine top drift speed, pixels per second, before a band's own wind_scale; each cloud picks its own direction",
     "cloud_life": "puffs engine seconds a cloud lives, unfold to recede",
+    "perspective": "fluid engine: 'on' projects the three decks through horizon/focal/z_far (v7); 'off' draws each deck's bands flat across the sky, the v6 look",
     "seed_wind": "a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)",
 }
 
@@ -385,6 +389,7 @@ class SkyConfig:
     # is a fraction of sky height from the top; `focal` and `z_far` are in
     # the same pixel units as a grid's own width/height; `ground_lines` is a
     # count, `deck_altitude_px` a pixel offset — see `_screen_projection_row`.
+    perspective: str = field(default="on", metadata={"choices": ("on", "off")})
     horizon: float = field(default=0.36, metadata={"step": 0.02, "lo": 0.05, "hi": 0.9})
     focal: float = field(default=24.0, metadata={"step": 2.0, "lo": 4.0, "hi": 200.0})
     z_far: float = field(default=32.0, metadata={"step": 4.0, "lo": 8.0, "hi": 400.0})
@@ -1229,6 +1234,10 @@ class Sky:
     def render_cells(self) -> list[list[tuple[str, str | None]]]:
         if self.cols <= 0 or self.sky_rows <= 0:
             return []
+        if self.config.perspective == "off":
+            # The v6 path (v8, `perspective = 'off'`): no projection, each
+            # deck's bands drawn flat across the sky at their own height.
+            return downsample(self.grids, self.palette, self.sky_rows, self.cols, self.config)
         density, owner, z_by_pixel_row, row_empty = _project_composite(
             self.grids, self._proj_rows, self._proj_width_px, self.camera_x,
         )

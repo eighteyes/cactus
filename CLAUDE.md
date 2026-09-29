@@ -517,3 +517,8 @@ scope.
   those are `bounty=False` so they can never collect and cascade. Cloud
   presence is read off `World._sky_cells`, the glyph grid `render()` cached
   last frame — never a live query against the sky engine.
+- `perspective` (v8) is a `SkyConfig` choices lever for the fluid engine
+  only: `on` (default) is the v7 projection through `horizon`/`focal`/
+  `z_far`; `off` is the v6 look, `Sky.render_cells` handing `downsample` the
+  raw grids so each deck's bands draw flat across the sky at their own
+  height. Texture and puffs never projected and ignore it.
