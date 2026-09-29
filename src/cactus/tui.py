@@ -18,6 +18,9 @@ Responsibilities:
 - Grow a small sky/weather/cactus simulation under the card, dropping a seed
   on every answer, or manually via backtick/tilde at any time outside
   free-text mode.
+- Show a `T` tuning overlay listing every `SkyConfig` key, nudge it live
+  with h/l/H/L, reset it with r, and keep the on-disk file and the running
+  sky in agreement on every nudge.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
 from .field import TICK_SECONDS, World
 from .scope import project_label
-from .sky import SkyConfig, config_path as sky_config_path
+from .sky import SkyConfig, TuneField, config_path as sky_config_path, tuning_fields
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
 
@@ -584,6 +587,14 @@ class CactusApp(App[int]):
         padding: 1 2;
         overflow-y: auto;
     }
+    #tuning-panel {
+        display: none;
+        height: 1fr;
+        border: round $accent;
+        margin: 1 2;
+        padding: 1 2;
+        overflow-y: auto;
+    }
     #card {
         border: round $accent;
         margin: 0 1;
@@ -646,6 +657,7 @@ class CactusApp(App[int]):
         Binding("e", "elaborate", "Elaborate", show=False),
         Binding("D", "decompose", "Decompose", show=False),
         Binding("?", "open_settings", "Settings", key_display="?"),
+        Binding("T", "open_tuning", "Tune"),
         Binding("p", "poke", "Poke", show=False),
         Binding("v", "visit", "Visit", show=False),
         Binding("C", "copy_command", "Copy", show=False),
@@ -705,6 +717,12 @@ class CactusApp(App[int]):
         self.answers_rows: list[Question] = []
         self.answers_index = 0
         self.answers_expanded = False
+        # T tuning overlay (v6c): same mutual-exclusion pattern as the three
+        # panels above. tuning_rows is rebuilt fresh from sky.tuning_fields()
+        # on every open, so a key added to SkyConfig always shows up.
+        self.tuning_open = False
+        self.tuning_rows: list[TuneField] = []
+        self.tuning_index = 0
         self._figlet_label: str | None = None
         self._figlet_text = ""
         self.free_text_mode = False
@@ -783,6 +801,7 @@ class CactusApp(App[int]):
         yield Static(id="settings-panel", markup=False)
         yield Static(id="projects-panel", markup=False)
         yield Static(id="answers-panel", markup=False)
+        yield Static(id="tuning-panel", markup=False)
         yield Static(id="status-bar", markup=False)
         yield Footer()
 
@@ -1033,10 +1052,11 @@ class CactusApp(App[int]):
         self.refresh_bindings()
 
     def _close_other_panels(self, opening: str) -> None:
-        """Settings/projects/answers are mutually exclusive (q354 vetoed a `view` enum).
+        """Settings/projects/answers/tuning are mutually exclusive (q354 vetoed
+        a `view` enum; the v6c tuning overlay follows the same pattern).
 
         Called by each panel's own open action before it flips its own flag,
-        so opening one always closes whichever of the other two was open.
+        so opening one always closes whichever of the others was open.
         """
         if opening != "settings" and self.settings_open:
             self.settings_open = False
@@ -1047,6 +1067,118 @@ class CactusApp(App[int]):
         if opening != "answers" and self.answers_open:
             self.answers_open = False
             self.query_one("#answers-panel", Static).display = False
+        if opening != "tuning" and self.tuning_open:
+            self.tuning_open = False
+            self.query_one("#tuning-panel", Static).display = False
+
+    # ---- tuning overlay (`T`, v6c) --------------------------------------
+
+    def action_open_tuning(self) -> None:
+        if self.tuning_open:
+            self._close_tuning()
+            return
+        self.free_text_mode = False
+        self.elaborating = False
+        self._hide_input()
+        self._close_other_panels("tuning")
+        self.tuning_open = True
+        self.tuning_rows = tuning_fields()
+        if self.tuning_rows:
+            self.tuning_index = max(0, min(self.tuning_index, len(self.tuning_rows) - 1))
+        else:
+            self.tuning_index = 0
+        self.query_one("#body", Horizontal).display = False
+        panel = self.query_one("#tuning-panel", Static)
+        panel.display = True
+        self._render_tuning()
+        self.refresh_bindings()
+
+    def _close_tuning(self) -> None:
+        self.tuning_open = False
+        self.query_one("#tuning-panel", Static).display = False
+        self.query_one("#body", Horizontal).display = True
+        self._sync_input_focus()
+        self.refresh_bindings()
+
+    def _tuning_obj(self, group: str) -> Any:
+        """The live object a tuning row's field lives on: a grid's own
+        `GridConfig`, or the `SkyConfig` itself for a `shared` row."""
+        cfg = self.world.sky.config
+        return cfg if group == "shared" else getattr(cfg, group)
+
+    def _apply_and_dump_tuning(self) -> None:
+        """Push the mutated config into the running grids and to disk in one
+        step, so the overlay, the sky, and the file never disagree — then
+        remember the write's own mtime so the reload timer skips it."""
+        cfg = self.world.sky.config
+        self.world.sky.apply(cfg)
+        path = cfg.dump()
+        try:
+            self._sky_config_mtime = path.stat().st_mtime
+        except OSError:
+            pass
+
+    def _move_tuning_cursor(self, delta: int) -> None:
+        if not self.tuning_rows:
+            return
+        self.tuning_index = (self.tuning_index + delta) % len(self.tuning_rows)
+        self._render_tuning()
+
+    def _nudge_tuning(self, steps: int) -> None:
+        """Move the focused key by `steps` of its own declared `step`
+        (negative for h/H, positive for l/L; `steps` is `±1` or `±10`)."""
+        if not self.tuning_rows:
+            return
+        row = self.tuning_rows[self.tuning_index]
+        if row.step is None:
+            self.flash = f"{row.name} has no tuning range"
+            self._rebuild_status_bar()
+            return
+        obj = self._tuning_obj(row.group)
+        old = getattr(obj, row.name)
+        new = old + row.step * steps
+        if row.lo is not None:
+            new = max(row.lo, new)
+        if row.hi is not None:
+            new = min(row.hi, new)
+        if isinstance(old, int) and not isinstance(old, bool):
+            new = int(round(new))
+        setattr(obj, row.name, new)
+        self._apply_and_dump_tuning()
+        self._render_tuning()
+
+    def _reset_tuning(self) -> None:
+        if not self.tuning_rows:
+            return
+        row = self.tuning_rows[self.tuning_index]
+        default_cfg = SkyConfig()
+        default_obj = default_cfg if row.group == "shared" else getattr(default_cfg, row.group)
+        default_value = getattr(default_obj, row.name)
+        setattr(self._tuning_obj(row.group), row.name, default_value)
+        self._apply_and_dump_tuning()
+        self.flash = f"{row.name} reset to {default_value!r}"
+        self._render_tuning()
+        self._rebuild_status_bar()
+
+    def _tuning_text(self) -> str:
+        if not self.tuning_rows:
+            return "tuning\n\nno tunable keys\n\nesc or T  return to inbox"
+        lines = ["tuning", ""]
+        current_group: str | None = None
+        for i, row in enumerate(self.tuning_rows):
+            if row.group != current_group:
+                lines.append(f"[{row.group}]")
+                current_group = row.group
+            marker = "▸" if i == self.tuning_index else " "
+            value = getattr(self._tuning_obj(row.group), row.name)
+            lines.append(f"{marker} {row.name}  {value!r}  # {row.comment}")
+        lines.extend([
+            "", "j/k move   h/l nudge   H/L nudge x10   r reset", "esc or T  return to inbox",
+        ])
+        return "\n".join(lines)
+
+    def _render_tuning(self) -> None:
+        self.query_one("#tuning-panel", Static).update(self._tuning_text())
 
     def _selected_project_row(self) -> dict[str, Any] | None:
         if 0 <= self.project_index < len(self.project_rows):
@@ -1401,6 +1533,11 @@ class CactusApp(App[int]):
         no command is a promise the row cannot keep, and finding that out by
         pressing it is worse than never seeing it.
         """
+        # The tuning overlay (v6c) gates off everything but quit — closing it
+        # (`escape`/`T`) and its own j/k/h/l/H/L/r keys all go through
+        # on_key instead, the same way settings' escape does.
+        if self.tuning_open:
+            return action == "quit_app"
         # Manual seed drop (q368): reachable from every screen state — panels
         # open, an elaborate row, even an empty inbox — except while typing,
         # where the same physical key must reach the input instead.
@@ -1426,7 +1563,7 @@ class CactusApp(App[int]):
         if self.free_text_mode or self.elaborating:
             if action in ("open_projects", "ignore_project", "activate_project", "open_answers"):
                 return False
-        if action in ("refresh_view", "quit_app", "open_settings", "open_answers"):
+        if action in ("refresh_view", "quit_app", "open_settings", "open_answers", "open_tuning"):
             return True
 
         q = self._current_question()
@@ -1994,6 +2131,27 @@ class CactusApp(App[int]):
         binding from firing, so the press would otherwise land in silence.
         This runs after bindings, so an enabled `u`/`y`/`n` never reaches here.
         """
+        if self.tuning_open:
+            if event.key in ("escape", "T"):
+                self._close_tuning()
+            elif event.key == "j":
+                self._move_tuning_cursor(1)
+            elif event.key == "k":
+                self._move_tuning_cursor(-1)
+            elif event.key == "h":
+                self._nudge_tuning(-1)
+            elif event.key == "l":
+                self._nudge_tuning(1)
+            elif event.key == "H":
+                self._nudge_tuning(-10)
+            elif event.key == "L":
+                self._nudge_tuning(10)
+            elif event.key == "r":
+                self._reset_tuning()
+            else:
+                return
+            event.stop()
+            return
         if self.projects_open:
             if event.key == "escape":
                 self._close_projects()

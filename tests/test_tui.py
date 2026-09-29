@@ -971,3 +971,94 @@ async def test_sky_config_reload_updates_the_running_world(
         changed.dump(path)
         await pilot.pause(2.5)
         assert app.world.sky.config.far.growth == 0.5
+
+
+async def test_tuning_overlay_opens_shows_first_key(store: Store, project: str) -> None:
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        assert app.tuning_open is True
+        assert app.query_one("#tuning-panel", Static).display is True
+        assert app.tuning_index == 0
+        first = app.tuning_rows[0]
+        assert first.name in app._tuning_text()
+
+
+async def test_tuning_overlay_nudge_updates_config_and_file(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cactus.sky import SkyConfig
+
+    path = tmp_path / "sky.toml"
+    monkeypatch.setenv("CACTUS_SKY", str(path))
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        row = app.tuning_rows[0]
+        before = getattr(app._tuning_obj(row.group), row.name)
+
+        await pilot.press("l")
+        await pilot.pause()
+
+        after = getattr(app._tuning_obj(row.group), row.name)
+        assert after != before
+        on_disk = SkyConfig.load(path)
+        disk_obj = on_disk if row.group == "shared" else getattr(on_disk, row.group)
+        assert getattr(disk_obj, row.name) == after
+
+
+async def test_tuning_overlay_reset_restores_default(store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cactus.sky import SkyConfig
+
+    path = tmp_path / "sky.toml"
+    monkeypatch.setenv("CACTUS_SKY", str(path))
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        row = app.tuning_rows[0]
+        default_cfg = SkyConfig()
+        default_obj = default_cfg if row.group == "shared" else getattr(default_cfg, row.group)
+        default_value = getattr(default_obj, row.name)
+
+        await pilot.press("l")
+        await pilot.press("l")
+        await pilot.pause()
+        assert getattr(app._tuning_obj(row.group), row.name) != default_value
+
+        await pilot.press("r")
+        await pilot.pause()
+        assert getattr(app._tuning_obj(row.group), row.name) == default_value
+
+
+async def test_tuning_overlay_escape_closes_and_keeps_nudge(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "sky.toml"
+    monkeypatch.setenv("CACTUS_SKY", str(path))
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        row = app.tuning_rows[0]
+        before = getattr(app._tuning_obj(row.group), row.name)
+
+        await pilot.press("l")
+        await pilot.pause()
+        nudged = getattr(app._tuning_obj(row.group), row.name)
+        assert nudged != before
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.tuning_open is False
+        assert app.query_one("#tuning-panel", Static).display is False
+        assert getattr(app._tuning_obj(row.group), row.name) == nudged

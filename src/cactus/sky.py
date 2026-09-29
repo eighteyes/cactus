@@ -21,7 +21,10 @@ Responsibilities:
   as a dataclass rather than a module constant, so it can be loaded from a
   TOML file (`SkyConfig.load`), written back out with a one-line comment per
   key (`SkyConfig.dump`), and swapped live into a running `Sky`
-  (`Sky.apply`) without disturbing the grids' drawn bands.
+  (`Sky.apply`) without disturbing the grids' drawn bands. Every numeric
+  field also carries `step`/`lo`/`hi` in its dataclass metadata, and
+  `tuning_fields()` flattens the whole set (far/mid/near/shared) into
+  `TuneField` rows for tui.py's `T` overlay.
 - Downsample the composited canvas, `PX_X` by `PX_Y` pixels per terminal
   cell, to one toned glyph: blank, a fringe speck, an ordered-dither braille
   pattern, a flat cirrus stroke, a tapering edge stroke, or a solid core —
@@ -143,25 +146,32 @@ class GridConfig:
     `_DEFAULT_DT` values divided by `_DEFAULT_DT`, so the sky looks the same
     at the TUI's default sampling. `uptake` stays dimensionless — it scales
     an already-per-second growth amount, not a rate of its own — so its
-    default is unchanged."""
+    default is unchanged.
 
-    wind_scale: float
-    kx: float = 0.05 / _DEFAULT_DT
-    ky: float = 0.003 / _DEFAULT_DT
-    growth: float = 3.0 / _DEFAULT_DT
-    evaporation: float = 0.015 / _DEFAULT_DT
-    nucleate_p: float = 0.05 / _DEFAULT_DT
-    puff_lo: float = 0.5
-    puff_hi: float = 0.8
-    puff_width: int = 30
-    puff_height: int = 2
-    band_sigma_lo: float = 1.5
-    band_sigma_hi: float = 2.5
-    band_count: int = 2
-    uptake: float = 2.5
-    replenish: float = 0.002 / _DEFAULT_DT
-    floor: float = 0.03
-    allee: float = 0.15
+    Every numeric field carries `step`/`lo`/`hi` in its `metadata` (v6c): the
+    `T` tuning overlay's h/l nudge and clamp, chosen from the field's own
+    default — step about 1/20 of it, lo 0, hi about 10x it, ints stepping by
+    a flat 1. `wind_scale` has no single default at this class (it varies
+    per grid, set by `SkyConfig`'s factories below), so its range is chosen
+    against `near`'s 1.0, the largest of the three."""
+
+    wind_scale: float = field(metadata={"step": 0.05, "lo": 0.0, "hi": 10.0})
+    kx: float = field(default=0.05 / _DEFAULT_DT, metadata={"step": 0.025, "lo": 0.0, "hi": 5.0})
+    ky: float = field(default=0.003 / _DEFAULT_DT, metadata={"step": 0.0015, "lo": 0.0, "hi": 0.3})
+    growth: float = field(default=3.0 / _DEFAULT_DT, metadata={"step": 1.5, "lo": 0.0, "hi": 300.0})
+    evaporation: float = field(default=0.015 / _DEFAULT_DT, metadata={"step": 0.0075, "lo": 0.0, "hi": 1.5})
+    nucleate_p: float = field(default=0.05 / _DEFAULT_DT, metadata={"step": 0.025, "lo": 0.0, "hi": 5.0})
+    puff_lo: float = field(default=0.5, metadata={"step": 0.025, "lo": 0.0, "hi": 5.0})
+    puff_hi: float = field(default=0.8, metadata={"step": 0.04, "lo": 0.0, "hi": 8.0})
+    puff_width: int = field(default=30, metadata={"step": 1, "lo": 0, "hi": 300})
+    puff_height: int = field(default=2, metadata={"step": 1, "lo": 0, "hi": 20})
+    band_sigma_lo: float = field(default=1.5, metadata={"step": 0.075, "lo": 0.0, "hi": 15.0})
+    band_sigma_hi: float = field(default=2.5, metadata={"step": 0.125, "lo": 0.0, "hi": 25.0})
+    band_count: int = field(default=2, metadata={"step": 1, "lo": 0, "hi": 20})
+    uptake: float = field(default=2.5, metadata={"step": 0.125, "lo": 0.0, "hi": 25.0})
+    replenish: float = field(default=0.002 / _DEFAULT_DT, metadata={"step": 0.001, "lo": 0.0, "hi": 0.2})
+    floor: float = field(default=0.03, metadata={"step": 0.0015, "lo": 0.0, "hi": 0.3})
+    allee: float = field(default=0.15, metadata={"step": 0.0075, "lo": 0.0, "hi": 1.5})
 
 
 GRID_FIELD_NAMES = tuple(f.name for f in fields(GridConfig))
@@ -216,29 +226,30 @@ class SkyConfig:
     as `GridConfig`'s rate fields: v6's per-tick-at-`_DEFAULT_DT` value
     divided by `_DEFAULT_DT`. The TOML keys keep their v6 names throughout —
     only the numbers they hold changed meaning, from "per tick" to "per
-    second"."""
+    second". Every field below also carries `step`/`lo`/`hi` metadata, same
+    convention as `GridConfig` (v6c)."""
 
     far: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=0.25))
     mid: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=0.55))
     near: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=1.0))
 
-    shear_floor: float = 0.03 / _DEFAULT_DT
-    shear_base: float = 0.7 / _DEFAULT_DT
-    shear_span: float = 0.3 / _DEFAULT_DT
-    tone_exp: float = 0.45
-    haze_depth_weight: float = 0.55
-    haze_row_weight: float = 0.30
-    haze_clamp: float = 0.85
-    blank_mean: float = 0.10
-    core_mean: float = 0.92
-    semi_core_mean: float = 0.80
-    flat_gx: float = 0.15
-    flat_gy_max: float = 0.10
-    flat_mean_lo: float = 0.25
-    flat_mean_hi: float = 0.70
-    edge_mean_hi: float = 0.65
-    edge_gx: float = 0.15
-    edge_gy: float = 0.10
+    shear_floor: float = field(default=0.03 / _DEFAULT_DT, metadata={"step": 0.015, "lo": 0.0, "hi": 3.0})
+    shear_base: float = field(default=0.7 / _DEFAULT_DT, metadata={"step": 0.35, "lo": 0.0, "hi": 70.0})
+    shear_span: float = field(default=0.3 / _DEFAULT_DT, metadata={"step": 0.15, "lo": 0.0, "hi": 30.0})
+    tone_exp: float = field(default=0.45, metadata={"step": 0.0225, "lo": 0.0, "hi": 4.5})
+    haze_depth_weight: float = field(default=0.55, metadata={"step": 0.0275, "lo": 0.0, "hi": 5.5})
+    haze_row_weight: float = field(default=0.30, metadata={"step": 0.015, "lo": 0.0, "hi": 3.0})
+    haze_clamp: float = field(default=0.85, metadata={"step": 0.0425, "lo": 0.0, "hi": 8.5})
+    blank_mean: float = field(default=0.10, metadata={"step": 0.005, "lo": 0.0, "hi": 1.0})
+    core_mean: float = field(default=0.92, metadata={"step": 0.046, "lo": 0.0, "hi": 9.2})
+    semi_core_mean: float = field(default=0.80, metadata={"step": 0.04, "lo": 0.0, "hi": 8.0})
+    flat_gx: float = field(default=0.15, metadata={"step": 0.0075, "lo": 0.0, "hi": 1.5})
+    flat_gy_max: float = field(default=0.10, metadata={"step": 0.005, "lo": 0.0, "hi": 1.0})
+    flat_mean_lo: float = field(default=0.25, metadata={"step": 0.0125, "lo": 0.0, "hi": 2.5})
+    flat_mean_hi: float = field(default=0.70, metadata={"step": 0.035, "lo": 0.0, "hi": 7.0})
+    edge_mean_hi: float = field(default=0.65, metadata={"step": 0.0325, "lo": 0.0, "hi": 6.5})
+    edge_gx: float = field(default=0.15, metadata={"step": 0.0075, "lo": 0.0, "hi": 1.5})
+    edge_gy: float = field(default=0.10, metadata={"step": 0.005, "lo": 0.0, "hi": 1.0})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkyConfig":
@@ -295,6 +306,37 @@ class SkyConfig:
             lines.append(f"{key} = {v!r}  # {_SHARED_COMMENTS[key]}")
         p.write_text("\n".join(lines) + "\n")
         return p
+
+
+@dataclass(frozen=True)
+class TuneField:
+    """One row of `tuning_fields()`: a key's group, name, comment, and its
+    nudge `step`/`lo`/`hi` (all `None` for a key with no numeric metadata)."""
+
+    group: str
+    name: str
+    comment: str
+    step: float | int | None
+    lo: float | int | None
+    hi: float | int | None
+
+
+def tuning_fields() -> list[TuneField]:
+    """Every tunable key, far/mid/near then shared, declaration order — the
+    `T` overlay in tui.py lists against this, never against the private
+    comment dicts directly."""
+    rows: list[TuneField] = []
+    for gname in ("far", "mid", "near"):
+        for f in fields(GridConfig):
+            rows.append(TuneField(
+                gname, f.name, _GRID_COMMENTS[f.name],
+                f.metadata.get("step"), f.metadata.get("lo"), f.metadata.get("hi"),
+            ))
+    shared_fields = {f.name: f for f in fields(SkyConfig)}
+    for name, comment in _SHARED_COMMENTS.items():
+        f = shared_fields[name]
+        rows.append(TuneField("shared", name, comment, f.metadata.get("step"), f.metadata.get("lo"), f.metadata.get("hi")))
+    return rows
 
 
 def _set_typed(obj, key: str, value, label: str) -> None:
