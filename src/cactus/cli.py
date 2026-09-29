@@ -1229,8 +1229,12 @@ def cmd_sky(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             print(f"{label}: {mean_ms:.3f} ms")
         return EXIT_OK
     if args.dump:
+        target = config_path()
+        if target.exists() and not args.force:
+            print(f"cactus: {target} exists; pass --force to overwrite it", file=sys.stderr)
+            return EXIT_ERROR
         path = SkyConfig().dump()
-        print(str(path))
+        print(f"wrote defaults (all commented) to {path}")
         return EXIT_OK
     print(str(config_path()))
     return EXIT_OK
@@ -1500,7 +1504,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sk = verb("sky", help="inspect or write the field's sky tuning config")
     sk.add_argument("--dump", action="store_true",
-                    help="write the default sky tuning constants to the config path")
+                    help="write the default sky tuning constants to the config path (refuses an existing file)")
+    sk.add_argument("--force", action="store_true",
+                    help="with --dump, overwrite an existing config file")
     sk.add_argument("--bench", action="store_true",
                     help="run a 50-frame perf probe (100x20, 3 seeds) and print the frame-time breakdown")
     sk.set_defaults(fn=cmd_sky)

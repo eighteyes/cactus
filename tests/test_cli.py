@@ -288,3 +288,14 @@ def test_plan_done_and_undone_same_step_refused_and_reset_needs_step(cli):
     r_reset = cli("plan", "q1", "--reset-steps")
     assert r_reset.returncode == 1
     assert "--reset-steps needs at least one --step" in r_reset.stderr
+
+
+def test_sky_dump_refuses_an_existing_file_without_force(cli, scratch_env):
+    first = cli("sky", "--dump")
+    assert first.returncode == 0
+    assert "wrote defaults" in first.stdout
+    second = cli("sky", "--dump")
+    assert second.returncode == 1
+    assert "exists" in second.stderr and "--force" in second.stderr
+    forced = cli("sky", "--dump", "--force")
+    assert forced.returncode == 0

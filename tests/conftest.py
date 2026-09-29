@@ -44,6 +44,7 @@ def scratch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, st
         "CACTUS_PAGER": "true {path}",
         "CACTUS_EDITOR": "true {path}",
         "CACTUS_RECORDS": "0",
+        "CACTUS_SKY": str(tmp_path / "sky.toml"),
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)

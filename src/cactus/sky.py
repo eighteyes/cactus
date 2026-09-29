@@ -350,26 +350,41 @@ class SkyConfig:
         return shared
 
     def dump(self, path: str | Path | None = None) -> Path:
-        """Write the current values to `path` (or `config_path()`), one
-        commented line per key, and return the path written."""
+        """Write only the keys that differ from `SkyConfig()`'s defaults to
+        `path` (or `config_path()`), as live lines; every other key still
+        appears, commented out, so the file documents every lever without
+        pinning it. Sparse on purpose: a file dumped under one set of
+        defaults must not freeze them past a later default change. Returns
+        the path written."""
         p = Path(path) if path is not None else config_path()
         p.parent.mkdir(parents=True, exist_ok=True)
+        default = SkyConfig()
         lines: list[str] = [
             "# every rate below is per second (v6b); a v6 file's numbers still load,",
             "# but now mean 10x less per frame at the default 0.1s sampling",
+            "# a commented line shows the current default; uncomment and edit to pin it",
             "",
         ]
         for gname in ("far", "mid", "near"):
             lines.append(f"[{gname}]")
             gcfg = getattr(self, gname)
+            default_gcfg = getattr(default, gname)
             for f in fields(gcfg):
                 v = getattr(gcfg, f.name)
-                lines.append(f"{f.name} = {v!r}  # {_GRID_COMMENTS[f.name]}")
+                dv = getattr(default_gcfg, f.name)
+                if v == dv:
+                    lines.append(f"# {f.name} = {dv!r}  # {_GRID_COMMENTS[f.name]}")
+                else:
+                    lines.append(f"{f.name} = {v!r}  # {_GRID_COMMENTS[f.name]}")
             lines.append("")
         lines.append("[shared]")
         for key in _SHARED_COMMENTS:
             v = getattr(self, key)
-            lines.append(f"{key} = {v!r}  # {_SHARED_COMMENTS[key]}")
+            dv = getattr(default, key)
+            if v == dv:
+                lines.append(f"# {key} = {dv!r}  # {_SHARED_COMMENTS[key]}")
+            else:
+                lines.append(f"{key} = {v!r}  # {_SHARED_COMMENTS[key]}")
         p.write_text("\n".join(lines) + "\n")
         return p
 

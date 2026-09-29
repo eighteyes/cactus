@@ -16,6 +16,9 @@ Responsibilities:
   stays inside the 40 ms frame budget at 100x20.
 - `SkyConfig.load`/`overlay`/`dump` round-trip through TOML, overlay only the
   keys a file supplies, and raise `ValueError` naming the offending key.
+  `dump` is sparse: only a key that differs from `SkyConfig()`'s default
+  writes a live line, every other key writes commented, so a dump made under
+  one set of defaults does not pin them past a later default change.
 - `pile_style` (v6d) is a string lever, not a number: it defaults to
   "blocks", overlays and round-trips through TOML like any other shared key,
   rejects an off-menu value, and `tuning_fields()` exposes its `choices`
@@ -331,6 +334,35 @@ def test_dump_then_load_round_trips(tmp_path) -> None:
 
 def test_load_missing_file_is_defaults(tmp_path) -> None:
     assert SkyConfig.load(tmp_path / "does-not-exist.toml") == SkyConfig()
+
+
+def test_dump_of_defaults_has_no_live_lines(tmp_path) -> None:
+    """A file dumped under the current defaults must not pin them: every
+    key line is commented, so a later default change (e.g. sky_engine) is
+    still picked up on load."""
+    path = tmp_path / "sky.toml"
+    SkyConfig().dump(path)
+    text = path.read_text()
+    live_lines = [
+        line for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and not line.startswith("[")
+    ]
+    assert live_lines == []
+    assert SkyConfig.load(path) == SkyConfig()
+
+
+def test_dump_of_one_changed_key_writes_exactly_that_live_line(tmp_path) -> None:
+    path = tmp_path / "sky.toml"
+    changed = SkyConfig().overlay({"shared": {"sky_engine": "fluid"}})
+    changed.dump(path)
+    text = path.read_text()
+    live_lines = [
+        line for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and not line.startswith("[")
+    ]
+    assert live_lines == ["sky_engine = 'fluid'  # which sky renderer runs: "
+                           "'fluid' (cellular automaton) or 'texture' (cheaper baked noise)"]
+    assert SkyConfig.load(path) == changed
 
 
 # ---- pile_style: a string-valued lever, not a numeric one (v6d) ----------
