@@ -33,7 +33,9 @@ Responsibilities:
 - Charge (hidden rule): a clump gains charge and a member once per cloud
   entry, not per frame spent inside one; gains charge once per bird it
   touches; an exploded seed (`bounty=False`) never collects; landing with
-  charge explodes that many bounty-free clumps that arc up and land nearby.
+  charge bursts that many bounty-free clumps only if a bird was touched,
+  sideways and down (never up), landing beside the pile; every frame inside
+  a cloud, each member calls `sky.scatter` once, and never outside one.
 - Ground lines (v7): the two outermost lines' columns converge toward centre
   as the row rises toward the horizon; `ground_lines == 0` disables them.
 - Perf (v6f): a world with 3 seeds falling at 100x20 renders under the 4 ms
@@ -58,6 +60,7 @@ from rich.text import Text
 from cactus.field import (
     GROUND_ROWS,
     LANDING_SECONDS,
+    SUB_X,
     TICK_SECONDS,
     WIND_THETA,
     QUADRANT,
@@ -396,10 +399,29 @@ def test_exploded_seed_never_collects_charge() -> None:
     assert len(clump.members) == 1
 
 
-def test_landing_with_charge_explodes_into_bounty_free_clumps() -> None:
-    world = World(cols=10, rows=8, rng=random.Random(4))
-    clump = Clump(x=9.0, y=0.4, vx=0.0, vy=-1.0, charge=3)
+def _charge_through_two_clouds(world: World, *, bird: bool) -> Clump:
+    """A clump that enters two separate clouds (charge 2, three members),
+    touching one bird inside the second when `bird`, then parked just above
+    the floor, falling."""
+    world._sky_cells = make_sky_cells(world, [(2, 4), (6, 4)])
+    clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0)  # row_from_bottom 7: cloud
     world.seeds = [clump]
+    world._collect_charge()
+    clump.y = 12.0  # clear
+    world._collect_charge()
+    clump.y = 6.0  # row_from_bottom 3: cloud again
+    if bird:
+        world.birds = [Bird(x=9.0, y=6.0, vx=0.0)]
+    world._collect_charge()
+    world.birds = []
+    clump.y, clump.vy = 0.4, -1.0
+    return clump
+
+
+def test_landing_with_charge_and_a_bird_explodes_into_bounty_free_clumps() -> None:
+    world = World(cols=10, rows=10, rng=random.Random(4))
+    clump = _charge_through_two_clouds(world, bird=True)
+    assert clump.charge == 3 and len(clump.birds_hit) == 1
     prior_drops = world.drops
 
     world._advance_seeds(TICK_SECONDS)
@@ -407,9 +429,8 @@ def test_landing_with_charge_explodes_into_bounty_free_clumps() -> None:
     exploded = [c for c in world.seeds if not c.bounty]
     assert len(exploded) == 3
     assert all(c.charge == 0 for c in exploded)
-    assert any(c.vx > 0 for c in exploded)
-    assert any(c.vx < 0 for c in exploded)
-    assert all(c.vy > 0 for c in exploded)
+    assert all(c.vy <= 0 for c in exploded)
+    assert all(abs(c.vx) > 0 for c in exploded)
     assert world.drops == prior_drops
 
     for _ in range(20_000):
@@ -418,6 +439,68 @@ def test_landing_with_charge_explodes_into_bounty_free_clumps() -> None:
         world._advance_seeds(TICK_SECONDS)
     assert not world.seeds
     assert len(world.structure) > 1
+
+
+def test_cloud_charge_without_a_bird_never_bursts() -> None:
+    world = World(cols=10, rows=10, rng=random.Random(4))
+    clump = _charge_through_two_clouds(world, bird=False)
+    assert clump.charge == 2 and not clump.birds_hit
+
+    world._advance_seeds(TICK_SECONDS)
+
+    assert not world.seeds, "two clouds and no bird: nothing bursts"
+    assert len(world.structure) >= 1
+
+
+def test_burst_skids_sideways_and_down_and_lands_beside_the_pile() -> None:
+    world = World(cols=80, rows=10, rng=random.Random(9))
+    land_x = 80.0
+    world.seeds = [Clump(x=land_x, y=0.4, vx=0.0, vy=-1.0, charge=4, birds_hit={1})]
+
+    world._advance_seeds(TICK_SECONDS)
+
+    burst = list(world.seeds)
+    assert len(burst) == 4
+    for c in burst:
+        assert c.vy <= 0, "a burst never kicks upward"
+        assert abs(c.vx) > 0, "a burst always moves sideways"
+        assert c.y > 0.4, "spawned above the pile top"
+
+    landed_before = set(world.structure)
+    for _ in range(20_000):
+        if not world.seeds:
+            break
+        world._advance_seeds(TICK_SECONDS)
+    assert not world.seeds
+    new_cells = set(world.structure) - landed_before
+    assert new_cells
+    for cx, _ in new_cells:
+        dx = abs(cx - land_x)
+        dx = min(dx, world.width - dx)
+        assert dx // SUB_X <= 15, f"burst landed {dx} sub-cells away"
+
+
+def test_clump_scatters_the_sky_every_frame_inside_a_cloud_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World(cols=10, rows=10, rng=random.Random(6))
+    world._sky_cells = make_sky_cells(world, [(2, 4)])
+    calls: list[tuple[float, float]] = []
+    monkeypatch.setattr(world.sky, "scatter", lambda px, py, *a, **k: calls.append((px, py)))
+    clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0)  # col 4, row_from_bottom 7 -> screen row 2
+    world.seeds = [clump]
+
+    world._collect_charge()
+    assert len(calls) == len(clump.members) == 2
+    assert (4 * PX_X + 1, 2 * PX_Y + PX_Y // 2) in calls
+
+    for frame in range(2, 5):
+        world._collect_charge()
+        assert len(calls) == 2 * frame, "once per member, every frame inside"
+
+    clump.y = 12.0  # row_from_bottom 6: clear sky
+    before = len(calls)
+    for _ in range(3):
+        world._collect_charge()
+    assert len(calls) == before, "no scatter outside a cloud"
 
 
 def test_flock_spawns_with_a_plausible_bird_count() -> None:

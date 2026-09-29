@@ -249,3 +249,38 @@ def test_bands_style_lays_full_width_lanes_flowing_opposite_ways() -> None:
     assert sum(len(v) for v in sky.puffs.values()) == 14
     cells = sky.render_cells()
     assert sum(1 for r in cells for g, _ in r if g != " ") > 200
+
+
+# ---- scatter (a falling seed pushes the cloud aside) -----------------------
+
+
+def test_scatter_pushes_a_covering_puff_away_and_ages_it() -> None:
+    sky = _puffs(cloud_life=100.0)
+    puff = sky.puffs["mid"][0]
+    puff.x, puff.vx, puff.age = 10.0, 0.0, 50.0  # mid-life, well past rise
+    px = puff.x + puff.w * 0.25  # left of centre: the cloud goes right
+    py = puff.y0 + puff.h // 2
+
+    sky.scatter(px, py, radius=6.0, strength=0.6)
+
+    assert puff.vx == pytest.approx(0.6 * 4.0)
+    from cactus.sky import _SCATTER_AGE
+
+    assert puff.age == pytest.approx(50.0 + _SCATTER_AGE * 100.0)
+    x0 = puff.x
+    sky.advance(1.0)
+    assert puff.x > x0, "pushed away from the seed"
+
+
+def test_scatter_on_a_bands_lane_only_ages_it() -> None:
+    from cactus.sky import _SCATTER_AGE
+
+    sky = _puffs("bands", cols=60, rows=20)
+    lane = next(p for band in GRID_ORDER for p in sky.puffs[band])
+    lane.age = lane.p["rise"] * lane.life + 1.0
+    age0, vx0, x0 = lane.age, lane.vx, lane.x
+
+    sky.scatter(5.0, lane.y0, radius=6.0, strength=0.6)
+
+    assert lane.vx == vx0 and lane.x == x0
+    assert lane.age == pytest.approx(min(age0 + _SCATTER_AGE * lane.life, lane.life))

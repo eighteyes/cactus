@@ -520,8 +520,15 @@ scope.
 - A falling clump has hidden `charge` (no UI text): +1 and +1 member on each
   clear-sky-to-cloud entry (`in_cloud`'s False->True edge, not per frame
   spent inside one), +1 per distinct bird it shares a terminal cell with.
-  Landing explodes `charge` single-member clumps off the landing point;
-  those are `bounty=False` so they can never collect and cascade. Cloud
+  Landing bursts `charge` single-member clumps only if the clump touched at
+  least one bird (`birds_hit`; cloud charge alone never bursts), spawned
+  just above the pile top and sent sideways with a small downward `vy`
+  (`EXPLODE_VY`), never up, so they skid off and land beside it; those are
+  `bounty=False` so they can never collect and cascade. Every frame a clump
+  is inside a cloud, each member calls `sky.scatter(px, py, ...)` once at
+  its sky-pixel position: fluid pushes density outward (mass-conserving),
+  puffs push covering clouds away and age them (a `bands` lane only ages),
+  texture is a no-op. Cloud
   presence is read off `World._sky_cells`, the glyph grid `render()` cached
   last frame — never a live query against the sky engine.
 - `perspective` (v8) is a `SkyConfig` choices lever for the fluid engine

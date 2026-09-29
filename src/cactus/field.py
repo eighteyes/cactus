@@ -47,10 +47,14 @@ Responsibilities:
 - Charge (hidden rule, no UI text): a falling clump gains +1 charge and +1
   member on each clear-sky-to-cloud entry (once per entry, not per frame
   spent inside one) and +1 charge per distinct bird it shares a terminal
-  cell with; landing explodes `charge` single-member clumps off the landing
-  point (`bounty=False`, so they can never re-collect and cascade). Cloud
-  sampling reads the cached glyph grid from the last `render()`
-  (`World.cloud_at`/`self._sky_cells`), never the sky engine directly.
+  cell with; landing bursts `charge` single-member clumps only if the clump
+  touched at least one bird (`birds_hit`), spawned just above the pile top
+  and sent sideways with a small downward `vy`, never up (`bounty=False`,
+  so they can never re-collect and cascade). Every frame a clump is inside
+  a cloud, each member calls `sky.scatter` once at its sky-pixel position,
+  pushing the cloud aside. Cloud sampling reads the cached glyph grid from
+  the last `render()` (`World.cloud_at`/`self._sky_cells`), never the sky
+  engine directly.
 - Perf (v6f): `_seed_splat_canvas`/`_pile_splat_canvas` also return the set of
   terminal cells they actually touched, so `_sample_cell` only ever asks the
   (otherwise empty) splat canvas about a cell in that set — a frame with no
@@ -159,11 +163,15 @@ PILE_SPLAT_RADIUS_PX = 3
 
 # Charge (hidden rule): a clump gains +1 charge (and +1 member, cloud mass)
 # on each clear-sky-to-cloud entry, and +1 charge per distinct bird it shares
-# a terminal cell with while falling. Landing explodes `charge` single-member
-# clumps off the landing point; `bounty=False` on those keeps the cascade
-# from ever restarting.
-EXPLODE_VX_RANGE = (1.5, 4.0)  # sub-cells/s magnitude, random sign
-EXPLODE_VY_FRACTION = 1.0 / 3.0  # of sky height per second, upward kick
+# a terminal cell with while falling. Landing bursts `charge` single-member
+# clumps sideways off the pile top, but only if the clump touched a bird;
+# `bounty=False` on those keeps the cascade from ever restarting. Every frame
+# a clump spends inside a cloud, each member scatters the sky around it.
+EXPLODE_VX_RANGE = (2.0, 5.0)  # sub-cells/s magnitude, random sign
+EXPLODE_VY = 0.5  # sub-cells/s, downward (applied as -EXPLODE_VY: seeds fall toward y=0)
+EXPLODE_LIFT = 2.0  # sub-cells above the landing clump's top member, so a burst clears the pile
+SCATTER_RADIUS = 6.0  # sky pixels a falling member pushes cloud density out by
+SCATTER_STRENGTH = 0.6  # share of density within that radius it pushes, per frame
 CLOUD_MASS_OFFSETS = ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))
 
 
@@ -224,7 +232,8 @@ class Clump:
     # touched; `in_cloud` tracks the clear-to-cloud edge so a long pass through
     # one cloud counts once; `bounty=False` on an exploded seed (see
     # `World._explode`) means it never collects, so an explosion can't
-    # cascade; `birds_hit` is the set of `id(bird)` already credited.
+    # cascade; `birds_hit` is the set of `id(bird)` already credited, and a
+    # landing bursts only when it is non-empty.
     charge: int = 0
     in_cloud: bool = False
     bounty: bool = True
@@ -500,6 +509,8 @@ class World:
                 clump.charge += 1
                 self._grow_clump(clump, entered)
             clump.in_cloud = entered is not None
+            if clump.in_cloud:
+                self._scatter_sky(clump)
 
             for bird in self.birds:
                 bid = id(bird)
@@ -512,22 +523,38 @@ class World:
                         clump.birds_hit.add(bid)
                         break
 
+    def _scatter_sky(self, clump: Clump) -> None:
+        """Every frame a clump is inside a cloud: each member pushes the sky
+        aside once, at its own position in the sky's top-down pixel space
+        (`PX_X` by `PX_Y` per terminal cell, centred in the cell). A member
+        below the sky band (in the ground rows) is skipped."""
+        sky_rows = self.rows - GROUND_ROWS
+        for m in clump.members:
+            col, row_from_bottom = self._member_cell(clump, m)
+            r = self.rows - 1 - row_from_bottom  # screen row, top-down, same as `cloud_at`
+            if r < 0 or r >= sky_rows:
+                continue
+            px = col * PX_X + 1
+            py = r * PX_Y + PX_Y // 2
+            self.sky.scatter(px, py, SCATTER_RADIUS, SCATTER_STRENGTH)
+
     def _explode(self, clump: Clump) -> list[Clump]:
-        """Landing: `clump.charge` single-member clumps launched from the
-        landing point, spread horizontally at random signs and magnitudes,
-        an upward kick (positive `vy` — seeds fall toward y=0) of about a
-        third of the sky height per second so they arc up and out before
-        falling and landing nearby under the ordinary gravity/terminal-
-        velocity code. `bounty=False`: an exploded seed never collects
-        charge, so an explosion cannot cascade."""
-        sky_height = max((self.rows - GROUND_ROWS) * SUB_Y, 0)
-        vy = sky_height * EXPLODE_VY_FRACTION
+        """Landing: `clump.charge` single-member clumps spawned at the
+        landing clump's centre column, `EXPLODE_LIFT` above its top member
+        so they clear the pile, and sent sideways — random sign, magnitude
+        from `EXPLODE_VX_RANGE` — with `vy` a small downward `-EXPLODE_VY`
+        (seeds fall toward y=0), never up. Gravity and drag skid them off
+        the pile to land beside it under the ordinary fall code.
+        `bounty=False`: an exploded seed never collects charge, so an
+        explosion cannot cascade."""
+        top = max(clump.y + m.dy for m in clump.members)
+        y = top + EXPLODE_LIFT
         seeds = []
         for _ in range(clump.charge):
             vx = self.rng.uniform(*EXPLODE_VX_RANGE) * self.rng.choice((-1.0, 1.0))
             angle = self.rng.uniform(0.0, 2 * math.pi)
             spin = self.rng.uniform(*SEED_SPIN_RANGE) * self.rng.choice((-1.0, 1.0))
-            seeds.append(Clump(x=clump.x, y=clump.y, vx=vx, vy=vy, angle=angle, spin=spin, bounty=False))
+            seeds.append(Clump(x=clump.x, y=y, vx=vx, vy=-EXPLODE_VY, angle=angle, spin=spin, bounty=False))
         return seeds
 
     def _maybe_nudge(self, clump: Clump) -> None:
@@ -607,8 +634,9 @@ class World:
         """Land the whole clump when any member's cell floors or sits beside
         the structure, then add every member's own cell to the structure
         (an already-taken cell just re-stamps its age). A landing with
-        charge appends `charge` exploded clumps (see `_explode`) to
-        `exploded`."""
+        charge that touched at least one bird (`birds_hit`) appends `charge`
+        exploded clumps (see `_explode`) to `exploded`; cloud charge alone
+        never bursts."""
         lands = False
         for m in clump.members:
             cx, cy = int(clump.x + m.dx), int(clump.y + m.dy)
@@ -626,7 +654,7 @@ class World:
             cell = (cx, 0) if cy <= 0 else (cx, cy)
             self.structure[cell] = self.drops
         self.landed_since_save += 1
-        if clump.bounty and clump.charge:
+        if clump.bounty and clump.charge and clump.birds_hit:
             exploded.extend(self._explode(clump))
         return True
 

@@ -112,9 +112,12 @@ Same setup and env as above.
     dither. Seeds sway gently, not in a gale, while the clouds creep.
 12. Charge. Under `2` (busy-drift), answer a row whose key sits under a
     cloud. Expect: the falling fleck fattens by one cell as it enters the
-    cloud; on landing one extra fleck bursts off sideways and up, then
-    lands nearby. A fleck that crosses two clouds and a bird bursts three.
-    Exploded flecks never burst again.
+    cloud and pushes the cloud aside while it passes through (fluid thins
+    and spreads, a puff drifts away and fades; texture does not react).
+    A fleck that touched only clouds, no bird, lands without bursting.
+    A fleck that crosses two clouds and a bird bursts three on landing:
+    they pop out just above the pile and skid sideways off it, never
+    upward, landing beside the pile. Exploded flecks never burst again.
 
 ## Fail
 

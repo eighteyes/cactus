@@ -583,3 +583,49 @@ def test_both_engines_stay_inside_the_frame_time_budget_at_100x20(engine: str) -
     elapsed = (time.perf_counter() - start) / 20
     assert elapsed < 0.040, f"{engine}: {elapsed * 1000:.1f} ms/frame, over the 40 ms budget"
 
+
+# ---- scatter (a falling seed pushes the cloud aside) -----------------------
+
+
+def test_fluid_scatter_pushes_density_outward_and_conserves_it() -> None:
+    sky = Sky(20, 10, random.Random(3), MONO_PLUS, SkyConfig(sky_engine="fluid"))
+    for g in sky.grids.values():
+        for row in g.d:
+            row[:] = [0.0] * len(row)
+    grid = sky.grids["mid"]
+    px, py = 20, 20  # top-down screen pixel; halfway up -> grid row 20
+    gx, gy = 20, int((1.0 - py / (10 * 4)) * grid.height)
+    for y in range(gy - 1, gy + 2):
+        for x in range(gx - 1, gx + 2):
+            grid.d[y][x] = 0.3
+    for g in sky.grids.values():
+        g._active_dirty = True
+        g.active  # settle the cache so scatter's incremental path runs
+    total_before = sum(map(sum, grid.d))
+
+    sky.scatter(px, py, radius=6.0, strength=0.6)
+
+    assert grid.d[gy][gx] < 0.3, "the point itself loses density"
+    ring = sum(
+        grid.d[y][x]
+        for y in range(grid.height)
+        for x in range(grid.width)
+        if 5.0 <= ((x - gx) ** 2 + (y - gy) ** 2) ** 0.5 <= 8.0
+    )
+    assert ring > 0.0, "density lands about `radius` away"
+    assert sum(map(sum, grid.d)) == pytest.approx(total_before, abs=1e-9)
+    active = grid.active
+    for y in range(grid.height):
+        if any(v > 0.0 for v in grid.d[y]):
+            assert active[y], f"row {y} carries density but is not active"
+
+
+def test_texture_scatter_is_a_harmless_no_op() -> None:
+    from cactus.sky import TextureSky, make_sky
+
+    sky = make_sky(20, 10, random.Random(4), MONO_PLUS, SkyConfig(sky_engine="texture"))
+    assert isinstance(sky, TextureSky)
+    before = sky.render_cells()
+    sky.scatter(20, 20)
+    assert sky.render_cells() == before
+

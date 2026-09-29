@@ -81,6 +81,13 @@ Responsibilities:
   recedes the same way and is replaced. `cloud_style` picks a `_PUFF_STYLES`
   table (`drift`, `bloom`, `streaks`), `cloud_count` scales the population.
   `camera_x` stays 0: the sky changes more than it travels.
+- Scatter: every engine takes `scatter(px, py, radius, strength)`, called by
+  `field.py` once per falling member per frame while its clump is inside a
+  cloud. `Sky` pushes each grid's density outward from the point
+  (`Air.scatter`, mass-conserving, `py` mapped to each grid by fraction of
+  height); `PuffSky` pushes every covering cloud away from the point and
+  ages it past its rise so it thins (a `bands` lane only ages); `TextureSky`
+  is a no-op — baked layers cannot scatter.
 """
 
 from __future__ import annotations
@@ -810,6 +817,57 @@ class Air:
             row = d[y]
             row[:] = [0.0 if v < floor else 1.0 if v > 1.0 else v for v in row]
 
+    # ---- scatter ----------------------------------------------------------
+
+    def scatter(self, cx: float, cy: float, radius: float, strength: float) -> None:
+        """Push density outward from pixel `(cx, cy)` (`cy` bottom-up, like
+        `d`): every pixel within `radius` gives `strength * (1 - dist /
+        radius)` of its density to the pixel `radius` further out along the
+        same direction, wrapping in x. The centre pixel itself pushes
+        sideways, random sign. Only what fits under 1.0 at the receiver
+        moves, and a receiver above or below the grid moves nothing, so mass
+        is conserved. Receiving rows are marked in `_nonzero` like
+        `_nucleate` does, and the active-row cache is refreshed unless it is
+        already due a full rescan (`_active_dirty`)."""
+        if radius <= 0.0 or strength <= 0.0:
+            return
+        w, h, d = self.width, self.height, self.d
+        x0, y0 = int(cx), int(cy)
+        reach = int(math.ceil(radius))
+        moves: list[tuple[int, int, int, int, float]] = []
+        for yy in range(max(0, y0 - reach), min(h, y0 + reach + 1)):
+            row = d[yy]
+            dy = yy - y0
+            for xx in range(x0 - reach, x0 + reach + 1):
+                dx = xx - x0
+                dist = math.hypot(dx, dy)
+                if dist >= radius:
+                    continue
+                xw = xx % w
+                amount = row[xw] * strength * (1.0 - dist / radius)
+                if amount <= 0.0:
+                    continue
+                if dist == 0.0:
+                    ux, uy = self.rng.choice((-1.0, 1.0)), 0.0
+                else:
+                    ux, uy = dx / dist, dy / dist
+                tx = int(round(xx + ux * radius)) % w
+                ty = int(round(yy + uy * radius))
+                if ty < 0 or ty >= h:
+                    continue
+                moves.append((xw, yy, tx, ty, amount))
+        received = False
+        for xw, yy, tx, ty, amount in moves:
+            take = min(amount, d[yy][xw], 1.0 - d[ty][tx])
+            if take <= 0.0:
+                continue
+            d[yy][xw] -= take
+            d[ty][tx] += take
+            self._nonzero[ty] = True  # the receiver now carries density
+            received = True
+        if received and not self._active_dirty:
+            self._active_cache = self._dilate(self._nonzero)
+
     # ---- resize -----------------------------------------------------------
 
     def resize(self, width_px: int, height_px: int) -> None:
@@ -1259,6 +1317,17 @@ class Sky:
         """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
         self.advance(_DEFAULT_DT, wind)
 
+    def scatter(self, px: float, py: float, radius: float = 6.0, strength: float = 0.6) -> None:
+        """A falling seed at screen pixel `(px, py)` (top-down) pushes every
+        grid's density outward (`Air.scatter`). A grid's rows are bottom-up
+        and, under perspective, read as distance, so `py` maps to each grid
+        by fraction of height from the bottom."""
+        height_px = max(self.sky_rows * PX_Y, 1)
+        f = 1.0 - py / height_px
+        for grid in self.grids.values():
+            gy = max(0, min(grid.height - 1, int(f * grid.height)))
+            grid.scatter(px, gy, radius, strength)
+
     def render_cells(self) -> list[list[tuple[str, str | None]]]:
         if self.cols <= 0 or self.sky_rows <= 0:
             return []
@@ -1523,6 +1592,10 @@ class TextureSky:
         """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
         self.advance(_DEFAULT_DT, wind)
 
+    def scatter(self, px: float, py: float, radius: float = 6.0, strength: float = 0.6) -> None:
+        """No-op: the layers are baked noise, so there is no density a
+        passing seed could push aside. Kept for interface parity."""
+
     def render_cells(self) -> list[list[tuple[str, str | None]]]:
         if self.cols <= 0 or self.sky_rows <= 0:
             return []
@@ -1685,6 +1758,11 @@ class _Puff:
         return 0.5 - 0.5 * math.cos(2.0 * math.pi * self.age / self.p["morph"])
 
 
+# Share of a puff's life one scatter touch spends once it is past its rise
+# (v8). At 5 fps a two-member seed inside for two seconds is ~20 touches.
+_SCATTER_AGE = 0.01
+
+
 class PuffSky:
     """Individual clouds, no whole-sky scroll (v8, `sky_engine == "puffs"`).
     Same four-method interface as `Sky` and `TextureSky`, read through the
@@ -1797,6 +1875,29 @@ class PuffSky:
     def tick(self, wind: float = 0.0) -> None:
         """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
         self.advance(_DEFAULT_DT, wind)
+
+    def scatter(self, px: float, py: float, radius: float = 6.0, strength: float = 0.6) -> None:
+        """A falling seed at pixel `(px, py)` (top-down) pushes every cloud
+        whose patch covers that pixel: `vx += strength * 4.0` away from `px`
+        relative to the cloud's centre, and — once past its `rise` — `age`
+        advanced by `_SCATTER_AGE * life` (never past `life`) so it thins
+        a little per touch — a seed falls through in a couple of seconds
+        and should dent a cloud, not delete it. A `bands`
+        lane spans the whole width, so it has no centre to push from and
+        only ages. `radius` is accepted for interface parity; coverage is
+        the patch itself."""
+        W = self.width_px
+        for puffs in self.puffs.values():
+            for puff in puffs:
+                if not (puff.y0 <= py < puff.y0 + puff.h):
+                    continue
+                if puff.lane is None:
+                    if (px - puff.x) % W >= puff.w:
+                        continue
+                    rel = (puff.x + puff.w / 2.0 - px + W / 2.0) % W - W / 2.0
+                    puff.vx += (1.0 if rel >= 0.0 else -1.0) * strength * 4.0
+                if puff.age >= puff.p["rise"] * puff.life:
+                    puff.age = min(puff.age + _SCATTER_AGE * puff.life, puff.life)
 
     # ---- draw -------------------------------------------------------
 
