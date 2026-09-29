@@ -242,13 +242,14 @@ class World:
     seeds: list[Clump] = field(default_factory=list)
     birds: list[Bird] = field(default_factory=list)  # flat render/nudge surface; see `_flocks`
     _flocks: list[Flock] = field(default_factory=list, init=False)
+    sky_config: SkyConfig | None = None
     sky: Sky | TextureSky = field(init=False)
     terminal_vy: float = field(init=False)
 
     def __post_init__(self) -> None:
         self.width = self.cols * SUB_X
         self.height = self.rows * SUB_Y
-        self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette)
+        self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette, self.sky_config)
         self._set_terminal_vy()
 
     def _set_terminal_vy(self) -> None:

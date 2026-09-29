@@ -63,7 +63,7 @@ from cactus.field import (
     Clump,
     World,
 )
-from cactus.sky import PX_X, PX_Y
+from cactus.sky import SkyConfig, PX_X, PX_Y
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -111,7 +111,7 @@ def test_wind_stays_within_bounds() -> None:
 
 
 def test_sky_air_density_stays_within_bounds() -> None:
-    world = World(cols=10, rows=8, rng=random.Random(7))
+    world = World(cols=10, rows=8, rng=random.Random(7), sky_config=SkyConfig(sky_engine="fluid"))
     for _ in range(5_000):
         world.tick()
         for grid in world.sky.grids.values():
@@ -163,7 +163,7 @@ def test_resize_keeps_the_structure() -> None:
 
 
 def test_resize_rebakes_the_sky_to_the_new_column_count() -> None:
-    world = World(cols=5, rows=8, rng=random.Random(15))
+    world = World(cols=5, rows=8, rng=random.Random(15), sky_config=SkyConfig(sky_engine="fluid"))
     world.resize(20, 8)
     assert world.sky.cols == 20
     assert world.sky.grids["near"].width == 40
@@ -512,7 +512,7 @@ def test_render_matches_fixture_before_the_v6f_perf_pass() -> None:
     with open(FIXTURES / "field_render_v6f.json") as fh:
         expected = json.load(fh)
 
-    world = World(cols=40, rows=16, rng=random.Random(42))
+    world = World(cols=40, rows=16, rng=random.Random(42), sky_config=SkyConfig(sky_engine="fluid"))
     drop_cols = {5: 10, 6: 20, 7: 30}
     actual = []
     for i in range(60):
@@ -527,7 +527,7 @@ def test_render_matches_fixture_before_the_v6f_perf_pass() -> None:
 def test_apply_sky_config_swaps_engine_class_on_sky_engine_change() -> None:
     from cactus.sky import SkyConfig, TextureSky
 
-    world = World(cols=10, rows=8, rng=random.Random(87))
+    world = World(cols=10, rows=8, rng=random.Random(87), sky_config=SkyConfig(sky_engine="fluid"))
     assert not isinstance(world.sky, TextureSky)
 
     cfg = SkyConfig()

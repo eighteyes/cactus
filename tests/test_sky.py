@@ -444,8 +444,8 @@ def test_frame_time_budget_at_100x20_with_perspective() -> None:
 # ---- engine lever (v6f, sky_engine) -------------------------------------
 
 
-def test_sky_engine_defaults_to_fluid() -> None:
-    assert SkyConfig().sky_engine == "fluid"
+def test_sky_engine_defaults_to_texture() -> None:
+    assert SkyConfig().sky_engine == "texture"
 
 
 def test_make_sky_texture_returns_texture_sky_behind_the_same_interface() -> None:
@@ -463,8 +463,9 @@ def test_make_sky_texture_returns_texture_sky_behind_the_same_interface() -> Non
     sky.resize(15, 8)
     assert sky.render_cells() and len(sky.render_cells()) == 8
 
-    sky.apply(SkyConfig())
-    assert sky.config.sky_engine == "fluid"  # apply() alone never swaps the engine class
+    sky.apply(SkyConfig(sky_engine="fluid"))
+    assert isinstance(sky, TextureSky)  # apply() alone never swaps the engine class
+    assert sky.config.sky_engine == "fluid"
 
 
 @pytest.mark.parametrize("engine", ["fluid", "texture"])
