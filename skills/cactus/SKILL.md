@@ -45,7 +45,8 @@ only that project; if it is wrong, `cd` before asking.
                  command before the first ask; it exits on the first event for
                  your rows and that exit wakes you; re-arm it first on every wake
     2  ask       post every decision the human makes here, not in chat;
-                 --recommend when you have a pick, --agent on every row
+                 --recommend when you have a pick, -f for every file the
+                 question is about, --agent on every row
     3  work      do everything the answer does not block
     4  act       on each event as it lands: answered, elaborate, reopened, cleared
     5  clear     your own rows, by key, once acted on
@@ -127,6 +128,7 @@ and choice descriptions at 80 columns, with blank lines between paragraphs.
       -c "oidc: existing IdP" \
       -c "local: bcrypt table" \
       --context "Staging tenant is provisioned. Local means owning password reset. Default if unanswered: oidc." \
+      -f docs/auth-spec.md \
       -t auth --agent "$AGENT" --recommend oidc --confidence high --why "tenant already exists"
 
 `--context` carries what the human cannot see from the labels: what you tried
@@ -139,8 +141,11 @@ submits it. `--chosen` on a steer does not wait: you proceed with it.
 `--word SHORT` gives boards a stable label. Set it when a project has many rows
 whose text starts the same way.
 
-`-f PATH` attaches a file the human can preview or edit from the TUI; repeat
-for more. `edit -f` replaces the list.
+`-f PATH` attaches a file. Attach every file the question is about: the plan,
+spec, diff, config, or draft the human would otherwise have to go find. They
+open it from the card with `f` (view) or `F` (edit). Repeat for more;
+`edit -f` replaces the list. A row about a file with no `-f` is a row the
+human answers blind.
 
 ## Steer: proceed, invite a veto
 

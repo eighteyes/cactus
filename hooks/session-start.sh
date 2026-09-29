@@ -43,7 +43,7 @@ fi
 cat <<EOF
 cactus is installed. Its workflow is required, not optional:
   1 monitor  arm \`cactus --monitor --json --agent ID --once\` with the Bash tool, run_in_background, before your first ask; --agent is required. It exits on the first event for your rows and wakes you; re-arm it first thing on every wake, then act. Never the Monitor tool: its 30-minute cap leaves the inbox deaf
-  2 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend when you have a pick, --agent on every row
+  2 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend when you have a pick, -f for every file the question is about, --agent on every row
   3 work     do everything the answer does not block
   4 act      on each event as it lands: answered, elaborate (rewrite the row with \`cactus edit KEY --agent ID --context ...\`), reopened, cleared
   5 clear    your own rows, by key, once acted on

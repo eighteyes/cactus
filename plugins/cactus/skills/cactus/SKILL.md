@@ -24,7 +24,8 @@ per-agent webhook. Never assume an answer will reach you without one.
 
 ## Required workflow
 
-1. Post every later decision as `cactus ask ... --agent "$AGENT"`.
+1. Post every later decision as `cactus ask ... --agent "$AGENT"`, with
+   `-f PATH` for each file the question is about.
 2. Prefer `--act steer --chosen` when a safe default lets work continue.
 3. Use `cactus run CMD --agent "$AGENT" --why ...` for a command awaiting
    approval; after approval, read the row result before running anything.
@@ -45,8 +46,11 @@ fine, but no more. Cactus warns after an ask or edit that wraps past three
 lines; decompose a larger decision into follow-ups. Hard-wrap context and
 choice descriptions at 80 columns and keep choice labels short.
 
-`-f PATH` attaches a file the human can preview or edit from the TUI; repeat
-for more. `edit -f` replaces the list.
+`-f PATH` attaches a file. Attach every file the question is about: the plan,
+spec, diff, config, or draft the human would otherwise have to go find. They
+open it from the card with `f` (view) or `F` (edit). Repeat for more;
+`edit -f` replaces the list. A row about a file with no `-f` is a row the
+human answers blind.
 
 The `UserPromptSubmit` hook injects your outstanding frontier. The opt-in `Stop`
 hook (`CACTUS_STOP_HOOK=1`) continues the turn when rows are open without a
