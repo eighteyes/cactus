@@ -1299,3 +1299,37 @@ async def test_headless_field_cpu_stays_under_20_percent_of_one_core(store: Stor
 
         cpu_share = cpu_elapsed / wall_elapsed
         assert cpu_share < 0.20, f"{cpu_share * 100:.1f}% of one core"
+
+
+async def test_tuning_overlay_arrows_move_and_nudge(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        assert app.tuning_index == 0
+        await pilot.press("down")
+        await pilot.pause()
+        assert app.tuning_index == 1
+        await pilot.press("up")
+        await pilot.pause()
+        assert app.tuning_index == 0
+        row = app.tuning_rows[0]
+        before = getattr(app._tuning_obj(row.group), row.name)
+        await pilot.press("right")
+        await pilot.pause()
+        assert getattr(app._tuning_obj(row.group), row.name) == pytest.approx(before + row.step)
+        await pilot.press("left")
+        await pilot.pause()
+        assert getattr(app._tuning_obj(row.group), row.name) == pytest.approx(before)
+        await pilot.press("shift+right")
+        await pilot.pause()
+        assert getattr(app._tuning_obj(row.group), row.name) == pytest.approx(min(before + 10 * row.step, row.hi))
+        text = app._tuning_text()
+        assert "saved skies" in text and "load that saved sky" in text
+        await pilot.press("S")
+        await pilot.pause()
+        assert "press a digit 1-9 to save" in app._tuning_text()

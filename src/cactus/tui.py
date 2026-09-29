@@ -1235,13 +1235,16 @@ class CactusApp(App[int]):
             value = getattr(self._tuning_obj(row.group), row.name)
             lines.append(f"{marker} {row.name}  {value!r}  # {row.comment}")
         lines.append("")
+        present = slots_present()
+        lines.append("saved skies  " + " ".join(f"{n}{'●' if present[n] else '○'}" for n in sorted(present))
+                     + "     ● saved  ○ empty")
         if self.tuning_save_armed:
-            lines.append("save to slot? 1-9")
+            lines.append("  press a digit 1-9 to save the current sky there (esc cancels)")
         else:
-            present = slots_present()
-            lines.append("slots: " + " ".join(f"{n}{'●' if present[n] else '○'}" for n in sorted(present)))
+            lines.append("  digit 1-9  load that saved sky      S then digit  save the current sky there")
         lines.extend([
-            "j/k move   h/l nudge   H/L nudge x10   r reset   1-9 recall   S+digit save",
+            "",
+            "j/k or ↑↓  move   h/l or ←→  nudge   H/L or shift+←→  nudge x10   r  reset",
             "esc or T  return to inbox",
         ])
         return "\n".join(lines)
@@ -2224,17 +2227,17 @@ class CactusApp(App[int]):
                 # fall through: this key still does its own thing below
             if event.key in ("escape", "T"):
                 self._close_tuning()
-            elif event.key == "j":
+            elif event.key in ("j", "down"):
                 self._move_tuning_cursor(1)
-            elif event.key == "k":
+            elif event.key in ("k", "up"):
                 self._move_tuning_cursor(-1)
-            elif event.key == "h":
+            elif event.key in ("h", "left"):
                 self._nudge_tuning(-1)
-            elif event.key == "l":
+            elif event.key in ("l", "right"):
                 self._nudge_tuning(1)
-            elif event.key == "H":
+            elif event.key in ("H", "shift+left"):
                 self._nudge_tuning(-10)
-            elif event.key == "L":
+            elif event.key in ("L", "shift+right"):
                 self._nudge_tuning(10)
             elif event.key == "r":
                 self._reset_tuning()
