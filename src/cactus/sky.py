@@ -110,22 +110,19 @@ CORE_GLYPH = "⣿"  # "⣿" — all eight braille dots, same bits an all-lit dit
 _SPECK_GLYPHS = ". · ˙ , ' `".split()  # fringe specks, one per cell by hash
 # Grain (v8): a flat plateau of density would otherwise render one identical
 # dither glyph across a whole run of cells, which reads as a coarse slab.
-# One dither cell in three (by hash) takes a small marker from its density
-# tier instead, so a slab breaks into texture; a band edge's identical
-# vertical gradient would otherwise repeat one glyph the whole way across.
-_GRAIN_TIERS = (
-    (0.35, (",", ".", "'")),
-    (0.60, ("-", "*", "`")),
-    (1.01, ("*", "#", "-")),
-)
+# On a cloud's *outside* — a cell whose block mean sits under
+# `_GRAIN_EDGE_MEAN` — one dither cell in three (by hash) takes a small
+# embellishment (`, . ' \``) instead, so a rim breaks into texture. Inside
+# the cloud only braille draws: the dither's dot count is the depth cue and
+# a marker there reads as a glyph, not as cloud.
+_GRAIN_EDGE_MEAN = 0.35
+_GRAIN_GLYPHS = (",", ".", "'", "`")
 
 
-def _grain_glyph(m: float, x0: int, y0: int) -> str:
-    h = _cell_hash(x0, y0 + 7)
-    for top, glyphs in _GRAIN_TIERS:
-        if m < top:
-            return glyphs[h % len(glyphs)]
-    return "#"
+def _grain_glyph(m: float, x0: int, y0: int) -> str | None:
+    if m >= _GRAIN_EDGE_MEAN:
+        return None
+    return _GRAIN_GLYPHS[_cell_hash(x0, y0 + 7) % len(_GRAIN_GLYPHS)]
 
 # Compositing order, nearest first — the first grid whose pixel clears
 # DENSITY_FLOOR owns it, exactly as v5's near/mid/far layers did.
@@ -996,8 +993,8 @@ def downsample(
                 glyph = CORE_GLYPH if _cell_hash(x0, y0) % 2 == 0 else _ordered_dither(pixels)
             elif abs(gx) > cfg.flat_gx and abs(gy) <= cfg.flat_gy_max and cfg.flat_mean_lo <= m < cfg.flat_mean_hi:
                 glyph = "-" if _cell_hash(x0, y0) % 2 == 0 else "~"
-            elif _cell_hash(x0, y0) % 3 == 0:
-                glyph = _grain_glyph(m, x0, y0)
+            elif _cell_hash(x0, y0) % 3 == 0 and (grain := _grain_glyph(m, x0, y0)) is not None:
+                glyph = grain
             else:
                 glyph = _ordered_dither(pixels)
             owner_name = _majority_owner(block_owner, x0)
