@@ -325,3 +325,63 @@ def test_garden_prints_path_and_clear_removes_file(cli, scratch_env):
     again = cli("garden", "--clear")
     assert again.returncode == 0
     assert "nothing to clear" in again.stdout
+
+
+def _heard_review(cli, agent=AGENT_A):
+    assert cli("ask", "check it", "--act", "review", "--agent", agent).returncode == 0
+    assert cli("answer", "q1", "-s", "pass").returncode == 0
+
+
+def _heard_state(store, project, key="q1"):
+    return store.get(key, project=project).heard_state
+
+
+def test_get_agent_owner_marks_heard(cli, store, project):
+    _heard_review(cli)
+    assert _heard_state(store, project) == "sent"
+    r = cli("get", "q1", "--agent", AGENT_A, "--json")
+    assert r.returncode == 0
+    assert json.loads(r.stdout)  # output unchanged: still the row JSON
+    assert _heard_state(store, project) == "heard"
+
+
+def test_get_non_owner_and_bare_get_do_not_mark_heard(cli, store, project):
+    _heard_review(cli)
+    assert cli("get", "q1", "--agent", "someone-else").returncode == 0
+    assert _heard_state(store, project) == "sent"
+    assert cli("get", "q1").returncode == 0
+    assert _heard_state(store, project) == "sent"
+
+
+def test_get_agent_ignores_non_review_plan_rows(cli, store, project):
+    cli("ask", "pick", "--agent", AGENT_A, "-c", "a", "-c", "b")
+    cli("answer", "q1", "-s", "a")
+    assert cli("get", "q1", "--agent", AGENT_A).returncode == 0
+    assert store.get("q1", project=project).heard_at is None
+
+
+def test_plan_review_edit_with_owner_agent_mark_responded(cli, store, project):
+    _heard_review(cli)
+    cli("get", "q1", "--agent", AGENT_A)
+    assert _heard_state(store, project) == "heard"
+    assert cli("review", "q1", "--agent", AGENT_A, "--look-at", "x").returncode == 0
+    assert _heard_state(store, project) is None
+
+    cli("answer", "q1", "-s", "fail")
+    assert _heard_state(store, project) == "sent"
+    assert cli("edit", "q1", "--agent", AGENT_A, "--context", "more").returncode == 0
+    assert _heard_state(store, project) is None
+
+    cli("ask", "the plan", "--act", "plan", "--agent", AGENT_A)
+    cli("answer", "q2", "looks fine")
+    assert _heard_state(store, project, "q2") == "sent"
+    assert cli("plan", "q2", "--agent", AGENT_A, "--step", "one").returncode == 0
+    assert _heard_state(store, project, "q2") is None
+
+
+def test_plan_review_without_matching_agent_do_not_mark_responded(cli, store, project):
+    _heard_review(cli)
+    assert cli("review", "q1", "--look-at", "x").returncode == 0
+    assert _heard_state(store, project) == "sent"
+    assert cli("review", "q1", "--agent", "someone-else", "--look-at", "y").returncode == 1
+    assert _heard_state(store, project) == "sent"

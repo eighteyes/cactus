@@ -1549,3 +1549,115 @@ async def test_tuning_overlay_reshapes_when_the_engine_changes(
         text = app._tuning_text()
         assert "engine fluid" in text and "[far]" in text and "horizon" in text and "cloud_style" not in text
         assert app.tuning_rows[app.tuning_index].name == "sky_engine"
+
+
+def _review(store: Store, project: str, text: str = "check it"):
+    return store.ask(
+        text, project=project, cwd=project, agent=AGENT,
+        kind="confirm", act="review", choices=[Choice("pass"), Choice("fail")],
+    )
+
+
+def _card_classes(app: CactusApp) -> tuple[bool, bool]:
+    card = app.query_one("#card")
+    return card.has_class("-sent"), card.has_class("-heard")
+
+
+async def test_verdict_dims_card_sent_then_heard_then_normal(store: Store, project: str) -> None:
+    q = _review(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert _card_classes(app) == (False, False)
+
+        store.answer(q.key, project=project, selected=["pass"])
+        await app._reload(force=True)
+        await pilot.pause()
+        assert _card_classes(app) == (True, False)
+        text = str(app.query_one("#card-text", Static).content)
+        assert "sent · waiting for the agent" in text
+        block = app.query_one(f"#row-{q.key}", QuestionBlock)
+        assert block.has_class("-sent")
+
+        store.mark_heard(q.id)
+        await app._reload(force=True)
+        await pilot.pause()
+        assert _card_classes(app) == (False, True)
+        assert "heard ✓ · agent is on it" in str(app.query_one("#card-text", Static).content)
+        assert app.query_one(f"#row-{q.key}", QuestionBlock).has_class("-heard")
+
+        store.mark_responded(q.id)
+        await app._reload(force=True)
+        await pilot.pause()
+        assert _card_classes(app) == (False, False)
+        assert not app.query_one(f"#row-{q.key}", QuestionBlock).has_class("-heard")
+
+
+async def test_x_closes_review_and_plan_and_undo_restores(store: Store, project: str) -> None:
+    rq = _review(store, project)
+    pq = store.ask("plan", project=project, cwd=project, agent=AGENT, kind="text", act="plan")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for key in (rq.key, pq.key):
+            while app.focused_key != key:
+                await pilot.press("j")
+                await pilot.pause()
+            assert keybar_keys(app)["x"] == "close"
+            assert "enter = note · x = close" in str(app.query_one("#card-text", Static).content)
+            await pilot.press("x")
+            await pilot.pause()
+            assert store.get(key, project=project).status == "cleared"
+        await pilot.press("u")
+        await pilot.pause()
+        assert store.get(pq.key, project=project).status == "live"
+
+
+async def test_x_absent_on_other_rows(store: Store, project: str) -> None:
+    ask = store.ask("pick", project=project, cwd=project, agent=AGENT, kind="choice",
+                    choices=[Choice("a"), Choice("b")])
+    data = store.ask("d", project=project, cwd=project, agent=AGENT, kind="choice",
+                     act="data", choices=[Choice("one", "body")])
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for key in (ask.key, data.key):
+            while app.focused_key != key:
+                await pilot.press("j")
+                await pilot.pause()
+            assert "x" not in keybar_keys(app)
+            assert app.check_action("close_row", ()) is False
+            await pilot.press("x")
+            await pilot.pause()
+            assert store.get(key, project=project).status != "cleared"
+
+
+async def test_finished_prompt_on_plan_and_review(store: Store, project: str) -> None:
+    pq = store.ask("plan", project=project, cwd=project, agent=AGENT, kind="text", act="plan")
+    store.set_steps(pq.key, ["s1", "s2"], project=project)
+    rq = _review(store, project)
+    prompt = "finished? x closes it (or the agent will)"
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        while app.focused_key != pq.key:
+            await pilot.press("j")
+            await pilot.pause()
+        assert prompt not in str(app.query_one("#card-text", Static).content)
+
+        store.set_step_done(pq.key, 0, project=project)
+        store.set_step_done(pq.key, 1, project=project)
+        await app._reload(force=True)
+        await pilot.pause()
+        assert prompt in str(app.query_one("#card-text", Static).content)
+
+        while app.focused_key != rq.key:
+            await pilot.press("j")
+            await pilot.pause()
+        assert prompt not in str(app.query_one("#card-text", Static).content)
+        store.answer(rq.key, project=project, selected=["pass"])
+        await app._reload(force=True)
+        await pilot.pause()
+        assert prompt in str(app.query_one("#card-text", Static).content)

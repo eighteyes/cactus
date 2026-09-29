@@ -120,6 +120,12 @@ CREATE TABLE IF NOT EXISTS questions (
     -- Absolute paths a human may preview (`f`) or edit (`F`) from the TUI,
     -- JSON list. Additive, like `run_tail`.
     files        TEXT,
+    -- Heard / responded stamps (q404-q406), review and plan rows only: when
+    -- the owning agent last read the row (`get --agent`) and last wrote to
+    -- it (`plan`/`review`/`edit --agent`). Compared against the latest
+    -- verdict's time; never part of the monitor signature.
+    heard_at     TEXT,
+    responded_at TEXT,
     -- Keys number per project (q166). A fresh database starts here; an older
     -- one reaches it through `cactus migrate --yes`.
     UNIQUE(project, key)
@@ -333,6 +339,28 @@ class Question:
     run_tail: list[str] = field(default_factory=list)
     run_log: str | None = None
     files: list[str] = field(default_factory=list)
+    heard_at: str | None = None
+    responded_at: str | None = None
+
+    @property
+    def heard_state(self) -> str | None:
+        """`sent`, `heard`, or None (q405). Review and plan rows only.
+
+        Measured from the latest human verdict's time `T`: a response after `T`
+        or no verdict at all reads None; a read after `T` reads `heard`; a
+        verdict nobody has read yet reads `sent`. A new verdict moves `T`, so
+        the row restarts at `sent` with no reset step.
+        """
+        if self.act not in ("review", "plan") or self.status == "cleared":
+            return None
+        if self.answer is None:
+            return None
+        t = self.answer.created_at
+        if self.responded_at and self.responded_at > t:
+            return None
+        if self.heard_at and self.heard_at > t:
+            return "heard"
+        return "sent"
 
     @property
     def persistent(self) -> bool:
@@ -503,6 +531,11 @@ class Store:
         # `run_tail` above.
         if "files" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN files TEXT")
+        # Heard / responded stamps (q404-q406): additive like `files`.
+        if "heard_at" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN heard_at TEXT")
+        if "responded_at" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN responded_at TEXT")
         # `seen` renamed to `notify`: a data fixup, not a schema change, so it
         # runs unconditionally on every open like the checks above — idempotent,
         # since a second pass finds no `seen` rows left to touch.
@@ -630,6 +663,8 @@ class Store:
                     elaborate_at TEXT,
                     last_change  TEXT,
                     files        TEXT,
+                    heard_at     TEXT,
+                    responded_at TEXT,
                     UNIQUE(project, key)
                 )""",
                 """INSERT INTO questions_new
@@ -638,7 +673,8 @@ class Store:
                           chosen, blocked, choices, allow_free, recommend,
                           confidence, recommend_why, context, asked_by, status,
                           created_at, updated_at, run_exit, run_tail, run_log,
-                          elaborate, elaborate_at, last_change, files
+                          elaborate, elaborate_at, last_change, files,
+                          heard_at, responded_at
                    FROM questions""",
                 "DROP TABLE questions",
                 "ALTER TABLE questions_new RENAME TO questions",
@@ -1216,6 +1252,38 @@ class Store:
         if cur.rowcount == 0:
             raise KeyError(f"{key} has no step {idx}")
         return self._touch(q.id)
+
+    def mark_heard(self, qid: int) -> Question | None:
+        """Stamp `heard_at` when the owner reads a review/plan row (q406).
+
+        Moves only forward past the latest verdict: a row with no verdict, or
+        one already stamped after it, is left alone (no `updated_at` bump, so a
+        polling `get --agent` never churns the TUI). Ownership is the CLI's job.
+        """
+        q = self._get_by_id(qid)
+        if q is None or q.act not in ("review", "plan") or q.answer is None:
+            return q
+        if q.heard_at and q.heard_at > q.answer.created_at:
+            return q
+        now = _now()
+        self.conn.execute(
+            "UPDATE questions SET heard_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, qid),
+        )
+        return self._get_by_id(qid)
+
+    def mark_responded(self, qid: int) -> Question | None:
+        """Stamp `responded_at` after the owner writes to a row (q406).
+
+        The stamp lives here, the call site in `cli.py` behind the ownership
+        check, so a TUI write through the same store methods never stamps it.
+        """
+        now = _now()
+        self.conn.execute(
+            "UPDATE questions SET responded_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, qid),
+        )
+        return self._get_by_id(qid)
 
     def elaborate_request(
         self, key: str, *, hint: str | None = None, project: str | None = None
@@ -1951,4 +2019,6 @@ class Store:
             run_tail=json.loads(row["run_tail"]) if row["run_tail"] else [],
             run_log=row["run_log"],
             files=json.loads(row["files"]) if row["files"] else [],
+            heard_at=row["heard_at"],
+            responded_at=row["responded_at"],
         )

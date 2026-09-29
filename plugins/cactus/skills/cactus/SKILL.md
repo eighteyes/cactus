@@ -31,7 +31,10 @@ per-agent webhook. Never assume an answer will reach you without one.
    approval; after approval, read the row result before running anything.
 4. On `answered`, `elaborate`, `reopened`, or `cleared`, re-read the row and
    act on the new state.
-5. Clear your own row after acting.
+5. Read a review or plan row with `cactus get KEY --agent "$AGENT"`: that read
+   tells the human you heard their verdict. After acting on it, respond through
+   `plan`, `review`, or `edit` with `--agent "$AGENT"`.
+6. Clear your own row after acting.
 
 When an elaborate instruction asks to decompose a complex row, post several
 smaller, independently answerable follow-ups with `-p ORIGINAL_KEY`, then

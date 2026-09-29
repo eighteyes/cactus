@@ -316,3 +316,83 @@ def test_project_panes_distinct_status_filtered_and_skipped(store: Store, projec
         {"pane": "w1:p2", "agent": "a2"},
     ]
     assert reach["skipped"] == 1
+
+
+def _live_review(store: Store, project: str, agent: str = "a1"):
+    return store.ask(
+        "check it", project=project, cwd=project, agent=agent,
+        kind="confirm", act="review", choices=[Choice("pass"), Choice("fail")],
+    )
+
+
+def test_heard_state_sent_heard_responded_and_restart(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    assert store.get(q.key, project=project).heard_state is None  # no verdict yet
+
+    store.mark_heard(q.id)  # nothing to hear yet
+    assert store.get(q.key, project=project).heard_at is None
+
+    store.answer(q.key, project=project, selected=["pass"])
+    assert store.get(q.key, project=project).heard_state == "sent"
+
+    store.mark_heard(q.id)
+    assert store.get(q.key, project=project).heard_state == "heard"
+
+    store.mark_responded(q.id)
+    assert store.get(q.key, project=project).heard_state is None
+
+    # A new verdict restarts at `sent`.
+    store.answer(q.key, project=project, selected=["fail"])
+    assert store.get(q.key, project=project).heard_state == "sent"
+
+
+def test_mark_heard_moves_forward_past_latest_verdict_only(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    store.answer(q.key, project=project, selected=["pass"])
+    first = store.mark_heard(q.id)
+    stamp, touched = first.heard_at, first.updated_at
+
+    # Already heard past this verdict: no stamp move, no updated_at bump.
+    again = store.mark_heard(q.id)
+    assert again.heard_at == stamp
+    assert again.updated_at == touched
+
+    store.answer(q.key, project=project, selected=["fail"])
+    later = store.mark_heard(q.id)
+    assert later.heard_at > stamp
+
+
+def test_mark_heard_bumps_cursor_and_ignores_other_acts(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    store.answer(q.key, project=project, selected=["pass"])
+    before = store.cursor()
+    store.mark_heard(q.id)
+    assert store.cursor() != before
+
+    ask = store.ask("pick", project=project, cwd=project, agent="a1", kind="choice",
+                    choices=[Choice("a")])
+    store.answer(ask.key, project=project, selected=["a"])
+    store.mark_heard(ask.id)
+    assert store.get(ask.key, project=project).heard_at is None
+    assert store.get(ask.key, project=project).heard_state is None
+
+
+def test_heard_columns_do_not_change_monitor_signature(store: Store, project: str) -> None:
+    from cactus.monitor import _signature
+
+    q = _live_review(store, project)
+    store.answer(q.key, project=project, selected=["pass"])
+    sig = _signature(store.get(q.key, project=project))
+    store.mark_heard(q.id)
+    store.mark_responded(q.id)
+    assert _signature(store.get(q.key, project=project)) == sig
+
+
+def test_heard_columns_survive_key_rebuild(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    store.answer(q.key, project=project, selected=["pass"])
+    store.mark_heard(q.id)
+    stamp = store.get(q.key, project=project).heard_at
+    if store.needs_key_rebuild():
+        store._drop_key_uniqueness()
+    assert store.get(q.key, project=project).heard_at == stamp
