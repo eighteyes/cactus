@@ -315,7 +315,7 @@ class SkyConfig:
     # Which sky renderer runs: "fluid" is the cellular-automaton `Sky` above,
     # "texture" is the cheaper v5 baked-noise `TextureSky` (same interface),
     # restored as a lever rather than a replacement (v6f, q384).
-    sky_engine: str = field(default="fluid", metadata={"choices": ("fluid", "texture")})
+    sky_engine: str = field(default="texture", metadata={"choices": ("fluid", "texture")})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkyConfig":
