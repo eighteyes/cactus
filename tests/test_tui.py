@@ -1111,7 +1111,11 @@ async def test_tuning_overlay_reset_restores_default(store: Store, project: str,
         await pilot.pause()
         await pilot.press("T")
         await pilot.pause()
-        row = app.tuning_rows[0]
+        idx = next(i for i, r in enumerate(app.tuning_rows) if r.step is not None)
+        for _ in range(idx):
+            await pilot.press("j")
+        await pilot.pause()
+        row = app.tuning_rows[idx]
         default_cfg = SkyConfig()
         default_obj = default_cfg if row.group == "shared" else getattr(default_cfg, row.group)
         default_value = getattr(default_obj, row.name)
@@ -1280,7 +1284,7 @@ async def test_tuning_overlay_named_slot_save_and_recall(
 
         text = app._tuning_text()
         assert "2 wisp" in text
-        assert text.index("2 wisp") < text.index("[far]")
+        assert text.index("2 wisp") < text.index("[shared]")
 
         # Save, arm, then bail out without saving: cursor/nudge untouched.
         default_index = app.tuning_index
@@ -1381,7 +1385,11 @@ async def test_tuning_overlay_arrows_move_and_nudge(
         await pilot.press("up")
         await pilot.pause()
         assert app.tuning_index == 0
-        row = app.tuning_rows[0]
+        idx = next(i for i, r in enumerate(app.tuning_rows) if r.step is not None)
+        for _ in range(idx):
+            await pilot.press("down")
+        await pilot.pause()
+        row = app.tuning_rows[idx]
         before = getattr(app._tuning_obj(row.group), row.name)
         await pilot.press("right")
         await pilot.pause()
@@ -1513,3 +1521,31 @@ async def test_preview_o_toggles_block_and_row_move_closes_it(
         await pilot.press("j")
         await pilot.pause()
         assert app.preview_open is False
+
+
+async def test_tuning_overlay_reshapes_when_the_engine_changes(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        text = app._tuning_text()
+        assert "engine texture" in text
+        assert "[far]" not in text and "cloud_style" not in text
+        # walk to sky_engine and cycle texture -> puffs
+        idx = next(i for i, r in enumerate(app.tuning_rows) if r.name == "sky_engine")
+        for _ in range(idx):
+            await pilot.press("j")
+        await pilot.press("l")
+        await pilot.pause()
+        text = app._tuning_text()
+        assert "engine puffs" in text and "cloud_style" in text and "[far]" not in text
+        assert app.tuning_rows[app.tuning_index].name == "sky_engine"
+        await pilot.press("l")  # puffs -> fluid
+        await pilot.pause()
+        text = app._tuning_text()
+        assert "engine fluid" in text and "[far]" in text and "horizon" in text and "cloud_style" not in text
+        assert app.tuning_rows[app.tuning_index].name == "sky_engine"

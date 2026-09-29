@@ -301,7 +301,7 @@ def test_alphabet_glyphs_are_all_single_cell_width() -> None:
     """Every glyph the sky can draw must be one terminal cell wide in a
     monospace font — a double-width character would desync the field's
     column grid from the canvas it was downsampled from."""
-    alphabet = list(" .·˙:∘•-~,'`") + [CORE_GLYPH]
+    alphabet = list(" ") + list(_SPECK_GLYPHS) + [CORE_GLYPH]
     alphabet += [chr(0x2800 | bits) for bits in range(256)]
     for glyph in alphabet:
         assert cell_len(glyph) == 1, repr(glyph)
@@ -583,13 +583,3 @@ def test_both_engines_stay_inside_the_frame_time_budget_at_100x20(engine: str) -
     elapsed = (time.perf_counter() - start) / 20
     assert elapsed < 0.040, f"{engine}: {elapsed * 1000:.1f} ms/frame, over the 40 ms budget"
 
-
-def test_grain_embellishes_only_the_outside_of_a_cloud() -> None:
-    """v8: `, . ' \\`` may replace a dither cell only where the block mean is
-    under `_GRAIN_EDGE_MEAN`; inside a cloud every non-core cell is braille."""
-    from cactus.sky import _GRAIN_EDGE_MEAN, _GRAIN_GLYPHS, _grain_glyph
-
-    assert _grain_glyph(_GRAIN_EDGE_MEAN, 0, 0) is None
-    assert _grain_glyph(0.9, 4, 8) is None
-    assert _grain_glyph(0.2, 4, 8) in _GRAIN_GLYPHS
-    assert not set("#*-") & set(_GRAIN_GLYPHS)

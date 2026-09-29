@@ -51,7 +51,7 @@ from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 from . import garden
 from .field import World
 from .scope import project_label
-from .sky import SkyConfig, TuneField, config_path as sky_config_path, slots as sky_slots, tuning_fields
+from .sky import SkyConfig, TuneField, config_path as sky_config_path, slots as sky_slots, tuning_fields_for
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
 
@@ -1140,7 +1140,7 @@ class CactusApp(App[int]):
         self._hide_input()
         self._close_other_panels("tuning")
         self.tuning_open = True
-        self.tuning_rows = tuning_fields()
+        self.tuning_rows = tuning_fields_for(self.world.sky.config)
         if self.tuning_rows:
             self.tuning_index = max(0, min(self.tuning_index, len(self.tuning_rows) - 1))
         else:
@@ -1255,7 +1255,9 @@ class CactusApp(App[int]):
     def _tuning_text(self) -> str:
         if not self.tuning_rows:
             return "tuning\n\nno tunable keys\n\nesc or T  return to inbox"
-        lines = ["tuning", ""]
+        cfg = self.world.sky.config
+        engine = cfg.sky_engine + (f" / {cfg.cloud_style}" if cfg.sky_engine == "puffs" else "")
+        lines = [f"tuning   engine {engine}   (keys shown follow the engine)", ""]
         lines.append("saved skies      digit loads one    S then digit saves the current sky")
         lines.extend(self._slot_grid_lines())
         if self.tuning_name_slot is not None:
@@ -1278,7 +1280,24 @@ class CactusApp(App[int]):
         ])
         return "\n".join(lines)
 
+    def _refilter_tuning(self) -> None:
+        """Rebuild the visible rows for the current engine and style (v8),
+        keeping the cursor on the same key when it is still shown, else on
+        the nearest row above it — a nudge of `sky_engine` or `perspective`
+        reshapes the page on the spot."""
+        current = self.tuning_rows[self.tuning_index] if 0 <= self.tuning_index < len(self.tuning_rows) else None
+        self.tuning_rows = tuning_fields_for(self.world.sky.config)
+        if current is None or not self.tuning_rows:
+            self.tuning_index = 0
+            return
+        for i, row in enumerate(self.tuning_rows):
+            if row.group == current.group and row.name == current.name:
+                self.tuning_index = i
+                return
+        self.tuning_index = max(0, min(self.tuning_index, len(self.tuning_rows) - 1))
+
     def _render_tuning(self) -> None:
+        self._refilter_tuning()
         self.query_one("#tuning-panel", Static).update(self._tuning_text())
 
     def _selected_project_row(self) -> dict[str, Any] | None:

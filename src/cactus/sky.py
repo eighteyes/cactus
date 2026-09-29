@@ -107,22 +107,10 @@ _DEFAULT_DT = 0.1
 DENSITY_FLOOR = 0.02
 
 CORE_GLYPH = "⣿"  # "⣿" — all eight braille dots, same bits an all-lit dither gives
-_SPECK_GLYPHS = ". · ˙ , ' `".split()  # fringe specks, one per cell by hash
-# Grain (v8): a flat plateau of density would otherwise render one identical
-# dither glyph across a whole run of cells, which reads as a coarse slab.
-# On a cloud's *outside* — a cell whose block mean sits under
-# `_GRAIN_EDGE_MEAN` — one dither cell in three (by hash) takes a small
-# embellishment (`, . ' \``) instead, so a rim breaks into texture. Inside
-# the cloud only braille draws: the dither's dot count is the depth cue and
-# a marker there reads as a glyph, not as cloud.
-_GRAIN_EDGE_MEAN = 0.35
-_GRAIN_GLYPHS = (",", ".", "'", "`")
-
-
-def _grain_glyph(m: float, x0: int, y0: int) -> str | None:
-    if m >= _GRAIN_EDGE_MEAN:
-        return None
-    return _GRAIN_GLYPHS[_cell_hash(x0, y0 + 7) % len(_GRAIN_GLYPHS)]
+_SPECK_GLYPHS = ("⠁", "⠂", "⠄", "⠈", "⠐", "⠠")  # one braille dot per fringe cell, placed by hash
+# Braille only (v8): every glyph the sky draws is a braille cell — a single
+# dot on the fringe, the ordered dither inside, the full cell at a core. No
+# strokes, no markers: dot count is the whole vocabulary.
 
 # Compositing order, nearest first — the first grid whose pixel clears
 # DENSITY_FLOOR owns it, exactly as v5's near/mid/far layers did.
@@ -542,6 +530,44 @@ def tuning_fields() -> list[TuneField]:
             choices=f.metadata.get("choices"),
         ))
     return rows
+
+
+# Which shared keys the `T` overlay shows under which engine (v8). Grid
+# groups (far/mid/near) belong to the fluid engine alone. `edge_*` and
+# `flat_*` are listed nowhere: the strokes they governed left the renderer
+# (braille only, v8); the keys stay so an older sky.toml still loads.
+_TUNE_ALWAYS = frozenset((
+    "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind",
+    "tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
+    "blank_mean", "core_mean", "semi_core_mean",
+))
+_TUNE_ENGINE = {
+    "fluid": frozenset(("shear_floor", "shear_base", "shear_span", "perspective")),
+    "texture": frozenset(("shear_base",)),
+    "puffs": frozenset(("cloud_style", "cloud_count", "cloud_drift", "cloud_life")),
+}
+_TUNE_PERSPECTIVE = frozenset(("horizon", "focal", "z_far", "ground_lines", "deck_altitude_px"))
+
+
+def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
+    """Whether the `T` overlay shows `row` under `cfg`'s engine and style:
+    grid groups only under fluid; shear and `perspective` under fluid,
+    the projection levers only while `perspective == "on"`; `shear_base`
+    alone under texture (its camera drift); the `cloud_*` levers only
+    under puffs. `_TUNE_ALWAYS` shows everywhere."""
+    engine = cfg.sky_engine
+    if row.group != "shared":
+        return engine == "fluid"
+    if row.name in _TUNE_ALWAYS:
+        return True
+    if row.name in _TUNE_ENGINE.get(engine, frozenset()):
+        return True
+    return engine == "fluid" and cfg.perspective == "on" and row.name in _TUNE_PERSPECTIVE
+
+
+def tuning_fields_for(cfg: SkyConfig) -> list[TuneField]:
+    """`tuning_fields()` filtered by `tuning_visible` for `cfg`."""
+    return [row for row in tuning_fields() if tuning_visible(row, cfg)]
 
 
 def _set_typed(obj, key: str, value, label: str) -> None:
@@ -986,15 +1012,10 @@ def downsample(
                 colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows, z_for_row, z_far_for_row)
                 out_row.append((glyph, colour))
                 continue
-            gx, gy = _gradients(pixels)
             if m >= cfg.core_mean:
                 glyph = CORE_GLYPH
             elif m >= cfg.semi_core_mean:
                 glyph = CORE_GLYPH if _cell_hash(x0, y0) % 2 == 0 else _ordered_dither(pixels)
-            elif abs(gx) > cfg.flat_gx and abs(gy) <= cfg.flat_gy_max and cfg.flat_mean_lo <= m < cfg.flat_mean_hi:
-                glyph = "-" if _cell_hash(x0, y0) % 2 == 0 else "~"
-            elif _cell_hash(x0, y0) % 3 == 0 and (grain := _grain_glyph(m, x0, y0)) is not None:
-                glyph = grain
             else:
                 glyph = _ordered_dither(pixels)
             owner_name = _majority_owner(block_owner, x0)

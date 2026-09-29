@@ -193,3 +193,30 @@ def test_perspective_is_a_choices_lever() -> None:
     row = next(f for f in tuning_fields() if f.group == "shared" and f.name == "perspective")
     assert row.choices == ("on", "off")
     assert SkyConfig().perspective == "on"
+
+
+# ---- T overlay visibility follows the engine (v8) ---------------------------
+
+
+def test_tuning_rows_follow_the_engine_and_style() -> None:
+    from cactus.sky import tuning_fields_for
+
+    def names(cfg):
+        return {(r.group, r.name) for r in tuning_fields_for(cfg)}
+
+    puffs = names(SkyConfig(sky_engine="puffs"))
+    assert ("shared", "cloud_style") in puffs and ("shared", "cloud_life") in puffs
+    assert not any(g in ("far", "mid", "near") for g, _ in puffs)
+    assert ("shared", "horizon") not in puffs and ("shared", "shear_floor") not in puffs
+    assert ("shared", "edge_gx") not in puffs
+
+    fluid = names(SkyConfig(sky_engine="fluid"))
+    assert ("far", "wind_scale") in fluid and ("shared", "perspective") in fluid
+    assert ("shared", "horizon") in fluid and ("shared", "cloud_style") not in fluid
+    flat = names(SkyConfig(sky_engine="fluid", perspective="off"))
+    assert ("shared", "horizon") not in flat and ("shared", "perspective") in flat
+
+    texture = names(SkyConfig(sky_engine="texture"))
+    assert ("shared", "shear_base") in texture and ("shared", "shear_floor") not in texture
+    for cfg in (puffs, fluid, texture):
+        assert ("shared", "sky_engine") in cfg and ("shared", "fps") in cfg and ("shared", "seed_wind") in cfg

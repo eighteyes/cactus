@@ -529,3 +529,14 @@ scope.
   `z_far`; `off` is the v6 look, `Sky.render_cells` handing `downsample` the
   raw grids so each deck's bands draw flat across the sky at their own
   height. Texture and puffs never projected and ignore it.
+- The `T` overlay shows only the keys the running engine reads
+  (`sky.tuning_visible`/`tuning_fields_for`, v8): far/mid/near grids, shear
+  and `perspective` under fluid, the projection levers only while
+  `perspective == "on"`; `shear_base` alone under texture; the `cloud_*`
+  levers under puffs; tone/haze/glyph thresholds, `fps`, `pile_style`,
+  `stick_distance`, `seed_wind`, `sky_engine` always. `edge_*` and `flat_*`
+  are never shown — the strokes they governed are gone: the sky draws
+  braille only (a single dot on the fringe, the dither inside, the full
+  cell at a core), the keys stay so an older sky.toml still loads. `_render_tuning` refilters on every
+  redraw and keeps the cursor on the same key when it survives.
+
