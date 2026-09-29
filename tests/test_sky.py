@@ -150,6 +150,46 @@ def test_air_d_identity_is_stable_across_ticks_only_resize_rebuilds_it() -> None
     assert id(air.d) != d_id
 
 
+def test_puff_activates_exactly_its_rows_and_neighbours_then_clears() -> None:
+    """v6f: a puff at row `y` (`puff_height == 1` here) marks rows
+    `y-1, y, y+1` active — the puff's own row plus the one-row dilation
+    diffuse needs — and every other row inactive; once evaporation carries it
+    below the floor, every row goes inactive again."""
+    cfg = _still_config(evaporation=4.0, floor=0.05, puff_height=1)
+    air = Air(10, 20, random.Random(6), cfg, (0.4, 0.6), warm=False)
+    y = 10
+    air.d[y][3] = 1.0
+    air.tick(0.0, shear_floor=0.0, shear_base=1.0, shear_span=0.0)  # forces the lazy first scan
+
+    assert air.active[y] is True
+    assert air.active[y - 1] is True
+    assert air.active[y + 1] is True
+    for other in range(air.height):
+        if other not in (y - 1, y, y + 1):
+            assert air.active[other] is False, f"row {other} should be inactive"
+
+    for _ in range(200):
+        air.tick(0.0, shear_floor=0.0, shear_base=1.0, shear_span=0.0)
+    assert air.d[y][3] == 0.0
+    assert all(a is False for a in air.active)
+
+
+def test_inactive_row_far_from_weather_is_never_touched() -> None:
+    """v6f: a row with no density anywhere near it — not itself, not a
+    neighbour — keeps the exact same list object and contents across 100
+    advances, since advect/diffuse/react/clamp all skip it outright."""
+    cfg = _still_config(growth=20.0, evaporation=0.4, nucleate_p=0.0, band_count=1, band_sigma_lo=1.0, band_sigma_hi=1.0)
+    air = Air(10, 40, random.Random(7), cfg, (0.1, 0.1), warm=False)
+    far_y = 35  # bands sit around 0.1 * 40 = 4, far from here and its neighbours
+    row_id = id(air.d[far_y])
+    row_copy = list(air.d[far_y])
+    for _ in range(100):
+        air.tick(0.2, shear_floor=0.03, shear_base=0.7, shear_span=0.3)
+        assert air.active[far_y] is False
+    assert id(air.d[far_y]) == row_id
+    assert air.d[far_y] == row_copy
+
+
 # ---- Sky: three grids composited, rendered, and timed ------------------
 
 
@@ -379,8 +419,8 @@ def test_camera_drift_moves_a_near_z_marker_more_than_a_far_z_marker() -> None:
         return [(False, z, 0, 0, 0.0, base_row)]
 
     def peak_shift(z: float) -> int:
-        a, _owner, _z = _project_composite(grids, build_rows(z), width_px, 0.0)
-        b, _owner, _z = _project_composite(grids, build_rows(z), width_px, 10.0)
+        a, _owner, _z, _empty = _project_composite(grids, build_rows(z), width_px, 0.0)
+        b, _owner, _z, _empty = _project_composite(grids, build_rows(z), width_px, 10.0)
         peak_a = max(range(width_px), key=lambda i: a[0][i])
         peak_b = max(range(width_px), key=lambda i: b[0][i])
         return abs(peak_b - peak_a)
@@ -399,3 +439,44 @@ def test_frame_time_budget_at_100x20_with_perspective() -> None:
         sky.render_cells()
     elapsed = (time.perf_counter() - start) / 20
     assert elapsed < 0.040, f"{elapsed * 1000:.1f} ms/frame, over the 40 ms budget"
+
+
+# ---- engine lever (v6f, sky_engine) -------------------------------------
+
+
+def test_sky_engine_defaults_to_fluid() -> None:
+    assert SkyConfig().sky_engine == "fluid"
+
+
+def test_make_sky_texture_returns_texture_sky_behind_the_same_interface() -> None:
+    from cactus.sky import TextureSky, make_sky
+
+    cfg = SkyConfig()
+    cfg.sky_engine = "texture"
+    sky = make_sky(cols=20, sky_rows=10, rng=random.Random(9), palette=MONO_PLUS, config=cfg)
+    assert isinstance(sky, TextureSky)
+
+    sky.tick(0.1)
+    grid = sky.render_cells()
+    assert len(grid) == 10
+    assert all(len(row) == 20 for row in grid)
+    sky.resize(15, 8)
+    assert sky.render_cells() and len(sky.render_cells()) == 8
+
+    sky.apply(SkyConfig())
+    assert sky.config.sky_engine == "fluid"  # apply() alone never swaps the engine class
+
+
+@pytest.mark.parametrize("engine", ["fluid", "texture"])
+def test_both_engines_stay_inside_the_frame_time_budget_at_100x20(engine: str) -> None:
+    from cactus.sky import make_sky
+
+    cfg = SkyConfig()
+    cfg.sky_engine = engine
+    sky = make_sky(cols=100, sky_rows=20, rng=random.Random(1), palette=MONO_PLUS, config=cfg)
+    start = time.perf_counter()
+    for _ in range(20):
+        sky.tick(0.1)
+        sky.render_cells()
+    elapsed = (time.perf_counter() - start) / 20
+    assert elapsed < 0.040, f"{engine}: {elapsed * 1000:.1f} ms/frame, over the 40 ms budget"

@@ -25,6 +25,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q"
+markers = ["slow: a real-time probe (wall-clock, machine-dependent); deselect with -m 'not slow'"]
 
 [build-system]
 requires = ["hatchling"]

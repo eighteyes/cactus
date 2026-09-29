@@ -21,6 +21,12 @@ Responsibilities:
 - Show a `T` tuning overlay listing every `SkyConfig` key, nudge it live
   with h/l/H/L, reset it with r, and keep the on-disk file and the running
   sky in agreement on every nudge.
+- Perf (v6f): the field timer samples at `1 / SkyConfig.fps` rather than a
+  fixed interval, restarted by `_sync_field_interval` whenever `fps` changes
+  (a config reload or a tuning nudge) — `World.advance(dt)` still gets the
+  real elapsed time either way. `_render_field` skips `FieldView.update`
+  outright when the frame's text and spans are unchanged from the last one
+  drawn.
 """
 
 from __future__ import annotations
@@ -42,7 +48,7 @@ from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from .field import TICK_SECONDS, World
+from .field import World
 from .scope import project_label
 from .sky import SkyConfig, TuneField, config_path as sky_config_path, tuning_fields
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
@@ -755,6 +761,13 @@ class CactusApp(App[int]):
         # between calls, clamped to 0.5 s so a stalled terminal never makes
         # the field jump, and passes that `dt` straight to `world.advance`.
         self._field_last_time: float | None = None
+        # Frame rate lever (v6f): the timer's own sampling interval, `1 /
+        # SkyConfig.fps` — `_sync_field_interval` restarts the timer only when
+        # this has actually changed from whatever it was last started at.
+        self._field_interval: float | None = None
+        # Change-only redraw (v6f): the last frame's `(plain, spans)` handed
+        # to the field widget, so an unchanged sky never repaints.
+        self._field_last_signature: tuple[str, list] | None = None
         # Sky tuning: reread the config file every SKY_RELOAD_SECONDS of wall
         # time, only acting on it when its mtime has actually moved.
         self._sky_config_mtime: float | None = None
@@ -822,7 +835,7 @@ class CactusApp(App[int]):
         self._reload_sky_config(initial=True)
         self._sky_reload_last = time.monotonic()
         self._field_last_time = time.monotonic()
-        self._field_timer = self.set_interval(TICK_SECONDS, self._field_tick, name="field")
+        self._sync_field_interval()
         self._render_field()
 
     def _apply_tui_settings(self) -> None:
@@ -1111,7 +1124,8 @@ class CactusApp(App[int]):
         step, so the overlay, the sky, and the file never disagree — then
         remember the write's own mtime so the reload timer skips it."""
         cfg = self.world.sky.config
-        self.world.sky.apply(cfg)
+        self.world.apply_sky_config(cfg)
+        self._sync_field_interval()
         path = cfg.dump()
         try:
             self._sky_config_mtime = path.stat().st_mtime
@@ -2918,6 +2932,21 @@ class CactusApp(App[int]):
 
     SKY_RELOAD_SECONDS = 2.0
 
+    def _sync_field_interval(self) -> None:
+        """(Re)start `_field_timer` at `1 / fps` (v6f) if `fps` has actually
+        changed since the timer was last started — a no-op restart on every
+        unrelated tuning nudge would otherwise briefly stall the field.
+        `advance(dt)` still measures true elapsed wall time, so this only
+        changes how often a frame is sampled and drawn, never how fast the
+        sky or a falling seed moves."""
+        interval = 1.0 / max(self.world.sky.config.fps, 1)
+        if self._field_timer is not None and interval == self._field_interval:
+            return
+        if self._field_timer is not None:
+            self._field_timer.stop()
+        self._field_interval = interval
+        self._field_timer = self.set_interval(interval, self._field_tick, name="field")
+
     def _field_tick(self) -> None:
         """One frame: `dt` is the real elapsed time since the last call,
         clamped so a stalled terminal (a suspended session, a slow poll)
@@ -2950,7 +2979,8 @@ class CactusApp(App[int]):
             self.flash = f"sky config: {exc}"
             self._rebuild_status_bar()
             return
-        self.world.sky.apply(config)
+        self.world.apply_sky_config(config)
+        self._sync_field_interval()
         if not initial:
             self.flash = "sky config reloaded"
             self._rebuild_status_bar()
@@ -2972,7 +3002,16 @@ class CactusApp(App[int]):
         height = max(widget.size.height, 1)
         if width != self.world.cols or height != self.world.rows:
             self.world.resize(width, height)
-        widget.update(self.world.render())
+        text = self.world.render()
+        # Change-only redraw (v6f, perf): a still sky between two samples at
+        # a low `fps` is common, and Textual's own `update` still triggers a
+        # layout/paint even when nothing changed — skip it when this frame's
+        # plain text and spans are identical to the last one drawn.
+        signature = (text.plain, text.spans)
+        if signature == self._field_last_signature:
+            return
+        self._field_last_signature = signature
+        widget.update(text)
 
     # ---- undo -----------------------------------------------------------
 

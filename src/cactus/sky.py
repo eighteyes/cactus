@@ -51,6 +51,18 @@ Responsibilities:
 - Stay pure Python (no numpy) and free of Textual or store imports; `field.py`
   is the only caller, and it duck-types `palette` (no import of its type
   here, to avoid a cycle).
+- Perf (v6f, q384 "horrible, sucks up a ton of cpu"): each `Air` tracks which
+  rows are `active` (carry density, or sit beside a row that does) and skips
+  advect/diffuse/react/clamp on the rest; `_project_composite` skips a grid's
+  bilinear tap the same way, and flags a pixel row `row_empty` when every
+  grid skipped it so `downsample` can fast-path a whole blank terminal row.
+  `SkyConfig.fps` (shared group) is how often the TUI samples the field at
+  all — `Air.advance`/`Sky.advance` still take the true elapsed `dt`, so
+  raising or lowering it only changes the sampling rate, not the physics.
+  `SkyConfig.sky_engine` ("fluid" default, "texture") picks between this
+  module's cellular automaton and `TextureSky`, v5's baked-noise sky restored
+  behind the same four-method interface (`make_sky` is the one place that
+  chooses); `field.py`'s `run_bench()` (`cactus sky --bench`) times both.
 """
 
 from __future__ import annotations
@@ -237,6 +249,8 @@ _SHARED_COMMENTS = {
     "z_far": "world distance a grid's far edge (and the haze mix) clamps to",
     "ground_lines": "how many faint perspective lines cross the ground band (0 disables)",
     "deck_altitude_px": "the deck's world y — how far above the horizon its top peeks through",
+    "fps": "how often the TUI samples and redraws the field, per second",
+    "sky_engine": "which sky renderer runs: 'fluid' (cellular automaton) or 'texture' (cheaper baked noise)",
 }
 
 
@@ -292,6 +306,16 @@ class SkyConfig:
     z_far: float = field(default=32.0, metadata={"step": 4.0, "lo": 8.0, "hi": 400.0})
     ground_lines: int = field(default=7, metadata={"step": 1, "lo": 0, "hi": 9})
     deck_altitude_px: float = field(default=0.0, metadata={"step": 2.0, "lo": 0.0, "hi": 64.0})
+
+    # Perf (v6f): how often the TUI samples the field, independent of the
+    # physics' own `dt` integration — `advance(dt)` still takes the true
+    # elapsed wall time, so raising or lowering `fps` only changes how often
+    # a frame is drawn, never how fast the sky or a falling seed moves.
+    fps: int = field(default=5, metadata={"step": 1, "lo": 1, "hi": 20})
+    # Which sky renderer runs: "fluid" is the cellular-automaton `Sky` above,
+    # "texture" is the cheaper v5 baked-noise `TextureSky` (same interface),
+    # restored as a lever rather than a replacement (v6f, q384).
+    sky_engine: str = field(default="fluid", metadata={"choices": ("fluid", "texture")})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkyConfig":
@@ -425,6 +449,22 @@ class Air:
         self.m: list[list[float]] = [[1.0] * self.width for _ in range(self.height)]
         self.bands = self._draw_bands()
         self.env = self._build_env()
+        # Perf (v6f): `_nonzero[y]` is true when row `y` itself carries any
+        # density; `active` (its dilation by one row either side, since a
+        # neighbour can still diffuse into an otherwise-empty row) is what
+        # advect/diffuse/react/clamp — and `_project_composite`'s bilinear
+        # taps — actually gate on. Both are tracked incrementally: `advance()`
+        # only ever re-derives a row's `_nonzero` from the rows it just
+        # touched, never rescanning the whole grid. `active` is a property
+        # rather than a plain attribute so any *external* reader (a test that
+        # pokes `d`/`m` directly and never ticks, or `_project_composite`
+        # reading a grid it did not just advance) still gets a correct answer
+        # — `_active_dirty` forces exactly one full rescan on the first read
+        # after construction (or `resize`), never repeated after.
+        self._nonzero = [False] * self.height
+        self._m_settled = [True] * self.height  # `m` starts at 1.0 everywhere
+        self._active_cache: list[bool] = [False] * self.height
+        self._active_dirty = True
         if warm:
             for _ in range(40):
                 self._nucleate(_DEFAULT_DT, force=True)
@@ -445,25 +485,69 @@ class Air:
             for y in range(self.height)
         ]
 
+    @property
+    def active(self) -> list[bool]:
+        """Which rows advect/diffuse/react/clamp (and `_project_composite`)
+        should bother with — see the note in `__init__`. Lazily refreshed
+        from `d` on the first read after construction/`resize`; every read
+        after that is the cache `advance()` keeps current incrementally."""
+        if self._active_dirty:
+            self._nonzero = [any(v > 0.0 for v in row) for row in self.d]
+            self._m_settled = [all(w == 1.0 for w in row) for row in self.m]
+            self._active_cache = self._dilate(self._nonzero)
+            self._active_dirty = False
+        return self._active_cache
+
     # ---- advance ----------------------------------------------------------
 
     def advance(self, dt: float, world_wind: float, shear_floor: float, shear_base: float, shear_span: float) -> None:
         wind = world_wind * self.config.wind_scale
-        self._advect(wind, shear_floor, shear_base, shear_span, dt)
-        self._diffuse(dt)
-        self._react(dt)
+        active = self.active  # triggers the lazy refresh above if needed
+        self._advect(active, wind, shear_floor, shear_base, shear_span, dt)
+        self._diffuse(active, dt)
+        # `_react` also has to run on a row with zero density (and no active
+        # neighbour) whose moisture has not yet fully replenished back to
+        # 1.0 — skipping it there would freeze that recovery mid-flight,
+        # changing the growth this row gets once density reaches it again.
+        # A row that is neither is a true no-op for `_react` (`v == 0`
+        # zeroes `grown` regardless of `env`, and `replenish * (1 - 1.0)` is
+        # exactly 0), so skipping it is exact, not an approximation.
+        react_active = [active[y] or not self._m_settled[y] for y in range(self.height)]
+        self._react(react_active, dt)
         self._nucleate(dt)
-        self._clamp()
+        # `_nucleate` may have just set `_nonzero` true on a row `active`
+        # didn't cover; re-dilate before `clamp` so that row gets floor-
+        # snapped too, then refresh `_nonzero`/`_m_settled` only for the rows
+        # this frame actually touched — every other row is exactly as it
+        # was, so its state cannot have changed.
+        touched = self._dilate(self._nonzero)
+        self._clamp(touched)
+        for y in range(self.height):
+            if touched[y]:
+                self._nonzero[y] = any(v > 0.0 for v in self.d[y])
+            if react_active[y]:
+                self._m_settled[y] = all(w == 1.0 for w in self.m[y])
+        self._active_cache = self._dilate(self._nonzero)
 
     def tick(self, world_wind: float, shear_floor: float, shear_base: float, shear_span: float) -> None:
         """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
         self.advance(_DEFAULT_DT, world_wind, shear_floor, shear_base, shear_span)
 
-    def _advect(self, wind: float, shear_floor: float, shear_base: float, shear_span: float, dt: float) -> None:
-        h, w = self.height, self.width
+    def _dilate(self, nz: list[bool]) -> list[bool]:
+        """`nz` widened by one row either side — a row with all-zero density
+        still needs advect/diffuse to run on it while an active neighbour can
+        bleed density into it."""
+        h = self.height
+        return [nz[y] or (y > 0 and nz[y - 1]) or (y + 1 < h and nz[y + 1]) for y in range(h)]
+
+    def _advect(
+        self, active: list[bool], wind: float, shear_floor: float, shear_base: float, shear_span: float, dt: float,
+    ) -> None:
+        h = self.height
         d = self.d
-        new_rows = []
         for y in range(h):
+            if not active[y]:
+                continue
             u = wind * (shear_base + shear_span * (1.0 - y / h))
             if abs(u) < shear_floor:
                 u = math.copysign(shear_floor, u) if u != 0.0 else shear_floor
@@ -473,44 +557,60 @@ class Air:
             row = d[y]
             i0 = _rotate(row, k + 1)
             i1 = _rotate(row, k)
-            new_rows.append([a * frac + b * (1.0 - frac) for a, b in zip(i0, i1)])
-        for y in range(h):
-            d[y][:] = new_rows[y]
+            d[y][:] = [a * frac + b * (1.0 - frac) for a, b in zip(i0, i1)]
 
-    def _diffuse(self, dt: float) -> None:
+    def _diffuse(self, active: list[bool], dt: float) -> None:
         h, w = self.height, self.width
         kx, ky = self.config.kx * dt, self.config.ky * dt
         d = self.d
-        new_rows = []
+        updates = []
         for y in range(h):
+            if not active[y]:
+                continue
             row = d[y]
             left = _rotate(row, 1)
             right = _rotate(row, -1)
             up = d[y + 1] if y + 1 < h else row
             down = d[y - 1] if y - 1 >= 0 else row
-            new_rows.append([
+            updates.append((y, [
                 row[x] + kx * (left[x] + right[x] - 2.0 * row[x]) + ky * (up[x] + down[x] - 2.0 * row[x])
                 for x in range(w)
-            ])
-        for y in range(h):
-            d[y][:] = new_rows[y]
+            ]))
+        for y, new_row in updates:
+            d[y][:] = new_row
 
-    def _react(self, dt: float) -> None:
+    def _react(self, active: list[bool], dt: float) -> None:
         g, e = self.config.growth, self.config.evaporation
         uptake, replenish = self.config.uptake, self.config.replenish
         allee = self.config.allee
         env = self.env
         d, m = self.d, self.m
         for y in range(self.height):
-            gy = g * env[y]
+            if not active[y]:
+                continue
+            envy = env[y]
             drow, mrow = d[y], m[y]
+            if envy == 0.0:
+                # `gy = g * envy` is exactly 0.0 here (a row far enough from
+                # every band that the Gaussian underflows), so `grown` is
+                # exactly 0.0 for every pixel — skip the per-pixel growth
+                # polynomial, but keep the same floating-point expression
+                # the general branch would reduce to with `gr = 0.0`, so
+                # this is bit-identical, not an approximation.
+                drow[:] = [v + dt * (0.0 - e * v) for v in drow]
+                mrow[:] = [w + dt * (replenish * (1.0 - w) - uptake * 0.0) for w in mrow]
+                continue
+            gy = g * envy
             # Bistable growth: below `allee` the term is negative and a faint
             # wisp thins away; above it a streak grows toward full. `grown`
             # is a rate (per second); `dt` integrates it and the evaporation/
             # uptake/replenish terms alongside it, Euler-style.
             grown = [gy * v * (v - allee) * (1.0 - v) * w for v, w in zip(drow, mrow)]
             drow[:] = [v + dt * (gr - e * v) for v, gr in zip(drow, grown)]
-            mrow[:] = [w + dt * (replenish * (1.0 - w) - uptake * max(gr, 0.0)) for w, gr in zip(mrow, grown)]
+            mrow[:] = [
+                w + dt * (replenish * (1.0 - w) - uptake * (gr if gr > 0.0 else 0.0))
+                for w, gr in zip(mrow, grown)
+            ]
 
     def _nucleate(self, dt: float, force: bool = False) -> None:
         cfg = self.config
@@ -531,12 +631,17 @@ class Air:
             for i in range(cfg.puff_width):
                 xx = (x0 + i) % w
                 row[xx] = min(1.0, row[xx] + amt)
+            self._nonzero[yy] = True  # a puff always adds positive density
 
-    def _clamp(self) -> None:
+    def _clamp(self, active: list[bool]) -> None:
         # Below `floor` a pixel snaps to zero: evaporation is exponential and
         # would otherwise leave a faint haze of specks over the whole sky.
         floor = self.config.floor
-        for row in self.d:
+        d = self.d
+        for y in range(self.height):
+            if not active[y]:
+                continue
+            row = d[y]
             row[:] = [0.0 if v < floor else 1.0 if v > 1.0 else v for v in row]
 
     # ---- resize -----------------------------------------------------------
@@ -573,6 +678,10 @@ class Air:
         self.m = [[1.0] * new_w for _ in range(new_h)]
         self.bands = [(c * scale, s * scale) for c, s in self.bands]
         self.env = self._build_env()
+        self._nonzero = [any(v > 0.0 for v in row) for row in self.d]
+        self._m_settled = [True] * self.height  # `m` was just rebuilt at 1.0 everywhere
+        self._active_cache = self._dilate(self._nonzero)
+        self._active_dirty = False
 
 
 # ---- downsample -------------------------------------------------------
@@ -680,11 +789,26 @@ def _composite(grids: dict[str, Air]) -> tuple[list[list[float]], list[list[str]
     return density, owner
 
 
+_BLANK_ROW_CACHE: dict[int, list[tuple[str, None]]] = {}
+
+
+def _blank_row(cols: int) -> list[tuple[str, None]]:
+    """A whole row of `(" ", None)` cells, cached by width — the fast path
+    for a terminal row `downsample` already knows carries no density at all
+    (v6f, `row_empty`)."""
+    row = _BLANK_ROW_CACHE.get(cols)
+    if row is None:
+        row = [(" ", None)] * cols
+        _BLANK_ROW_CACHE[cols] = row
+    return row
+
+
 def downsample(
     grids: dict[str, Air], palette, sky_rows: int, cols: int, cfg: SkyConfig, *,
     density: list[list[float]] | None = None,
     owner: list[list[str]] | None = None,
     z_by_row: list[float] | None = None,
+    row_empty: list[bool] | None = None,
 ) -> list[list[tuple[str, str | None]]]:
     """One `(glyph, colour)` per terminal cell from a composited `PX_X x
     PX_Y` pixel block, top row first.
@@ -695,7 +819,11 @@ def downsample(
     (every pre-v7 caller, including every direct-array test), this falls
     back to `_composite(grids)` reversed, exactly as before. `z_by_row`, one
     world distance per terminal row, drives the v7 z-based haze mix; omitted,
-    haze falls back to the old row/sky_rows shift.
+    haze falls back to the old row/sky_rows shift. `row_empty`, one flag per
+    *pixel* row from `_project_composite` (v6f), lets a terminal row whose
+    whole `PX_Y`-pixel block is empty skip the per-cell loop outright — a
+    fully empty block's mean is always 0 and its peak never clears
+    `DENSITY_FLOOR`, so every cell in it would render blank anyway.
     """
     if density is None or owner is None:
         density, owner = _composite(grids)
@@ -704,6 +832,9 @@ def downsample(
     out: list[list[tuple[str, str | None]]] = []
     for row_i in range(sky_rows):
         y0 = row_i * PX_Y
+        if row_empty is not None and all(row_empty[y0: y0 + PX_Y]):
+            out.append(_blank_row(cols))
+            continue
         block_density = density[y0: y0 + PX_Y]
         block_owner = owner[y0: y0 + PX_Y]
         row_from_bottom = (sky_rows - 1) - row_i
@@ -809,7 +940,7 @@ def _build_projection_rows(
 def _project_composite(
     grids: dict[str, Air], proj_rows: list[tuple[bool, float, int, int, float, list[float] | None]],
     width_px: int, camera_x: float,
-) -> tuple[list[list[float]], list[list[str]], list[float]]:
+) -> tuple[list[list[float]], list[list[str]], list[float], list[bool]]:
     """Perspective-projected composite (v7), top row first (unlike
     `_composite`'s bottom-up `Air.d`).
 
@@ -819,18 +950,26 @@ def _project_composite(
     indices (one comprehension per grid) and pick nearest-first
     (`GRID_ORDER`) with a final comprehension. Every step is a row-level list
     comprehension over plain arithmetic and indexing — no per-pixel function
-    calls, no `math` module in this path at all.
+    calls, no `math` module in this path at all. A grid's tap is skipped
+    outright (v6f) when neither tapped row is `Air.active`; the fourth
+    return value, `row_empty`, flags a pixel row where every grid's tap was
+    skipped, so `downsample` can fast-path a whole blank terminal row.
     """
     g_width = next(iter(grids.values())).width
     near_d, mid_d, far_d = grids["near"].d, grids["mid"].d, grids["far"].d
+    near_active, mid_active, far_active = grids["near"].active, grids["mid"].active, grids["far"].active
+    zero_row = [0.0] * width_px
+    empty_owner_row = [""] * width_px
     density: list[list[float]] = []
     owner: list[list[str]] = []
     z_by_pixel_row: list[float] = []
+    row_empty: list[bool] = []
     for is_sky, z, y0, y1, ty, base_row in proj_rows:
         if is_sky:
-            density.append([0.0] * width_px)
-            owner.append([""] * width_px)
+            density.append(zero_row)
+            owner.append(empty_owner_row)
             z_by_pixel_row.append(0.0)
+            row_empty.append(True)
             continue
         z_by_pixel_row.append(z)
         xs = [(b + camera_x) % g_width for b in base_row]
@@ -838,26 +977,46 @@ def _project_composite(
         tx = [x - i for x, i in zip(xs, x0)]
         x1 = [i + 1 if i + 1 < g_width else 0 for i in x0]
         oty = 1.0 - ty
-        near0, near1 = near_d[y0], near_d[y1]
-        mid0, mid1 = mid_d[y0], mid_d[y1]
-        far0, far1 = far_d[y0], far_d[y1]
-        near_v = [
-            (near0[a] + (near0[b] - near0[a]) * t) * oty + (near1[a] + (near1[b] - near1[a]) * t) * ty
-            for a, b, t in zip(x0, x1, tx)
-        ]
-        mid_v = [
-            (mid0[a] + (mid0[b] - mid0[a]) * t) * oty + (mid1[a] + (mid1[b] - mid1[a]) * t) * ty
-            for a, b, t in zip(x0, x1, tx)
-        ]
+        # Skip a grid's bilinear tap outright when neither tapped row carries
+        # any density (perf, v6f) — the projection reads two arbitrary grid
+        # rows per screen row, so it plugs into the same `Air.active` sparsity
+        # signal advect/diffuse/react already gate on, not screen-row bands.
+        if near_active[y0] or near_active[y1]:
+            near0, near1 = near_d[y0], near_d[y1]
+            near_v = [
+                (near0[a] + (near0[b] - near0[a]) * t) * oty + (near1[a] + (near1[b] - near1[a]) * t) * ty
+                for a, b, t in zip(x0, x1, tx)
+            ]
+        else:
+            near_v = zero_row
+        if mid_active[y0] or mid_active[y1]:
+            mid0, mid1 = mid_d[y0], mid_d[y1]
+            mid_v = [
+                (mid0[a] + (mid0[b] - mid0[a]) * t) * oty + (mid1[a] + (mid1[b] - mid1[a]) * t) * ty
+                for a, b, t in zip(x0, x1, tx)
+            ]
+        else:
+            mid_v = zero_row
         # The far deck only ever owns a pixel behind near and mid, and is the
         # most compressed layer anyway — half the horizontal taps (every
         # other column, nearest-neighbour-duplicated back to full width)
         # keeps the frame budget without a visible loss (perf note, v7).
-        far_half = [
-            (far0[a] + (far0[b] - far0[a]) * t) * oty + (far1[a] + (far1[b] - far1[a]) * t) * ty
-            for a, b, t in zip(x0[::2], x1[::2], tx[::2])
-        ]
-        far_v = [far_half[i >> 1] for i in range(len(x0))]
+        if far_active[y0] or far_active[y1]:
+            far0, far1 = far_d[y0], far_d[y1]
+            far_half = [
+                (far0[a] + (far0[b] - far0[a]) * t) * oty + (far1[a] + (far1[b] - far1[a]) * t) * ty
+                for a, b, t in zip(x0[::2], x1[::2], tx[::2])
+            ]
+            far_v = [far_half[i >> 1] for i in range(len(x0))]
+        else:
+            far_v = zero_row
+        if near_v is zero_row and mid_v is zero_row and far_v is zero_row:
+            # None of the three grids had density at either tapped row —
+            # this whole pixel row is empty, no per-pixel picking needed.
+            density.append(zero_row)
+            owner.append(empty_owner_row)
+            row_empty.append(True)
+            continue
         picks = [
             (nv, "near") if nv > DENSITY_FLOOR else
             (mv, "mid") if mv > DENSITY_FLOOR else
@@ -868,7 +1027,8 @@ def _project_composite(
         drow, orow = zip(*picks) if picks else ((), ())
         density.append(list(drow))
         owner.append(list(orow))
-    return density, owner, z_by_pixel_row
+        row_empty.append(False)
+    return density, owner, z_by_pixel_row, row_empty
 
 
 # ---- Sky ----------------------------------------------------------------
@@ -939,11 +1099,272 @@ class Sky:
     def render_cells(self) -> list[list[tuple[str, str | None]]]:
         if self.cols <= 0 or self.sky_rows <= 0:
             return []
-        density, owner, z_by_pixel_row = _project_composite(
+        density, owner, z_by_pixel_row, row_empty = _project_composite(
             self.grids, self._proj_rows, self._proj_width_px, self.camera_x,
         )
         z_by_row = [z_by_pixel_row[min(row_i * PX_Y, len(z_by_pixel_row) - 1)] for row_i in range(self.sky_rows)]
         return downsample(
             self.grids, self.palette, self.sky_rows, self.cols, self.config,
-            density=density, owner=owner, z_by_row=z_by_row,
+            density=density, owner=owner, z_by_row=z_by_row, row_empty=row_empty,
         )
+
+
+# ---- texture engine (v5, restored as `sky_engine == "texture"`, v6f) -------
+#
+# The look q384 ("field-best") tagged, from before the cellular-automaton
+# grids existed: two baked, scrolling, slowly-morphing value-noise textures
+# per depth, composited nearest-first and read through the very same
+# `downsample()` the fluid engine uses. No cellular automaton, no
+# perspective projection — a fraction of `Sky`'s per-frame cost, behind the
+# same four-method interface (`advance`, `render_cells`, `resize`, `apply`).
+# Every per-tick-at-0.1s rate from the original v5 module is divided by
+# `_DEFAULT_DT` here, the same conversion `GridConfig`'s rates got in v6b, so
+# `advance(dt)` integrates continuously and the look at the TUI's default
+# sampling is unchanged from v5.
+
+_TEX_MORPH_SECONDS = 120.0  # a layer's texture fully morphs into a fresh one
+_TEX_BREATH_SECONDS = 90.0  # the density cutoff's swell/thin cycle
+_TEX_BREATH_AMPLITUDE = 0.06
+
+# depth (for colour parity with GRID_DEPTH), octave count, the anisotropic
+# feature scale (`scale_x` in terminal cells, `scale_y` in pixel rows — very
+# different so fbm reads long and thin, cirrus rather than blobs), the fbm
+# cutoff/gain that shape density, scroll speed (per second), this layer's
+# stagger in [0, 1) (its own starting point on the morph/breath cycles, so
+# the three layers never crest together), and the vertical comb's period.
+_TEX_BANDS = {
+    "far": dict(depth=0.9, octaves=3, scale_x=40, scale_y=3, cutoff=0.55, gain=3.5,
+                speed=0.02 / _DEFAULT_DT, stagger=0.0, comb_period=6),
+    "mid": dict(depth=0.6, octaves=3, scale_x=28, scale_y=4, cutoff=0.51, gain=3.2,
+                speed=0.05 / _DEFAULT_DT, stagger=0.33, comb_period=8),
+    "near": dict(depth=0.2, octaves=2, scale_x=18, scale_y=6, cutoff=0.48, gain=3.0,
+                 speed=0.10 / _DEFAULT_DT, stagger=0.66, comb_period=10),
+}
+
+
+def _smoothstep(t: float) -> float:
+    t = _clamp(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+class _TexNoise:
+    """A lattice of random floats, wrapping horizontally, bilinear-sampled."""
+
+    def __init__(self, rng: random.Random, lattice_w: int, lattice_h: int) -> None:
+        self.lattice_w = lattice_w
+        self.lattice_h = lattice_h
+        self.lattice = [[rng.random() for _ in range(lattice_w)] for _ in range(lattice_h)]
+
+    def sample(self, x: float, y: float) -> float:
+        lw, lh = self.lattice_w, self.lattice_h
+        x = x % lw
+        x0 = int(x)
+        x1 = (x0 + 1) % lw
+        tx = _smoothstep(x - x0)
+        y0f = int(y)
+        y1f = y0f + 1
+        ty = _smoothstep(y - y0f)
+        y0 = min(max(y0f, 0), lh - 1)
+        y1 = min(max(y1f, 0), lh - 1)
+        row0, row1 = self.lattice[y0], self.lattice[y1]
+        a = row0[x0] + (row0[x1] - row0[x0]) * tx
+        b = row1[x0] + (row1[x1] - row1[x0]) * tx
+        return a + (b - a) * ty
+
+    def fbm(self, x: float, y: float, octaves: int, lacunarity: float = 2.0, gain: float = 0.5) -> float:
+        freq, amp, total, norm = 1.0, 1.0, 0.0, 0.0
+        for _ in range(octaves):
+            total += amp * self.sample(x * freq, y * freq)
+            norm += amp
+            freq *= lacunarity
+            amp *= gain
+        return total / norm if norm else 0.0
+
+
+def _tex_read_window(row: list[float], off: int, w: int, period: int) -> list[float]:
+    """`w` values starting at `off`, wrapping at `period` — the seamless scroll."""
+    end = off + w
+    if end <= period:
+        return row[off:end]
+    return row[off:period] + row[0:end - period]
+
+
+class _TexLayer:
+    """One depth band's pair of baked, scrolling, morphing raw-fbm textures
+    (v5). `tex_a`/`tex_b` hold raw fbm values in [0, 1] — no cutoff, gain, or
+    envelope baked in, so the cutoff can breathe at composite time for free.
+    Each is baked exactly `period_px` wide, one full period of the lattice
+    noise in x, so a `width_px`-wide read window wraps by plain modulo
+    indexing (`_tex_read_window`) with no seam."""
+
+    def __init__(self, band: str, width_px: int, height_px: int, rng: random.Random) -> None:
+        p = _TEX_BANDS[band]
+        self.band = band
+        self.depth = p["depth"]
+        self.width_px = width_px
+        self.height_px = height_px
+        self.speed = p["speed"]
+
+        self.scale_x_px = p["scale_x"] * PX_X
+        self.scale_y_px = p["scale_y"]
+        self.octaves = p["octaves"]
+        self.base_cutoff = p["cutoff"]
+        self.gain = p["gain"]
+        self.comb_period = p["comb_period"]
+        self.comb_phase = rng.uniform(0.0, 2.0 * math.pi)
+
+        self.blend = p["stagger"]
+        self.breath_phase = 2.0 * math.pi * p["stagger"]
+        self._time = 0.0
+
+        # Vertical envelope: a shared bell shape (bunched a little above mid
+        # height) times this layer's own thin horizontal comb, so streaks sit
+        # in stacked bands instead of one wide blob.
+        centre = 0.55 * height_px
+        sigma = max(0.22 * height_px, 1e-6)
+        self.envelope = [
+            math.exp(-((y - centre) / sigma) ** 2) * self._comb(y)
+            for y in range(height_px)
+        ]
+
+        min_period = max(2 * width_px, 1)
+        self.lattice_w = max(3, -(-min_period // self.scale_x_px))  # ceil div
+        self.period_px = self.lattice_w * self.scale_x_px
+        self.lattice_h = max(3, round(height_px / self.scale_y_px) + 2)
+
+        self.offset = 0.0
+        self.rng = rng
+        self.tex_a = self._bake_raw()
+        self.tex_b = self._bake_raw()
+
+    def _comb(self, y: int) -> float:
+        phase = 2.0 * math.pi * y / self.comb_period + self.comb_phase
+        return 0.8 + 0.2 * (0.5 + 0.5 * math.cos(phase))
+
+    def _bake_raw(self) -> list[list[float]]:
+        noise = _TexNoise(self.rng, self.lattice_w, self.lattice_h)
+        tex: list[list[float]] = []
+        for y in range(self.height_px):
+            if self.envelope[y] < 1e-4:
+                tex.append([0.0] * self.period_px)
+                continue
+            ys = y / self.scale_y_px
+            tex.append([
+                noise.fbm(x / self.scale_x_px, ys, self.octaves)
+                for x in range(self.period_px)
+            ])
+        return tex
+
+    def tick(self, dt: float) -> None:
+        self._time += dt
+        self.offset = (self.offset + self.speed * dt) % self.period_px
+        self.blend += dt / _TEX_MORPH_SECONDS
+        if self.blend >= 1.0:
+            self.blend = 0.0
+            self.tex_a = self.tex_b
+            self.tex_b = self._bake_raw()
+
+    def _effective_cutoff(self) -> float:
+        phase = 2.0 * math.pi * self._time / _TEX_BREATH_SECONDS + self.breath_phase
+        return self.base_cutoff + _TEX_BREATH_AMPLITUDE * math.sin(phase)
+
+    def density_row(self, y: int) -> list[float]:
+        """This layer's composited density for row `y`, `width_px` wide,
+        already windowed by `offset`."""
+        env = self.envelope[y]
+        if env < 1e-4:
+            return [0.0] * self.width_px
+        off = int(self.offset)
+        w = self.width_px
+        period = self.period_px
+        row_a = _tex_read_window(self.tex_a[y], off, w, period)
+        row_b = _tex_read_window(self.tex_b[y], off, w, period)
+        blend = self.blend
+        cut = self._effective_cutoff()
+        gain = self.gain
+        out = []
+        for a, b in zip(row_a, row_b):
+            raw = a + (b - a) * blend
+            d = (raw - cut) * gain
+            d = 0.0 if d < 0.0 else (1.0 if d > 1.0 else d)
+            out.append(env * (d ** 0.7 if d > 0.0 else 0.0))
+        return out
+
+
+def _texture_composite(
+    layers: dict[str, "_TexLayer"], height_px: int, width_px: int,
+) -> tuple[list[list[float]], list[list[str]]]:
+    """Front-to-back (`GRID_ORDER`) composite of every layer's `density_row`,
+    top row first — the same ownership rule `_composite` uses for `Air`."""
+    density = [[0.0] * width_px for _ in range(height_px)]
+    owner = [[""] * width_px for _ in range(height_px)]
+    for y in range(height_px):
+        rows = [(name, layers[name].density_row(y)) for name in GRID_ORDER]
+        drow, orow = density[y], owner[y]
+        for x in range(width_px):
+            for name, row in rows:
+                v = row[x]
+                if v > DENSITY_FLOOR:
+                    drow[x] = v
+                    orow[x] = name
+                    break
+    return density, owner
+
+
+class TextureSky:
+    """v5's baked-noise sky, restored as the `sky_engine == "texture"` lever
+    (v6f, q384): same four-method interface as `Sky` (`advance`,
+    `render_cells`, `resize`, `apply`), read through the same tonal
+    `downsample()`, but with no cellular automaton and no perspective
+    projection — the cheap look a fraction of the fluid engine's frame cost."""
+
+    def __init__(self, cols: int, sky_rows: int, rng: random.Random, palette, config: SkyConfig | None = None) -> None:
+        self.cols = max(cols, 0)
+        self.sky_rows = max(sky_rows, 0)
+        self.rng = rng
+        self.palette = palette
+        self.config = config or SkyConfig()
+        self.camera_x = 0.0
+        self._bake()
+
+    def _bake(self) -> None:
+        self.width_px = max(self.cols * PX_X, 1)
+        self.height_px = max(self.sky_rows * PX_Y, 1)
+        self.layers: dict[str, _TexLayer] = {
+            name: _TexLayer(name, self.width_px, self.height_px, self.rng) for name in GRID_ORDER
+        }
+
+    def apply(self, config: SkyConfig) -> None:
+        self.config = config
+
+    def resize(self, cols: int, sky_rows: int) -> None:
+        self.cols = max(cols, 0)
+        self.sky_rows = max(sky_rows, 0)
+        self._bake()
+
+    def advance(self, dt: float, wind: float = 0.0) -> None:
+        for layer in self.layers.values():
+            layer.tick(dt)
+        # Same base drift `Sky.advance` gives its projected camera, so a
+        # falling seed and field.py's ground lines still read the same wind.
+        if self.width_px:
+            self.camera_x = (self.camera_x + wind * self.config.shear_base * dt) % self.width_px
+
+    def tick(self, wind: float = 0.0) -> None:
+        """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
+        self.advance(_DEFAULT_DT, wind)
+
+    def render_cells(self) -> list[list[tuple[str, str | None]]]:
+        if self.cols <= 0 or self.sky_rows <= 0:
+            return []
+        density, owner = _texture_composite(self.layers, self.height_px, self.width_px)
+        return downsample(self.layers, self.palette, self.sky_rows, self.cols, self.config, density=density, owner=owner)
+
+
+def make_sky(cols: int, sky_rows: int, rng: random.Random, palette, config: SkyConfig | None = None) -> "Sky | TextureSky":
+    """`Sky` or `TextureSky`, chosen by `config.sky_engine` (default "fluid",
+    `SkyConfig()` when `config` is omitted) — the one place that picks
+    between the two engines, so `field.py` never has to know which it got."""
+    engine = (config or SkyConfig()).sky_engine
+    cls = TextureSky if engine == "texture" else Sky
+    return cls(cols, sky_rows, rng, palette, config)

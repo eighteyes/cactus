@@ -1217,10 +1217,17 @@ def cmd_where(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
 
 
 def cmd_sky(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
-    """Inspect or write the field's sky tuning config (unrelated to the
-    inbox; ignores `store`, kept only for the usual `cmd_*` signature)."""
+    """Inspect, write, or benchmark the field's sky tuning config (unrelated
+    to the inbox; ignores `store`, kept only for the usual `cmd_*`
+    signature)."""
     from .sky import SkyConfig, config_path
 
+    if args.bench:
+        from .field import run_bench
+
+        for label, mean_ms in run_bench():
+            print(f"{label}: {mean_ms:.3f} ms")
+        return EXIT_OK
     if args.dump:
         path = SkyConfig().dump()
         print(str(path))
@@ -1494,6 +1501,8 @@ def build_parser() -> argparse.ArgumentParser:
     sk = verb("sky", help="inspect or write the field's sky tuning config")
     sk.add_argument("--dump", action="store_true",
                     help="write the default sky tuning constants to the config path")
+    sk.add_argument("--bench", action="store_true",
+                    help="run a 50-frame perf probe (100x20, 3 seeds) and print the frame-time breakdown")
     sk.set_defaults(fn=cmd_sky)
 
     return p

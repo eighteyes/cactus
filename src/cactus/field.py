@@ -44,6 +44,14 @@ Responsibilities:
   bottom endpoints drift sideways with `Sky.camera_x`. They sit under the
   sand speckle and under every cactus cell — the lowest-priority layer,
   drawn only where nothing else claims the cell.
+- Perf (v6f): `_seed_splat_canvas`/`_pile_splat_canvas` also return the set of
+  terminal cells they actually touched, so `_sample_cell` only ever asks the
+  (otherwise empty) splat canvas about a cell in that set — a frame with no
+  seeds falling never calls it at all. `World.apply_sky_config` swaps a new
+  `SkyConfig` into the running sky, rebuilding it as the other engine class
+  when `sky_engine` itself changed (`sky.apply` alone can only retune the
+  engine already running). `run_bench()` (`cactus sky --bench`) times 50
+  frames of a 100x20, 3-seed world and prints the per-step breakdown.
 
 Pure Python: no persistence, no store, no Textual import.
 """
@@ -52,16 +60,20 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from dataclasses import dataclass, field
 
 from rich.text import Text
 
-from .sky import PX_X, PX_Y, Sky, atmospheric_colour, _ordered_dither
+from .sky import PX_X, PX_Y, Sky, SkyConfig, TextureSky, atmospheric_colour, make_sky, _ordered_dither
 
 SUB_X = 2
 SUB_Y = 2
 GROUND_ROWS = 2  # terminal rows of flat ground
 QUADRANT = " ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█"
+# `_sample_cell`'s structure-bit offsets, precomputed once (perf, v6f) — tl,
+# tr, bl, br, top is the higher y.
+_STRUCT_OFFSETS = tuple(enumerate(((0, 1), (1, 1), (0, 0), (1, 0))))
 
 # Pacing, not physics (q: "less video gamey, a seed takes 1 min to land"):
 # `TICK_SECONDS` is only the sampling period `tick()` stands in for in tests
@@ -230,13 +242,13 @@ class World:
     seeds: list[Clump] = field(default_factory=list)
     birds: list[Bird] = field(default_factory=list)  # flat render/nudge surface; see `_flocks`
     _flocks: list[Flock] = field(default_factory=list, init=False)
-    sky: Sky = field(init=False)
+    sky: Sky | TextureSky = field(init=False)
     terminal_vy: float = field(init=False)
 
     def __post_init__(self) -> None:
         self.width = self.cols * SUB_X
         self.height = self.rows * SUB_Y
-        self.sky = Sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette)
+        self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette)
         self._set_terminal_vy()
 
     def _set_terminal_vy(self) -> None:
@@ -248,7 +260,19 @@ class World:
     def reseed(self, seed: int) -> None:
         """Reset the rng and re-bake the sky from it, deterministically."""
         self.rng = random.Random(seed)
-        self.sky = Sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette)
+        self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette, self.sky.config)
+
+    def apply_sky_config(self, config: SkyConfig) -> None:
+        """Swap `config` into the running sky (`Sky.apply`/`TextureSky.apply`)
+        — or, when `sky_engine` itself changed, rebuild `self.sky` as the
+        other engine (v6f): `apply` alone can only retune the engine that is
+        already running, never turn a `Sky` into a `TextureSky` or back.
+        Rebuilding re-bakes the weather from scratch, same as a resize."""
+        current_engine = "texture" if isinstance(self.sky, TextureSky) else "fluid"
+        if config.sky_engine != current_engine:
+            self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette, config)
+        else:
+            self.sky.apply(config)
 
     def resize(self, cols: int, rows: int) -> None:
         """Keep the structure; rebake the sky to the new bounds."""
@@ -589,16 +613,27 @@ class World:
                 if density > canvas.get(key, 0.0):
                     canvas[key] = density
 
-    def _seed_splat_canvas(self) -> dict[tuple[int, int], float]:
+    @staticmethod
+    def _splat_touched_cells(canvas: dict[tuple[int, int], float]) -> set[tuple[int, int]]:
+        """The terminal cells a splat canvas actually put density into
+        (v6f, perf): a canvas pixel `(px, py)` lands in cell `(px // PX_X,
+        py // PX_Y)`, the same mapping `_seed_pixel_block` reads it back
+        through. `_sample_cell` consults `_seed_pixel_block` only for a cell
+        in this set, so a frame with seeds far from most of the field never
+        even asks the (empty) canvas about a cell nowhere near one."""
+        return {(px // PX_X, py // PX_Y) for px, py in canvas}
+
+    def _seed_splat_canvas(self) -> tuple[dict[tuple[int, int], float], set[tuple[int, int]]]:
         """This frame's `(px, py) -> density` in braille-pixel space (`PX_X`
         by `PX_Y` per cell) for every airborne clump member's tumbling,
         antialiased footprint — an ellipse rotated by the clump's own
         `angle` plus the member's baked-in angle (v6e), so a multi-member
         clump reads as a lumpy mass. A landed seed is a `structure` cell and
-        never reaches here (see v6d)."""
+        never reaches here (see v6d). The second element is the set of
+        terminal cells the canvas touched (v6f)."""
         canvas: dict[tuple[int, int], float] = {}
         if not self.seeds:
-            return canvas
+            return canvas, set()
         width_px = self.cols * PX_X
         height_px = self.rows * PX_Y
         for clump in self.seeds:
@@ -609,17 +644,18 @@ class World:
                     canvas, bx, by, SEED_SIGMA_A, SEED_SIGMA_B, clump.angle + m.angle,
                     SEED_SPLAT_RADIUS_PX, SEED_SPLAT_FLOOR, width_px, height_px,
                 )
-        return canvas
+        return canvas, self._splat_touched_cells(canvas)
 
-    def _pile_splat_canvas(self) -> dict[tuple[int, int], float]:
+    def _pile_splat_canvas(self) -> tuple[dict[tuple[int, int], float], set[tuple[int, int]]]:
         """This frame's `(px, py) -> density` for every landed `structure`
         cell's small round splat, built with the same `_splat_gaussian`
         mechanism a falling seed's footprint uses — no tumble, no rotation.
         Only called under `pile_style == "dots"` (v6d); `render` skips it
-        entirely for the default "blocks" style."""
+        entirely for the default "blocks" style. The second element is the
+        set of terminal cells the canvas touched (v6f)."""
         canvas: dict[tuple[int, int], float] = {}
         if not self.structure:
-            return canvas
+            return canvas, set()
         width_px = self.cols * PX_X
         height_px = self.rows * PX_Y
         for cx, cy in self.structure:
@@ -629,7 +665,7 @@ class World:
                 canvas, bx, by, PILE_SPLAT_SIGMA, PILE_SPLAT_SIGMA, 0.0,
                 PILE_SPLAT_RADIUS_PX, SEED_SPLAT_FLOOR, width_px, height_px,
             )
-        return canvas
+        return canvas, self._splat_touched_cells(canvas)
 
     def _seed_pixel_block(
         self, cx: int, cy: int, canvas: dict[tuple[int, int], float]
@@ -655,8 +691,10 @@ class World:
     def render(self) -> Text:
         """Render `rows` lines of `cols` cells, one style span per run."""
         bird_cells = self._bird_cells()
-        seed_canvas = self._seed_splat_canvas()
-        pile_canvas = self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else {}
+        seed_canvas, seed_cells = self._seed_splat_canvas()
+        pile_canvas, pile_cells = (
+            self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else ({}, set())
+        )
         ground_line_cells = self._ground_line_cells()
         sky_grid = self.sky.render_cells()
         text = Text()
@@ -665,7 +703,9 @@ class World:
             sky_row = sky_grid[r] if r < len(sky_grid) else None
             runs: list[list[str | None]] = []
             for cx in range(self.cols):
-                ch, style = self._sample_cell(cx, cy, seed_canvas, bird_cells, sky_row, pile_canvas, ground_line_cells)
+                ch, style = self._sample_cell(
+                    cx, cy, seed_canvas, seed_cells, bird_cells, sky_row, pile_canvas, pile_cells, ground_line_cells,
+                )
                 if runs and runs[-1][1] == style:
                     runs[-1][0] += ch  # type: ignore[operator]
                 else:
@@ -684,30 +724,32 @@ class World:
         cx: int,
         cy: int,
         seed_canvas: dict[tuple[int, int], float],
+        seed_cells: set[tuple[int, int]],
         bird_cells: dict[tuple[int, int], tuple[str, str]],
         sky_row: list[tuple[str, str | None]] | None,
         pile_canvas: dict[tuple[int, int], float] | None = None,
+        pile_cells: set[tuple[int, int]] | None = None,
         ground_line_cells: dict[tuple[int, int], tuple[str, str]] | None = None,
     ) -> tuple[str, str | None]:
-        if seed_canvas:
+        if (cx, cy) in seed_cells:
             block = self._seed_pixel_block(cx, cy, seed_canvas)
             if block is not None:
                 return _ordered_dither(block), self.palette.seed
 
-        base_x, base_y = cx * SUB_X, cy * SUB_Y
-        # tl, tr, bl, br — top is the higher y.
-        offsets = ((0, 1), (1, 1), (0, 0), (1, 0))
         struct_bits = 0
         struct_cells: list[tuple[int, int]] = []
-        for i, (dx, dy) in enumerate(offsets):
-            cell = (base_x + dx, base_y + dy)
-            if cell in self.structure:
-                struct_bits |= 1 << i
-                struct_cells.append(cell)
+        if self.structure:
+            base_x, base_y = cx * SUB_X, cy * SUB_Y
+            # tl, tr, bl, br — top is the higher y.
+            for i, (dx, dy) in _STRUCT_OFFSETS:
+                cell = (base_x + dx, base_y + dy)
+                if cell in self.structure:
+                    struct_bits |= 1 << i
+                    struct_cells.append(cell)
         if struct_bits:
             age = max(self._age(cell) for cell in struct_cells)
             colour = self._age_colour(age)
-            if pile_canvas:
+            if pile_canvas and pile_cells and (cx, cy) in pile_cells:
                 block = self._seed_pixel_block(cx, cy, pile_canvas)
                 if block is not None:
                     return _ordered_dither(block), colour
@@ -732,3 +774,97 @@ class World:
                 return line
 
         return " ", None
+
+
+# ---- perf bench (v6f, `cactus sky --bench`) --------------------------------
+
+
+BENCH_COLS = 100
+BENCH_ROWS = 20
+BENCH_SEEDS = 3
+BENCH_FRAMES = 50
+
+
+def run_bench(frames: int = BENCH_FRAMES) -> list[tuple[str, float]]:
+    """`frames` frames of a `BENCH_COLS` by `BENCH_ROWS` world with
+    `BENCH_SEEDS` seeds falling, one `tick()` + `render()` each — the same
+    shape as the frame-time tests. Returns `(label, mean_ms)` rows, the
+    overall mean first, so `cli.cmd_sky --bench` can print one line per row.
+
+    A second, short pass re-measures `advance()`'s and `render()`'s own
+    sub-steps individually for the rest of the breakdown; it re-renders a few
+    extra frames to do this and is not counted in the headline mean.
+    """
+    world = World(cols=BENCH_COLS, rows=BENCH_ROWS, rng=random.Random(7))
+    for _ in range(30):
+        world.tick()
+    for i in range(BENCH_SEEDS):
+        world.drop((i * BENCH_COLS) // BENCH_SEEDS)
+    for _ in range(5):
+        world.tick()
+
+    t_advance = t_render = 0.0
+    for _ in range(frames):
+        t0 = time.perf_counter()
+        world.tick()
+        t1 = time.perf_counter()
+        world.render()
+        t2 = time.perf_counter()
+        t_advance += t1 - t0
+        t_render += t2 - t1
+    n = frames
+    rows = [
+        ("mean frame (advance + render)", (t_advance + t_render) / n * 1000),
+        ("advance", t_advance / n * 1000),
+        ("render", t_render / n * 1000),
+    ]
+
+    breakdown_frames = 20
+    t_sky_advance = t_birds = t_seeds = 0.0
+    t_seed_splat = t_sky_render = t_sample = 0.0
+    for _ in range(breakdown_frames):
+        t0 = time.perf_counter()
+        world._advance_wind(TICK_SECONDS)
+        t1 = time.perf_counter()
+        world.sky.advance(TICK_SECONDS, world.wind)
+        t2 = time.perf_counter()
+        world._advance_birds(TICK_SECONDS)
+        t3 = time.perf_counter()
+        world._advance_seeds(TICK_SECONDS)
+        t4 = time.perf_counter()
+        t_sky_advance += t2 - t1
+        t_birds += t3 - t2
+        t_seeds += t4 - t3
+
+        t5 = time.perf_counter()
+        seed_canvas, seed_cells = world._seed_splat_canvas()
+        pile_canvas, pile_cells = (
+            world._pile_splat_canvas() if world.sky.config.pile_style == "dots" else ({}, set())
+        )
+        bird_cells = world._bird_cells()
+        ground_line_cells = world._ground_line_cells()
+        t6 = time.perf_counter()
+        sky_grid = world.sky.render_cells()
+        t7 = time.perf_counter()
+        for r in range(world.rows):
+            cy = world.rows - 1 - r
+            sky_row = sky_grid[r] if r < len(sky_grid) else None
+            for cx in range(world.cols):
+                world._sample_cell(
+                    cx, cy, seed_canvas, seed_cells, bird_cells, sky_row, pile_canvas, pile_cells, ground_line_cells,
+                )
+        t8 = time.perf_counter()
+        t_seed_splat += t6 - t5
+        t_sky_render += t7 - t6
+        t_sample += t8 - t7
+
+    bn = breakdown_frames
+    rows.extend([
+        ("  sky.advance", t_sky_advance / bn * 1000),
+        ("  birds", t_birds / bn * 1000),
+        ("  seeds", t_seeds / bn * 1000),
+        ("  seed/pile/bird/ground canvases", t_seed_splat / bn * 1000),
+        ("  sky.render_cells", t_sky_render / bn * 1000),
+        ("  per-cell sample", t_sample / bn * 1000),
+    ])
+    return rows

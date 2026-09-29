@@ -1098,3 +1098,64 @@ async def test_tuning_overlay_escape_closes_and_keeps_nudge(
         assert app.tuning_open is False
         assert app.query_one("#tuning-panel", Static).display is False
         assert getattr(app._tuning_obj(row.group), row.name) == nudged
+
+
+# ---- perf (v6f) -------------------------------------------------------
+
+
+async def test_fps_nudge_restarts_the_field_timer_at_the_new_interval(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v6f: nudging the `fps` tuning row restarts `_field_timer` at `1 /
+    fps` — inspected via the timer's own (private) interval, since
+    `_sync_field_interval` only restarts when the interval actually
+    changed."""
+    path = tmp_path / "sky.toml"
+    monkeypatch.setenv("CACTUS_SKY", str(path))
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        before_fps = app.world.sky.config.fps
+        before_interval = app._field_timer._interval
+
+        await pilot.press("T")
+        await pilot.pause()
+        fps_index = next(
+            i for i, row in enumerate(app.tuning_rows) if row.group == "shared" and row.name == "fps"
+        )
+        app.tuning_index = fps_index
+        await pilot.press("l")
+        await pilot.pause()
+
+        after_fps = app.world.sky.config.fps
+        assert after_fps != before_fps
+        assert app._field_timer._interval == pytest.approx(1.0 / after_fps)
+        assert app._field_timer._interval != before_interval
+
+
+@pytest.mark.slow
+async def test_headless_field_cpu_stays_under_10_percent_of_one_core(store: Store, project: str) -> None:
+    """v6f: over a 3 s wall-clock window at the default 5 fps, a headless
+    120x40 TUI's own CPU time (the field timer plus everything else it does
+    meanwhile) should stay well under 10% of one core. Loose in CI (shared,
+    noisy hardware), tight by hand — see the v6f perf spec's target."""
+    import resource
+    import time as _time
+
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+
+        def cpu_time() -> float:
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            return usage.ru_utime + usage.ru_stime
+
+        cpu_before = cpu_time()
+        wall_before = _time.perf_counter()
+        await pilot.pause(3.0)
+        wall_elapsed = _time.perf_counter() - wall_before
+        cpu_elapsed = cpu_time() - cpu_before
+
+        cpu_share = cpu_elapsed / wall_elapsed
+        assert cpu_share < 0.10, f"{cpu_share * 100:.1f}% of one core"
