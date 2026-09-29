@@ -25,6 +25,8 @@ Responsibilities:
 - A falling seed splats as a tumbling, antialiased Gaussian blob through the
   same braille dither the sky uses, not a full block, and its silhouette
   changes as it spins in place.
+- `pile_style == "dots"` (v6d) renders a landed cell as a splatted, dithered
+  braille glyph instead of a quadrant block, same age colour either way.
 """
 
 from __future__ import annotations
@@ -199,6 +201,32 @@ def test_landed_cell_renders_a_quadrant_glyph_in_cactus_new() -> None:
             found = True
             break
     assert found
+
+
+def test_pile_style_dots_renders_a_braille_glyph_not_a_block() -> None:
+    """v6d: the same landed world renders a full block under 'blocks' and a
+    braille glyph under 'dots', both still coloured by the cell's age."""
+    world = World(cols=10, rows=8, rng=random.Random(29))
+    world.drop(4)
+    run_ticks(world, 900)
+    assert world.structure
+
+    blocks_text = world.render()
+    found_block = any(
+        any(ch in QUADRANT[1:] for ch in blocks_text.plain[span.start:span.end])
+        and span.style == MONO_PLUS.cactus_new
+        for span in blocks_text.spans
+    )
+    assert found_block
+
+    world.sky.config.pile_style = "dots"
+    dots_text = world.render()
+    found_braille = any(
+        any("⠀" <= ch <= "⣿" for ch in dots_text.plain[span.start:span.end])
+        and span.style == MONO_PLUS.cactus_new
+        for span in dots_text.spans
+    )
+    assert found_braille
 
 
 def test_ground_speckle_is_deterministic() -> None:

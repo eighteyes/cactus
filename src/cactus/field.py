@@ -19,12 +19,16 @@ Responsibilities:
   dark/light tone-ramp pair, the haze colour clouds fade toward, cactus age
   bands, seed, bird, and sand-speckle colours. No sky background anywhere —
   shade comes only from glyph colour.
-- Render the world as a styled rich.text.Text: the settled structure is
-  quadrant-sampled from its four sub-cells (block glyphs); a falling seed is
-  instead splatted as a tiny tumbling Gaussian footprint into a per-frame
-  braille-pixel canvas and dithered through the same Bayer pattern as the
-  sky, so its silhouette antialiases and changes as it spins, and always wins
-  over sky and structure. The sky is `Sky.render_cells()`'s braille/
+- Render the world as a styled rich.text.Text: the settled structure is, by
+  default (`SkyConfig.pile_style == "blocks"`), quadrant-sampled from its
+  four sub-cells (block glyphs); under `pile_style == "dots"` (v6d) each
+  landed sub-cell is instead splatted as a small round Gaussian into the
+  same per-frame braille-pixel canvas mechanism a falling seed's footprint
+  uses, then dithered — a soft dotted heap in the same age colours. A
+  falling seed is always splatted as a tiny tumbling Gaussian footprint into
+  its own per-frame canvas and dithered through the same Bayer pattern as
+  the sky, so its silhouette antialiases and changes as it spins, and always
+  wins over sky and structure. The sky is `Sky.render_cells()`'s braille/
   punctuation/stroke glyphs; birds and ground speckle render as single ASCII
   glyphs.
 
@@ -115,6 +119,11 @@ SEED_SIGMA_A = 1.6
 SEED_SIGMA_B = 1.0
 SEED_SPLAT_RADIUS_PX = 5
 SEED_SPLAT_FLOOR = 0.02
+
+# A landed pile cell's splat under `pile_style == "dots"` (v6d): round (no
+# tumble, so a single sigma for both axes) and smaller than a falling seed's.
+PILE_SPLAT_SIGMA = 1.2
+PILE_SPLAT_RADIUS_PX = 3
 
 
 @dataclass(frozen=True)
@@ -400,6 +409,42 @@ class World:
 
     # ---- falling-seed splat -------------------------------------------------
 
+    def _splat_gaussian(
+        self,
+        canvas: dict[tuple[int, int], float],
+        bx: float,
+        by: float,
+        sigma_a: float,
+        sigma_b: float,
+        angle: float,
+        radius_px: float,
+        floor: float,
+        width_px: int,
+        height_px: int,
+    ) -> None:
+        """Add one antialiased Gaussian footprint, centred at `(bx, by)` in
+        braille-pixel space, into `canvas` — an ellipse rotated by `angle`
+        (a falling seed's tumble) or, at `sigma_a == sigma_b` and `angle=0`
+        (a landed pile dot, v6d), a plain round splat. A pixel keeps only its
+        brightest contributor, so overlapping splats never double up."""
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        x0 = int(math.floor(bx - radius_px))
+        x1 = int(math.ceil(bx + radius_px))
+        y0 = max(0, int(math.floor(by - radius_px)))
+        y1 = min(height_px - 1, int(math.ceil(by + radius_px)))
+        for py in range(y0, y1 + 1):
+            dy = py + 0.5 - by
+            for px in range(x0, x1 + 1):
+                dx = px + 0.5 - bx
+                ra = dx * cos_a + dy * sin_a
+                rb = -dx * sin_a + dy * cos_a
+                density = math.exp(-0.5 * ((ra / sigma_a) ** 2 + (rb / sigma_b) ** 2))
+                if density < floor:
+                    continue
+                key = (px % width_px, py)
+                if density > canvas.get(key, 0.0):
+                    canvas[key] = density
+
     def _seed_splat_canvas(self) -> dict[tuple[int, int], float]:
         """This frame's `(px, py) -> density` in braille-pixel space (`PX_X`
         by `PX_Y` per cell) for every airborne seed's tumbling, antialiased
@@ -413,23 +458,30 @@ class World:
         for seed in self.seeds:
             bx = seed.x * (PX_X / SUB_X)
             by = seed.y * (PX_Y / SUB_Y)
-            cos_a, sin_a = math.cos(seed.angle), math.sin(seed.angle)
-            x0 = int(math.floor(bx - SEED_SPLAT_RADIUS_PX))
-            x1 = int(math.ceil(bx + SEED_SPLAT_RADIUS_PX))
-            y0 = max(0, int(math.floor(by - SEED_SPLAT_RADIUS_PX)))
-            y1 = min(height_px - 1, int(math.ceil(by + SEED_SPLAT_RADIUS_PX)))
-            for py in range(y0, y1 + 1):
-                dy = py + 0.5 - by
-                for px in range(x0, x1 + 1):
-                    dx = px + 0.5 - bx
-                    ra = dx * cos_a + dy * sin_a
-                    rb = -dx * sin_a + dy * cos_a
-                    density = math.exp(-0.5 * ((ra / SEED_SIGMA_A) ** 2 + (rb / SEED_SIGMA_B) ** 2))
-                    if density < SEED_SPLAT_FLOOR:
-                        continue
-                    key = (px % width_px, py)
-                    if density > canvas.get(key, 0.0):
-                        canvas[key] = density
+            self._splat_gaussian(
+                canvas, bx, by, SEED_SIGMA_A, SEED_SIGMA_B, seed.angle,
+                SEED_SPLAT_RADIUS_PX, SEED_SPLAT_FLOOR, width_px, height_px,
+            )
+        return canvas
+
+    def _pile_splat_canvas(self) -> dict[tuple[int, int], float]:
+        """This frame's `(px, py) -> density` for every landed `structure`
+        cell's small round splat, built with the same `_splat_gaussian`
+        mechanism a falling seed's footprint uses — no tumble, no rotation.
+        Only called under `pile_style == "dots"` (v6d); `render` skips it
+        entirely for the default "blocks" style."""
+        canvas: dict[tuple[int, int], float] = {}
+        if not self.structure:
+            return canvas
+        width_px = self.cols * PX_X
+        height_px = self.rows * PX_Y
+        for cx, cy in self.structure:
+            bx = (cx + 0.5) * (PX_X / SUB_X)
+            by = (cy + 0.5) * (PX_Y / SUB_Y)
+            self._splat_gaussian(
+                canvas, bx, by, PILE_SPLAT_SIGMA, PILE_SPLAT_SIGMA, 0.0,
+                PILE_SPLAT_RADIUS_PX, SEED_SPLAT_FLOOR, width_px, height_px,
+            )
         return canvas
 
     def _seed_pixel_block(
@@ -457,6 +509,7 @@ class World:
         """Render `rows` lines of `cols` cells, one style span per run."""
         bird_cells = self._bird_cells()
         seed_canvas = self._seed_splat_canvas()
+        pile_canvas = self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else {}
         sky_grid = self.sky.render_cells()
         text = Text()
         for r in range(self.rows):
@@ -464,7 +517,7 @@ class World:
             sky_row = sky_grid[r] if r < len(sky_grid) else None
             runs: list[list[str | None]] = []
             for cx in range(self.cols):
-                ch, style = self._sample_cell(cx, cy, seed_canvas, bird_cells, sky_row)
+                ch, style = self._sample_cell(cx, cy, seed_canvas, bird_cells, sky_row, pile_canvas)
                 if runs and runs[-1][1] == style:
                     runs[-1][0] += ch  # type: ignore[operator]
                 else:
@@ -485,6 +538,7 @@ class World:
         seed_canvas: dict[tuple[int, int], float],
         bird_cells: dict[tuple[int, int], tuple[str, str]],
         sky_row: list[tuple[str, str | None]] | None,
+        pile_canvas: dict[tuple[int, int], float] | None = None,
     ) -> tuple[str, str | None]:
         if seed_canvas:
             block = self._seed_pixel_block(cx, cy, seed_canvas)
@@ -503,7 +557,12 @@ class World:
                 struct_cells.append(cell)
         if struct_bits:
             age = max(self._age(cell) for cell in struct_cells)
-            return QUADRANT[struct_bits], self._age_colour(age)
+            colour = self._age_colour(age)
+            if pile_canvas:
+                block = self._seed_pixel_block(cx, cy, pile_canvas)
+                if block is not None:
+                    return _ordered_dither(block), colour
+            return QUADRANT[struct_bits], colour
 
         bird_cell = bird_cells.get((cx, cy))
         if bird_cell is not None:

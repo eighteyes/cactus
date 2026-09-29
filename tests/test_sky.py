@@ -16,6 +16,10 @@ Responsibilities:
   stays inside the 40 ms frame budget at 100x20.
 - `SkyConfig.load`/`overlay`/`dump` round-trip through TOML, overlay only the
   keys a file supplies, and raise `ValueError` naming the offending key.
+- `pile_style` (v6d) is a string lever, not a number: it defaults to
+  "blocks", overlays and round-trips through TOML like any other shared key,
+  rejects an off-menu value, and `tuning_fields()` exposes its `choices`
+  tuple instead of a numeric `step`.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from cactus.sky import (
     SkyConfig,
     _ordered_dither,
     downsample,
+    tuning_fields,
 )
 
 
@@ -275,3 +280,36 @@ def test_dump_then_load_round_trips(tmp_path) -> None:
 
 def test_load_missing_file_is_defaults(tmp_path) -> None:
     assert SkyConfig.load(tmp_path / "does-not-exist.toml") == SkyConfig()
+
+
+# ---- pile_style: a string-valued lever, not a numeric one (v6d) ----------
+
+
+def test_pile_style_defaults_to_blocks() -> None:
+    assert SkyConfig().pile_style == "blocks"
+
+
+def test_overlay_sets_pile_style() -> None:
+    cfg = SkyConfig().overlay({"shared": {"pile_style": "dots"}})
+    assert cfg.pile_style == "dots"
+
+
+def test_overlay_bad_pile_style_raises_naming_the_key() -> None:
+    with pytest.raises(ValueError, match=r"shared\.pile_style"):
+        SkyConfig().overlay({"shared": {"pile_style": "sparkles"}})
+
+
+def test_dump_then_load_round_trips_pile_style(tmp_path) -> None:
+    path = tmp_path / "sky.toml"
+    written = SkyConfig().overlay({"shared": {"pile_style": "dots"}})
+    written.dump(path)
+    loaded = SkyConfig.load(path)
+    assert loaded == written
+    assert loaded.pile_style == "dots"
+
+
+def test_tuning_fields_exposes_pile_style_choices() -> None:
+    rows = {row.name: row for row in tuning_fields() if row.group == "shared"}
+    row = rows["pile_style"]
+    assert row.choices == ("blocks", "dots")
+    assert row.step is None

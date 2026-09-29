@@ -22,9 +22,11 @@ Responsibilities:
   TOML file (`SkyConfig.load`), written back out with a one-line comment per
   key (`SkyConfig.dump`), and swapped live into a running `Sky`
   (`Sky.apply`) without disturbing the grids' drawn bands. Every numeric
-  field also carries `step`/`lo`/`hi` in its dataclass metadata, and
-  `tuning_fields()` flattens the whole set (far/mid/near/shared) into
-  `TuneField` rows for tui.py's `T` overlay.
+  field also carries `step`/`lo`/`hi` in its dataclass metadata; the one
+  string-valued lever, `pile_style` (v6d, "blocks" or "dots" — how field.py
+  renders a landed cactus cell), carries a `choices` tuple instead.
+  `tuning_fields()` flattens both shapes, the whole set (far/mid/near/shared),
+  into `TuneField` rows for tui.py's `T` overlay.
 - Downsample the composited canvas, `PX_X` by `PX_Y` pixels per terminal
   cell, to one toned glyph: blank, a fringe speck, an ordered-dither braille
   pattern, a flat cirrus stroke, a tapering edge stroke, or a solid core —
@@ -197,6 +199,7 @@ _GRID_COMMENTS = {
 }
 
 _SHARED_COMMENTS = {
+    "pile_style": "landed-cactus rendering: 'blocks' (quadrant blocks) or 'dots' (splatted, dithered)",
     "shear_floor": "minimum drift speed per row, pixels/second, so drift never stalls",
     "shear_base": "row shear's base fraction of a grid's own wind, per second",
     "shear_span": "row shear's extra fraction at the bottom of the sky, per second",
@@ -232,6 +235,10 @@ class SkyConfig:
     far: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=0.25))
     mid: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=0.55))
     near: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=1.0))
+
+    # A style lever, not a numeric knob (v6d): no step/lo/hi, just the two
+    # values a T-overlay `h`/`l` press cycles between (see TuneField.choices).
+    pile_style: str = field(default="blocks", metadata={"choices": ("blocks", "dots")})
 
     shear_floor: float = field(default=0.03 / _DEFAULT_DT, metadata={"step": 0.015, "lo": 0.0, "hi": 3.0})
     shear_base: float = field(default=0.7 / _DEFAULT_DT, metadata={"step": 0.35, "lo": 0.0, "hi": 70.0})
@@ -311,7 +318,11 @@ class SkyConfig:
 @dataclass(frozen=True)
 class TuneField:
     """One row of `tuning_fields()`: a key's group, name, comment, and its
-    nudge `step`/`lo`/`hi` (all `None` for a key with no numeric metadata)."""
+    nudge `step`/`lo`/`hi` (all `None` for a key with no numeric metadata).
+
+    `choices` (v6d) is the alternative to `step`/`lo`/`hi` for a string-valued
+    lever like `pile_style`: the fixed tuple of values a `h`/`l` press cycles
+    through, `None` for every numeric field."""
 
     group: str
     name: str
@@ -319,6 +330,7 @@ class TuneField:
     step: float | int | None
     lo: float | int | None
     hi: float | int | None
+    choices: tuple[str, ...] | None = None
 
 
 def tuning_fields() -> list[TuneField]:
@@ -331,20 +343,28 @@ def tuning_fields() -> list[TuneField]:
             rows.append(TuneField(
                 gname, f.name, _GRID_COMMENTS[f.name],
                 f.metadata.get("step"), f.metadata.get("lo"), f.metadata.get("hi"),
+                choices=f.metadata.get("choices"),
             ))
     shared_fields = {f.name: f for f in fields(SkyConfig)}
     for name, comment in _SHARED_COMMENTS.items():
         f = shared_fields[name]
-        rows.append(TuneField("shared", name, comment, f.metadata.get("step"), f.metadata.get("lo"), f.metadata.get("hi")))
+        rows.append(TuneField(
+            "shared", name, comment, f.metadata.get("step"), f.metadata.get("lo"), f.metadata.get("hi"),
+            choices=f.metadata.get("choices"),
+        ))
     return rows
 
 
 def _set_typed(obj, key: str, value, label: str) -> None:
     typ = type(getattr(obj, key))
     try:
-        setattr(obj, key, typ(value))
+        typed = typ(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"bad value for {label}: {value!r}") from exc
+    choices = next((f.metadata.get("choices") for f in fields(obj) if f.name == key), None)
+    if choices is not None and typed not in choices:
+        raise ValueError(f"bad value for {label}: {value!r}, expected one of {choices!r}")
+    setattr(obj, key, typed)
 
 
 # ---- the grid ---------------------------------------------------------

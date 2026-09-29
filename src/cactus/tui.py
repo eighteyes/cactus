@@ -1126,15 +1126,30 @@ class CactusApp(App[int]):
 
     def _nudge_tuning(self, steps: int) -> None:
         """Move the focused key by `steps` of its own declared `step`
-        (negative for h/H, positive for l/L; `steps` is `±1` or `±10`)."""
+        (negative for h/H, positive for l/L; `steps` is `±1` or `±10`).
+
+        A `choices`-valued row (v6d, e.g. `pile_style`) has no numeric step:
+        `h`/`l` instead cycle to the previous/next value in that tuple, one
+        step regardless of `steps`'s magnitude — `H`/`L`'s x10 has nothing
+        further to multiply against a handful of fixed choices.
+        """
         if not self.tuning_rows:
             return
         row = self.tuning_rows[self.tuning_index]
+        obj = self._tuning_obj(row.group)
+        if row.choices is not None:
+            old = getattr(obj, row.name)
+            choices = row.choices
+            idx = choices.index(old) if old in choices else 0
+            new = choices[(idx + (1 if steps > 0 else -1)) % len(choices)]
+            setattr(obj, row.name, new)
+            self._apply_and_dump_tuning()
+            self._render_tuning()
+            return
         if row.step is None:
             self.flash = f"{row.name} has no tuning range"
             self._rebuild_status_bar()
             return
-        obj = self._tuning_obj(row.group)
         old = getattr(obj, row.name)
         new = old + row.step * steps
         if row.lo is not None:

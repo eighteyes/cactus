@@ -1038,6 +1038,42 @@ async def test_tuning_overlay_reset_restores_default(store: Store, project: str,
         assert getattr(app._tuning_obj(row.group), row.name) == default_value
 
 
+async def test_tuning_overlay_pile_style_cycles_with_h_l(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v6d: `pile_style` has no numeric step, so `h`/`l` cycle between its
+    two `choices` instead of nudging by an amount — and the cycle still
+    writes through to the config file like a numeric nudge does."""
+    from cactus.sky import SkyConfig
+
+    path = tmp_path / "sky.toml"
+    monkeypatch.setenv("CACTUS_SKY", str(path))
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        idx = next(i for i, row in enumerate(app.tuning_rows) if row.name == "pile_style")
+        app.tuning_index = idx
+        app._render_tuning()
+        assert app.world.sky.config.pile_style == "blocks"
+
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.world.sky.config.pile_style == "dots"
+
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.world.sky.config.pile_style == "blocks"
+
+        await pilot.press("h")
+        await pilot.pause()
+        assert app.world.sky.config.pile_style == "dots"
+
+        assert SkyConfig.load(path).pile_style == "dots"
+
+
 async def test_tuning_overlay_escape_closes_and_keeps_nudge(
     store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
