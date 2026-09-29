@@ -4,15 +4,19 @@ toned glyphs.
 
 Responsibilities:
 - `Air`: one depth's persistent density grid at braille-pixel resolution,
-  evolved in place every tick — advect along x with a height-sheared wind,
-  diffuse anisotropically (far more along x than y, so mass stays 1-3 rows
-  tall), react with a banded logistic growth against a flat evaporation, and
-  nucleate the occasional puff. Nothing is regenerated: `tick()` mutates
-  `Air.d`, `resize()` is the only method that reassigns it wholesale.
+  evolved in place by `advance(dt, ...)` — advect along x with a
+  height-sheared wind, diffuse anisotropically (far more along x than y, so
+  mass stays 1-3 rows tall), react with a banded logistic growth against a
+  flat evaporation, and nucleate the occasional puff, all at rates per second
+  scaled by `dt`. Nothing is regenerated: `advance()` mutates `Air.d`,
+  `resize()` is the only method that reassigns it wholesale. `tick()` is a
+  thin wrapper for tests, `advance(_DEFAULT_DT, ...)`.
 - `Sky`: owns three `Air` grids (far/mid/near), each its own share of the
   world's wind, its own band placement, and composites them front-to-back
   into one canvas the same way v5's layers did — the nearest grid whose
-  density clears `DENSITY_FLOOR` owns a pixel.
+  density clears `DENSITY_FLOOR` owns a pixel. `advance(dt, wind)` steps
+  every grid by `dt`; `tick(wind)` is a thin wrapper, `advance(_DEFAULT_DT,
+  wind)`.
 - `GridConfig`/`SkyConfig`: every tunable constant, per grid and shared,
   as a dataclass rather than a module constant, so it can be loaded from a
   TOML file (`SkyConfig.load`), written back out with a one-line comment per
@@ -41,6 +45,12 @@ from pathlib import Path
 
 PX_X = 2  # pixels per terminal cell, horizontal (braille dot geometry)
 PX_Y = 4  # pixels per terminal cell, vertical
+
+# The TUI's default sampling interval — not a "tick" the physics runs in,
+# only the anchor `tick()`'s thin wrapper advances by and the value every
+# rate-typed `GridConfig`/`SkyConfig` default below was converted against, so
+# the sky looks exactly as it did pre-v6b at this sampling rate.
+_DEFAULT_DT = 0.1
 
 # Compositing ownership floor and the fringe-speck peak threshold are the
 # same number by design: a pixel too faint to ever own a composited cell is
@@ -125,14 +135,22 @@ def _rotate(row: list[float], k: int) -> list[float]:
 class GridConfig:
     """One grid's physics and weather knobs. `wind_scale` is this grid's
     share of the world's wind (parallax); the rest shape its cellular
-    automaton (v6 plan's "five constants" plus the puff and band knobs)."""
+    automaton (v6 plan's "five constants" plus the puff and band knobs).
+
+    `kx`, `ky`, `growth`, `evaporation`, and `replenish` are all per second
+    now — `Air.advance(dt, ...)` scales each by `dt`, and `nucleate_p` (a
+    probability) the same way. Their defaults are v6's per-tick-at-
+    `_DEFAULT_DT` values divided by `_DEFAULT_DT`, so the sky looks the same
+    at the TUI's default sampling. `uptake` stays dimensionless — it scales
+    an already-per-second growth amount, not a rate of its own — so its
+    default is unchanged."""
 
     wind_scale: float
-    kx: float = 0.05
-    ky: float = 0.003
-    growth: float = 3.0
-    evaporation: float = 0.015
-    nucleate_p: float = 0.05
+    kx: float = 0.05 / _DEFAULT_DT
+    ky: float = 0.003 / _DEFAULT_DT
+    growth: float = 3.0 / _DEFAULT_DT
+    evaporation: float = 0.015 / _DEFAULT_DT
+    nucleate_p: float = 0.05 / _DEFAULT_DT
     puff_lo: float = 0.5
     puff_hi: float = 0.8
     puff_width: int = 30
@@ -141,7 +159,7 @@ class GridConfig:
     band_sigma_hi: float = 2.5
     band_count: int = 2
     uptake: float = 2.5
-    replenish: float = 0.002
+    replenish: float = 0.002 / _DEFAULT_DT
     floor: float = 0.03
     allee: float = 0.15
 
@@ -150,17 +168,17 @@ GRID_FIELD_NAMES = tuple(f.name for f in fields(GridConfig))
 
 _GRID_COMMENTS = {
     "wind_scale": "fraction of the world's wind this grid drifts at",
-    "kx": "horizontal diffusion — spreads mass along a streak",
-    "ky": "vertical diffusion — spreads mass across a streak (keep small)",
-    "growth": "logistic growth rate inside a band",
-    "evaporation": "decay rate everywhere, strongest outside a band",
-    "nucleate_p": "probability per tick of a new puff",
+    "kx": "horizontal diffusion per second — spreads mass along a streak",
+    "ky": "vertical diffusion per second — spreads mass across a streak (keep small)",
+    "growth": "logistic growth rate per second inside a band",
+    "evaporation": "decay rate per second everywhere, strongest outside a band",
+    "nucleate_p": "probability per second of a new puff",
     "puff_lo": "a puff's minimum added density",
     "puff_hi": "a puff's maximum added density",
     "puff_width": "a puff's width in pixels",
     "puff_height": "a puff's height in pixels",
     "uptake": "moisture a unit of growth spends; higher means shorter-lived streaks",
-    "replenish": "moisture return rate per tick toward 1",
+    "replenish": "moisture return rate per second toward 1",
     "floor": "density below this snaps to zero, so evaporation leaves no haze",
     "allee": "density a streak must reach to grow; below it, it thins away",
     "band_sigma_lo": "a band's minimum vertical spread in pixels",
@@ -169,9 +187,9 @@ _GRID_COMMENTS = {
 }
 
 _SHARED_COMMENTS = {
-    "shear_floor": "minimum wind magnitude per row, so drift never stalls",
-    "shear_base": "row shear's base fraction of a grid's own wind",
-    "shear_span": "row shear's extra fraction at the bottom of the sky",
+    "shear_floor": "minimum drift speed per row, pixels/second, so drift never stalls",
+    "shear_base": "row shear's base fraction of a grid's own wind, per second",
+    "shear_span": "row shear's extra fraction at the bottom of the sky, per second",
     "tone_exp": "block-mean lift before the 16-step tone ramp",
     "haze_depth_weight": "how much a grid's fixed depth mixes toward haze",
     "haze_row_weight": "how much a cell's height mixes toward haze",
@@ -192,15 +210,21 @@ _SHARED_COMMENTS = {
 @dataclass
 class SkyConfig:
     """Every sky constant, per grid and shared. `load`/`dump` round-trip
-    this through a TOML file; `Sky.apply` swaps one in live."""
+    this through a TOML file; `Sky.apply` swaps one in live.
+
+    `shear_floor`/`shear_base`/`shear_span` are per second, same conversion
+    as `GridConfig`'s rate fields: v6's per-tick-at-`_DEFAULT_DT` value
+    divided by `_DEFAULT_DT`. The TOML keys keep their v6 names throughout —
+    only the numbers they hold changed meaning, from "per tick" to "per
+    second"."""
 
     far: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=0.25))
     mid: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=0.55))
     near: GridConfig = field(default_factory=lambda: GridConfig(wind_scale=1.0))
 
-    shear_floor: float = 0.03
-    shear_base: float = 0.7
-    shear_span: float = 0.3
+    shear_floor: float = 0.03 / _DEFAULT_DT
+    shear_base: float = 0.7 / _DEFAULT_DT
+    shear_span: float = 0.3 / _DEFAULT_DT
     tone_exp: float = 0.45
     haze_depth_weight: float = 0.55
     haze_row_weight: float = 0.30
@@ -253,7 +277,11 @@ class SkyConfig:
         commented line per key, and return the path written."""
         p = Path(path) if path is not None else config_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        lines: list[str] = []
+        lines: list[str] = [
+            "# every rate below is per second (v6b); a v6 file's numbers still load,",
+            "# but now mean 10x less per frame at the default 0.1s sampling",
+            "",
+        ]
         for gname in ("far", "mid", "near"):
             lines.append(f"[{gname}]")
             gcfg = getattr(self, gname)
@@ -282,8 +310,8 @@ def _set_typed(obj, key: str, value, label: str) -> None:
 
 class Air:
     """One depth's persistent density grid, `y = 0` at the bottom, wrapping
-    in x. `tick()` mutates `d` in place — neither it nor any row inside it is
-    ever rebound except by `resize`."""
+    in x. `advance()` mutates `d` in place — neither it nor any row inside it
+    is ever rebound except by `resize`."""
 
     def __init__(
         self, width_px: int, height_px: int, rng: random.Random,
@@ -302,9 +330,9 @@ class Air:
         self.env = self._build_env()
         if warm:
             for _ in range(40):
-                self._nucleate(force=True)
+                self._nucleate(_DEFAULT_DT, force=True)
             for _ in range(300):
-                self.tick(0.0, 0.03, 0.7, 0.3)
+                self.advance(_DEFAULT_DT, 0.0, 0.03 / _DEFAULT_DT, 0.7 / _DEFAULT_DT, 0.3 / _DEFAULT_DT)
 
     def _draw_bands(self) -> list[tuple[float, float]]:
         lo_frac, hi_frac = self.band_region
@@ -320,17 +348,21 @@ class Air:
             for y in range(self.height)
         ]
 
-    # ---- tick -----------------------------------------------------------
+    # ---- advance ----------------------------------------------------------
 
-    def tick(self, world_wind: float, shear_floor: float, shear_base: float, shear_span: float) -> None:
+    def advance(self, dt: float, world_wind: float, shear_floor: float, shear_base: float, shear_span: float) -> None:
         wind = world_wind * self.config.wind_scale
-        self._advect(wind, shear_floor, shear_base, shear_span)
-        self._diffuse()
-        self._react()
-        self._nucleate()
+        self._advect(wind, shear_floor, shear_base, shear_span, dt)
+        self._diffuse(dt)
+        self._react(dt)
+        self._nucleate(dt)
         self._clamp()
 
-    def _advect(self, wind: float, shear_floor: float, shear_base: float, shear_span: float) -> None:
+    def tick(self, world_wind: float, shear_floor: float, shear_base: float, shear_span: float) -> None:
+        """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
+        self.advance(_DEFAULT_DT, world_wind, shear_floor, shear_base, shear_span)
+
+    def _advect(self, wind: float, shear_floor: float, shear_base: float, shear_span: float, dt: float) -> None:
         h, w = self.height, self.width
         d = self.d
         new_rows = []
@@ -338,8 +370,9 @@ class Air:
             u = wind * (shear_base + shear_span * (1.0 - y / h))
             if abs(u) < shear_floor:
                 u = math.copysign(shear_floor, u) if u != 0.0 else shear_floor
-            k = math.floor(u)
-            frac = u - k
+            shift = u * dt
+            k = math.floor(shift)
+            frac = shift - k
             row = d[y]
             i0 = _rotate(row, k + 1)
             i1 = _rotate(row, k)
@@ -347,9 +380,9 @@ class Air:
         for y in range(h):
             d[y][:] = new_rows[y]
 
-    def _diffuse(self) -> None:
+    def _diffuse(self, dt: float) -> None:
         h, w = self.height, self.width
-        kx, ky = self.config.kx, self.config.ky
+        kx, ky = self.config.kx * dt, self.config.ky * dt
         d = self.d
         new_rows = []
         for y in range(h):
@@ -365,7 +398,7 @@ class Air:
         for y in range(h):
             d[y][:] = new_rows[y]
 
-    def _react(self) -> None:
+    def _react(self, dt: float) -> None:
         g, e = self.config.growth, self.config.evaporation
         uptake, replenish = self.config.uptake, self.config.replenish
         allee = self.config.allee
@@ -375,16 +408,18 @@ class Air:
             gy = g * env[y]
             drow, mrow = d[y], m[y]
             # Bistable growth: below `allee` the term is negative and a faint
-            # wisp thins away; above it a streak grows toward full.
+            # wisp thins away; above it a streak grows toward full. `grown`
+            # is a rate (per second); `dt` integrates it and the evaporation/
+            # uptake/replenish terms alongside it, Euler-style.
             grown = [gy * v * (v - allee) * (1.0 - v) * w for v, w in zip(drow, mrow)]
-            drow[:] = [v + gr - e * v for v, gr in zip(drow, grown)]
-            mrow[:] = [w - uptake * max(gr, 0.0) + replenish * (1.0 - w) for w, gr in zip(mrow, grown)]
+            drow[:] = [v + dt * (gr - e * v) for v, gr in zip(drow, grown)]
+            mrow[:] = [w + dt * (replenish * (1.0 - w) - uptake * max(gr, 0.0)) for w, gr in zip(mrow, grown)]
 
-    def _nucleate(self, force: bool = False) -> None:
+    def _nucleate(self, dt: float, force: bool = False) -> None:
         cfg = self.config
         if not self.bands:
             return
-        if not force and self.rng.random() >= cfg.nucleate_p:
+        if not force and self.rng.random() >= cfg.nucleate_p * dt:
             return
         centre, sigma = self.bands[self.rng.randrange(len(self.bands))]
         y = max(0, min(self.height - 1, int(round(self.rng.gauss(centre, sigma)))))
@@ -622,10 +657,14 @@ class Sky:
         for grid in self.grids.values():
             grid.resize(width_px, height_px)
 
-    def tick(self, wind: float = 0.0) -> None:
+    def advance(self, dt: float, wind: float = 0.0) -> None:
         cfg = self.config
         for grid in self.grids.values():
-            grid.tick(wind, cfg.shear_floor, cfg.shear_base, cfg.shear_span)
+            grid.advance(dt, wind, cfg.shear_floor, cfg.shear_base, cfg.shear_span)
+
+    def tick(self, wind: float = 0.0) -> None:
+        """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
+        self.advance(_DEFAULT_DT, wind)
 
     def render_cells(self) -> list[list[tuple[str, str | None]]]:
         if self.cols <= 0 or self.sky_rows <= 0:

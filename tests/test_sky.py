@@ -76,7 +76,7 @@ def test_advection_alone_conserves_mass() -> None:
 
 
 def test_diffusion_is_anisotropic() -> None:
-    cfg = _still_config(kx=0.10, ky=0.006)
+    cfg = _still_config(kx=1.0, ky=0.06)  # per second now; ×10 keeps the old per-tick magnitude
     air = Air(30, 20, random.Random(2), cfg, (0.4, 0.6), warm=False)
     cx, cy = 15, 10
     air.d[cy][cx] = 1.0
@@ -92,7 +92,8 @@ def test_diffusion_is_anisotropic() -> None:
 
 
 def test_puff_inside_a_band_grows_and_outside_fades() -> None:
-    cfg = _still_config(growth=2.0, evaporation=0.04, band_count=1, band_sigma_lo=2.0, band_sigma_hi=2.0)
+    # growth/evaporation are per second now; ×10 keeps the old per-tick magnitude.
+    cfg = _still_config(growth=20.0, evaporation=0.4, band_count=1, band_sigma_lo=2.0, band_sigma_hi=2.0)
     air = Air(10, 40, random.Random(3), cfg, (0.5, 0.5), warm=False)
     centre, _sigma = air.bands[0]
     inside_y = int(round(centre))
@@ -113,7 +114,8 @@ def test_shear_moves_bottom_rows_faster_than_top() -> None:
     air.d[bottom_y][5] = 1.0
     air.d[top_y][5] = 1.0
     for _ in range(200):
-        air.tick(0.3, shear_floor=0.03, shear_base=0.7, shear_span=0.3)
+        # shear_* are per second now; ×10 keeps the old per-tick magnitude.
+        air.tick(0.3, shear_floor=0.3, shear_base=7.0, shear_span=3.0)
 
     def centroid_x(y: int) -> float:
         row = air.d[y]

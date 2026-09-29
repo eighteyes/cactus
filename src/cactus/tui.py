@@ -26,6 +26,7 @@ import json
 import os
 import random
 import subprocess
+import time
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -45,6 +46,10 @@ from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
 
 POLL_INTERVAL = 0.5
+# The field's per-frame `dt` cap (v6b): a stalled or suspended terminal must
+# never hand `World.advance` a giant elapsed time and make the sky or a
+# falling seed jump.
+FIELD_MAX_DT = 0.5
 
 TUI_SETTINGS_DEFAULTS = {"orientation": "side", "figlet_header": False, "projects_pane": True}
 
@@ -728,10 +733,14 @@ class CactusApp(App[int]):
         # the first render, when the FieldView's actual size is known.
         self.world = World(cols=1, rows=10)
         self._field_timer = None
-        # Sky tuning: reread the config file every SKY_RELOAD_TICKS ticks,
-        # only acting on it when its mtime has actually moved.
+        # Continuous time (v6b): `_field_tick` measures real elapsed seconds
+        # between calls, clamped to 0.5 s so a stalled terminal never makes
+        # the field jump, and passes that `dt` straight to `world.advance`.
+        self._field_last_time: float | None = None
+        # Sky tuning: reread the config file every SKY_RELOAD_SECONDS of wall
+        # time, only acting on it when its mtime has actually moved.
         self._sky_config_mtime: float | None = None
-        self._sky_tick_count = 0
+        self._sky_reload_last: float | None = None
         # Each key bar item's x offset inside `#keybar`, rebuilt on every
         # `_rebuild_keybar` — `_field_column` reads this to drop a seed under
         # the key that answered.
@@ -792,6 +801,8 @@ class CactusApp(App[int]):
         self.call_after_refresh(self.refresh_bindings)
         self.set_interval(POLL_INTERVAL, self._poll)
         self._reload_sky_config(initial=True)
+        self._sky_reload_last = time.monotonic()
+        self._field_last_time = time.monotonic()
         self._field_timer = self.set_interval(TICK_SECONDS, self._field_tick, name="field")
         self._render_field()
 
@@ -2732,12 +2743,20 @@ class CactusApp(App[int]):
         self.world.drop(self._field_column(key))
         self._render_field()
 
-    SKY_RELOAD_TICKS = 20
+    SKY_RELOAD_SECONDS = 2.0
 
     def _field_tick(self) -> None:
-        self.world.tick()
-        self._sky_tick_count += 1
-        if self._sky_tick_count % self.SKY_RELOAD_TICKS == 0:
+        """One frame: `dt` is the real elapsed time since the last call,
+        clamped so a stalled terminal (a suspended session, a slow poll)
+        never makes the field jump — never exactly `TICK_SECONDS`, which is
+        only this timer's sampling rate, not the physics' own step size."""
+        now = time.monotonic()
+        last = self._field_last_time if self._field_last_time is not None else now
+        dt = min(max(now - last, 0.0), FIELD_MAX_DT)
+        self._field_last_time = now
+        self.world.advance(dt)
+        if self._sky_reload_last is None or now - self._sky_reload_last >= self.SKY_RELOAD_SECONDS:
+            self._sky_reload_last = now
             self._reload_sky_config()
         self._render_field()
 

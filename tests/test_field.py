@@ -19,19 +19,29 @@ Responsibilities:
   crossed off-screen; a near-depth bird renders three cells, a far one renders
   one.
 - One tick plus one render at 100x10 stays under the 40 ms frame budget.
+- `World.advance(dt)` is continuous, not per-tick: splitting one step into two
+  half-steps moves a seed at terminal velocity the same distance, and the
+  wind's Ornstein-Uhlenbeck integration is stable across step sizes.
+- A falling seed splats as a tumbling, antialiased Gaussian blob through the
+  same braille dither the sky uses, not a full block, and its silhouette
+  changes as it spins in place.
 """
 
 from __future__ import annotations
 
+import math
 import random
 import time
+from unittest.mock import patch
 
+import pytest
 from rich.cells import cell_len
 from rich.text import Text
 
 from cactus.field import (
     LANDING_SECONDS,
     TICK_SECONDS,
+    WIND_THETA,
     QUADRANT,
     Bird,
     Flock,
@@ -39,6 +49,7 @@ from cactus.field import (
     Seed,
     World,
 )
+from cactus.sky import PX_X, PX_Y
 
 
 def run_ticks(world: World, n: int) -> None:
@@ -49,7 +60,7 @@ def run_ticks(world: World, n: int) -> None:
 def run_seed_ticks(world: World, n: int) -> None:
     """Advance seed physics only, holding wind at 0 for a deterministic fall."""
     for _ in range(n):
-        world._tick_seeds()
+        world._advance_seeds(TICK_SECONDS)
 
 
 def test_seed_dropped_over_flat_ground_lands() -> None:
@@ -223,7 +234,7 @@ def test_flock_despawns_once_fully_past_the_edge() -> None:
     world = World(cols=10, rows=10, rng=random.Random(43))
     leader = Bird(x=float(world.width + 10), y=10.0, vx=0.2, band="mid", depth=0.6)
     world._flocks.append(Flock(band="mid", leader=leader, followers=[]))
-    world._tick_birds()
+    world._advance_birds(TICK_SECONDS)
     assert not world._flocks
     assert not world.birds
 
@@ -253,3 +264,81 @@ def test_frame_time_at_100x10_stays_under_budget() -> None:
     elapsed = time.perf_counter() - start
     mean_ms = elapsed / n * 1000
     assert mean_ms < 40, f"mean frame time {mean_ms:.2f} ms"
+
+
+# ---- continuous time (v6b) ----------------------------------------------
+
+
+def test_two_half_steps_move_a_terminal_velocity_seed_as_one_full_step() -> None:
+    """No per-tick or per-second snap: splitting `advance` into two 0.05 s
+    calls moves a seed already at terminal velocity exactly as far as one
+    0.1 s call, since nothing here depends on step count, only elapsed time."""
+    world_a = World(cols=10, rows=20, rng=random.Random(61))
+    world_b = World(cols=10, rows=20, rng=random.Random(61))
+    world_a.wind = world_b.wind = 0.0
+    seed_a = Seed(x=5.0, y=30.0, vx=0.0, vy=world_a.terminal_vy, nudged=True)
+    seed_b = Seed(x=5.0, y=30.0, vx=0.0, vy=world_b.terminal_vy, nudged=True)
+    world_a.seeds = [seed_a]
+    world_b.seeds = [seed_b]
+
+    world_a._advance_seeds(0.05)
+    world_a._advance_seeds(0.05)
+    world_b._advance_seeds(0.1)
+
+    assert seed_a.y == pytest.approx(seed_b.y, abs=1e-9)
+    assert seed_a.x == pytest.approx(seed_b.x, abs=1e-9)
+
+
+def test_wind_integration_is_step_size_stable() -> None:
+    """With the noise term held at zero (isolating the Ornstein-Uhlenbeck
+    drift), 10 s of 0.1 s steps and 10 s of 0.02 s steps land on the same
+    wind within 5% — the integration does not depend on how finely it's
+    sliced."""
+    world_a = World(cols=10, rows=10, rng=random.Random(1))
+    world_b = World(cols=10, rows=10, rng=random.Random(1))
+    world_a.wind = world_b.wind = 0.5
+    with patch.object(random.Random, "gauss", return_value=0.0):
+        for _ in range(100):
+            world_a._advance_wind(0.1)
+        for _ in range(500):
+            world_b._advance_wind(0.02)
+    assert world_a.wind == pytest.approx(world_b.wind, rel=0.05)
+    assert world_a.wind == pytest.approx(0.5 * math.exp(-WIND_THETA * 10.0), rel=0.05)
+
+
+def _seed_cell(world: World, seed: Seed) -> tuple[int, int]:
+    bx = seed.x * (PX_X / 2)
+    by = seed.y * (PX_Y / 2)
+    return int(bx) // PX_X, int(by) // PX_Y
+
+
+def test_falling_seed_renders_a_partial_dot_glyph_not_a_full_block() -> None:
+    world = World(cols=6, rows=6, rng=random.Random(71))
+    seed = Seed(x=2.5, y=7.5, vx=0.0, vy=0.0, angle=0.3)
+    world.seeds = [seed]
+    canvas = world._seed_splat_canvas()
+    cx, cy = _seed_cell(world, seed)
+    block = world._seed_pixel_block(cx, cy, canvas)
+    assert block is not None
+    from cactus.sky import _ordered_dither
+
+    glyph = _ordered_dither(block)
+    dots = bin(ord(glyph) - 0x2800).count("1")
+    assert 2 <= dots <= 6, f"{dots} dots, glyph {glyph!r}"
+
+
+def test_spinning_seed_held_still_renders_different_glyphs_as_it_tumbles() -> None:
+    world = World(cols=6, rows=6, rng=random.Random(73))
+    seed = Seed(x=3.3, y=7.7, vx=0.0, vy=0.0, angle=0.0, spin=2.0)
+    world.seeds = [seed]
+    cx, cy = _seed_cell(world, seed)
+    from cactus.sky import _ordered_dither
+
+    block_1 = world._seed_pixel_block(cx, cy, world._seed_splat_canvas())
+    glyph_1 = _ordered_dither(block_1)
+
+    seed.angle += seed.spin * 0.3  # 0.3 s of held-still spin, no position change
+    block_2 = world._seed_pixel_block(cx, cy, world._seed_splat_canvas())
+    glyph_2 = _ordered_dither(block_2)
+
+    assert glyph_1 != glyph_2
