@@ -139,7 +139,7 @@ def test_every_style_renders_clouds_in_budget(style: str) -> None:
     assert len(cells) == 14 and all(len(r) == 100 for r in cells)
     lit = sum(1 for row in cells for g, _ in row if g != " ")
     assert lit > 30, f"{style} rendered almost nothing"
-    assert lit < 1000, f"{style} is an overcast, not clouds"
+    assert lit < (1300 if style == "bands" else 1000), f"{style} is an overcast, not clouds"
     assert ms < 20.0
 
 
@@ -159,7 +159,7 @@ def test_tuning_fields_carry_the_cloud_levers() -> None:
 
     names = {f.name: f for f in tuning_fields() if f.group == "shared"}
     assert names["sky_engine"].choices == ("fluid", "texture", "puffs")
-    assert names["cloud_style"].choices == tuple(STYLES)
+    assert set(names["cloud_style"].choices) == set(STYLES)
     for key in ("cloud_count", "cloud_drift", "cloud_life"):
         assert names[key].step is not None
 
@@ -220,3 +220,32 @@ def test_tuning_rows_follow_the_engine_and_style() -> None:
     assert ("shared", "shear_base") in texture and ("shared", "shear_floor") not in texture
     for cfg in (puffs, fluid, texture):
         assert ("shared", "sky_engine") in cfg and ("shared", "fps") in cfg and ("shared", "seed_wind") in cfg
+
+
+def test_bands_style_lays_full_width_lanes_flowing_opposite_ways() -> None:
+    """`cloud_style = 'bands'` (v8, planetary layers): `lanes * cloud_count`
+    lanes stacked down the sky, each one full-width band that wraps with no
+    seam, neighbours flowing opposite ways; a dead band respawns in its own
+    lane; `cloud_count` re-cuts the lanes."""
+    sky = _puffs("bands", cols=60, rows=20)
+    bands = sorted((p for band in GRID_ORDER for p in sky.puffs[band]), key=lambda p: p.y0)
+    assert len(bands) == 7
+    assert all(p.w == sky.width_px for p in bands)
+    assert all(p.lane is not None for p in bands)
+    for a, b in zip(bands, bands[1:]):
+        assert a.y0 + a.h <= b.y0, "lanes never overlap"
+        assert (a.vx > 0) != (b.vx > 0), "neighbouring lanes flow opposite ways"
+    assert bands[0].band == "far" and bands[-1].band == "near"
+    # seamless wrap: the patch's first and last columns are neighbours in
+    # the periodic lattice, so they differ by no more than one lattice step
+    row = bands[3].patch_a[bands[3].h // 2]
+    assert abs(row[0] - row[-1]) < 0.35
+    dead = bands[2]
+    dead.age = dead.life + 1.0
+    sky.advance(0.1)
+    reborn = next(p for band in GRID_ORDER for p in sky.puffs[band] if p.lane == dead.lane)
+    assert reborn is not dead and reborn.y0 == dead.y0
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", cloud_count=2.0))
+    assert sum(len(v) for v in sky.puffs.values()) == 14
+    cells = sky.render_cells()
+    assert sum(1 for r in cells for g, _ in r if g != " ") > 200

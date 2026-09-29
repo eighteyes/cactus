@@ -318,11 +318,14 @@ _SHARED_COMMENTS = {
     "deck_altitude_px": "the deck's world y — how far above the horizon its top peeks through",
     "fps": "how often the TUI samples and redraws the field, per second",
     "sky_engine": "which sky renderer runs: 'fluid' (cellular automaton), 'texture' (cheaper baked noise), or 'puffs' (individual clouds, no whole-sky scroll)",
-    "cloud_style": "puffs engine look: 'drift' (each cloud wanders its own way), 'bloom' (near-still clouds unfold and recede), 'streaks' (long thin bands)",
+    "cloud_style": "puffs engine look: 'drift' (each cloud wanders its own way), 'bloom' (near-still clouds unfold and recede), 'streaks' (long thin bands), 'bands' (planetary layers: full-width lanes, neighbours flowing opposite ways)",
     "cloud_count": "puffs engine population scale: 1.0 is one cloud per band per ~40 columns",
     "cloud_drift": "puffs engine top drift speed, pixels per second, before a band's own wind_scale; each cloud picks its own direction",
     "cloud_life": "puffs engine seconds a cloud lives, unfold to recede",
     "perspective": "fluid engine: 'on' projects the three decks through horizon/focal/z_far (v7); 'off' draws each deck's bands flat across the sky, the v6 look",
+    "birds": "which flocks spawn: 'all', one depth ('far' specks, 'mid' v/^, 'near' wide wingbeats), 'far+mid', 'mid+near', or 'none'",
+    "bird_rate": "flock spawns per second while fewer than bird_max are aloft",
+    "bird_max": "how many flocks may be aloft at once (0 grounds every bird)",
     "seed_wind": "a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)",
 }
 
@@ -392,13 +395,19 @@ class SkyConfig:
     sky_engine: str = field(default="texture", metadata={"choices": ("fluid", "texture", "puffs")})
     # Puffs engine levers (v8): a population of individual clouds, each with
     # its own drift and life, no whole-sky scroll — see `PuffSky`.
-    cloud_style: str = field(default="drift", metadata={"choices": ("drift", "bloom", "streaks")})
+    cloud_style: str = field(default="drift", metadata={"choices": ("drift", "bloom", "streaks", "bands")})
     cloud_count: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.2, "hi": 4.0})
     cloud_drift: float = field(default=1.5, metadata={"step": 0.25, "lo": 0.0, "hi": 12.0})
     cloud_life: float = field(default=90.0, metadata={"step": 10.0, "lo": 10.0, "hi": 900.0})
     # A falling seed's share of the wind (v8): the near deck's wind times
     # this, so a sky tuned to creep does not leave the seeds swaying in a
     # gale — `World.seed_wind()` is the one reader.
+    # Birds (v8): which depth bands may spawn a flock, how often, how many.
+    # `field.py` reads these off `World.sky.config`, the same way `seed_wind`
+    # reaches it; the glyph sets per depth stay in `field.DEPTH_GLYPHS`.
+    birds: str = field(default="all", metadata={"choices": ("all", "far", "mid", "near", "far+mid", "mid+near", "none")})
+    bird_rate: float = field(default=0.02, metadata={"step": 0.01, "lo": 0.0, "hi": 1.0})
+    bird_max: int = field(default=3, metadata={"step": 1, "lo": 0, "hi": 12})
     seed_wind: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.0, "hi": 5.0})
 
     @classmethod
@@ -538,6 +547,7 @@ def tuning_fields() -> list[TuneField]:
 # (braille only, v8); the keys stay so an older sky.toml still loads.
 _TUNE_ALWAYS = frozenset((
     "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind",
+    "birds", "bird_rate", "bird_max",
     "tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
     "blank_mean", "core_mean", "semi_core_mean",
 ))
@@ -1560,6 +1570,18 @@ _PUFF_STYLES: dict[str, dict[str, dict]] = {
         "near": dict(w=(28, 60), h=(10, 16), scale_x=10, scale_y=5, octaves=2, cutoff=0.28, gain=2.6,
                      drift=0.15, spacing=38, rise=0.45, fall=0.35, morph=90.0),
     },
+    # Planetary layers (v8): full-width bands stacked down the whole sky,
+    # each its own lane, neighbours flowing opposite ways like zonal jets.
+    # `w`/`h` are unused (the lane sets them); `lanes` is the band count at
+    # `cloud_count == 1.0`, `fill` how much of a lane's height a band takes.
+    "bands": {
+        "far": dict(w=(0, 0), h=(0, 0), scale_x=18, scale_y=2, octaves=2, cutoff=0.36, gain=2.4,
+                    drift=0.25, spacing=0, rise=0.20, fall=0.20, morph=150.0, lanes=7, fill=(0.45, 0.8)),
+        "mid": dict(w=(0, 0), h=(0, 0), scale_x=16, scale_y=2, octaves=2, cutoff=0.35, gain=2.4,
+                    drift=0.45, spacing=0, rise=0.20, fall=0.20, morph=130.0, lanes=7, fill=(0.45, 0.8)),
+        "near": dict(w=(0, 0), h=(0, 0), scale_x=14, scale_y=3, octaves=2, cutoff=0.34, gain=2.4,
+                     drift=0.7, spacing=0, rise=0.20, fall=0.20, morph=110.0, lanes=7, fill=(0.45, 0.8)),
+    },
     "streaks": {
         "far": dict(w=(70, 140), h=(2, 4), scale_x=14, scale_y=2, octaves=2, cutoff=0.40, gain=3.4,
                     drift=0.20, spacing=28, rise=0.35, fall=0.35, morph=90.0),
@@ -1585,7 +1607,7 @@ def _plateau(n: int, margin: float = 0.3) -> list[float]:
     return out
 
 
-def _puff_patch(rng: random.Random, w: int, h: int, p: dict) -> tuple[list[list[float]], list[list[float]]]:
+def _puff_patch(rng: random.Random, w: int, h: int, p: dict, *, periodic: bool = False) -> tuple[list[list[float]], list[list[float]]]:
     """One cloud's raw fbm patch, `h` rows of `w` in [0, 1], plus its edge
     window: a raised cosine in both axes, applied to the *thresholded*
     density at draw time so the cloud's cores keep their full weight and
@@ -1594,9 +1616,17 @@ def _puff_patch(rng: random.Random, w: int, h: int, p: dict) -> tuple[list[list[
     lw = max(3, -(-w // p["scale_x"]) + 1)
     lh = max(3, -(-h // p["scale_y"]) + 1)
     noise = _TexNoise(rng, lw, lh)
-    ex = _plateau(w)
     ey = _plateau(h)
-    sx, sy, octaves = p["scale_x"], p["scale_y"], p["octaves"]
+    sx, sy, octaves = float(p["scale_x"]), p["scale_y"], p["octaves"]
+    if periodic:
+        # A band wraps the whole sky: fit the lattice to `w` exactly so the
+        # noise is periodic in x and no seam shows, and keep x unwindowed.
+        lw = max(3, round(w / sx))
+        noise = _TexNoise(rng, lw, lh)
+        sx = w / lw
+        ex = [1.0] * w
+    else:
+        ex = _plateau(w)
     raw = [[noise.fbm(x / sx, y / sy, octaves) for x in range(w)] for y in range(h)]
     win = [[ex[x] * ey[y] for x in range(w)] for y in range(h)]
     return raw, win
@@ -1605,24 +1635,37 @@ def _puff_patch(rng: random.Random, w: int, h: int, p: dict) -> tuple[list[list[
 class _Puff:
     """One cloud: where it is, how it drifts, and how far through its life."""
 
-    __slots__ = ("x", "y0", "w", "h", "vx", "age", "life", "patch_a", "patch_b", "window", "p", "band")
+    __slots__ = ("x", "y0", "w", "h", "vx", "age", "life", "patch_a", "patch_b", "window", "p", "band", "lane")
 
     def __init__(self, band: str, p: dict, width_px: int, height_px: int, rng: random.Random,
-                 drift: float, life: float, *, age: float | None = None) -> None:
+                 drift: float, life: float, *, age: float | None = None,
+                 lane: tuple[int, int, int] | None = None) -> None:
         self.band = band
         self.p = p
-        self.w = min(rng.randint(*p["w"]), max(width_px, 1))
-        self.h = min(rng.randint(*p["h"]), max(height_px, 1))
-        lo, hi = GRID_BAND_REGION[band]
-        # Band regions count from the bottom; the canvas is top-down.
-        centre = (1.0 - rng.uniform(lo, hi)) * height_px
-        self.y0 = int(_clamp(centre - self.h / 2.0, 0.0, max(height_px - self.h, 0)))
-        self.x = rng.uniform(0.0, max(width_px, 1))
-        self.vx = rng.choice((-1.0, 1.0)) * rng.uniform(0.3, 1.0) * drift * p["drift"]
+        self.lane = lane
+        if lane is not None:
+            # A planetary layer (`bands` style): `lane` is (index, y0, h);
+            # the band spans the whole width, wraps seamlessly, and flows the
+            # way its lane index says — odd lanes east, even lanes west.
+            index, self.y0, self.h = lane
+            self.w = max(width_px, 1)
+            self.x = rng.uniform(0.0, self.w)
+            direction = 1.0 if index % 2 else -1.0
+            self.vx = direction * rng.uniform(0.6, 1.0) * drift * p["drift"]
+        else:
+            self.w = min(rng.randint(*p["w"]), max(width_px, 1))
+            self.h = min(rng.randint(*p["h"]), max(height_px, 1))
+            lo, hi = GRID_BAND_REGION[band]
+            # Band regions count from the bottom; the canvas is top-down.
+            centre = (1.0 - rng.uniform(lo, hi)) * height_px
+            self.y0 = int(_clamp(centre - self.h / 2.0, 0.0, max(height_px - self.h, 0)))
+            self.x = rng.uniform(0.0, max(width_px, 1))
+            self.vx = rng.choice((-1.0, 1.0)) * rng.uniform(0.3, 1.0) * drift * p["drift"]
         self.life = max(life, 1.0)
         self.age = rng.uniform(0.0, self.life) if age is None else age
-        self.patch_a, self.window = _puff_patch(rng, self.w, self.h, p)
-        self.patch_b, _ = _puff_patch(rng, self.w, self.h, p)
+        periodic = lane is not None
+        self.patch_a, self.window = _puff_patch(rng, self.w, self.h, p, periodic=periodic)
+        self.patch_b, _ = _puff_patch(rng, self.w, self.h, p, periodic=periodic)
 
     def cutoff(self) -> float:
         """1.0 unborn, sinking to the style's resting cutoff as the cloud
@@ -1670,15 +1713,41 @@ class PuffSky:
     def _target_count(self, p: dict) -> int:
         return max(1, round(self.cols / p["spacing"] * self.config.cloud_count))
 
-    def _spawn(self, band: str, *, age: float | None = None) -> _Puff:
+    def _spawn(self, band: str, *, age: float | None = None, lane: tuple[int, int, int] | None = None) -> _Puff:
         p = self._style()[band]
         return _Puff(band, p, self.width_px, self.height_px, self.rng,
-                     self.config.cloud_drift, self.config.cloud_life, age=age)
+                     self.config.cloud_drift, self.config.cloud_life, age=age, lane=lane)
+
+    def _is_bands(self) -> bool:
+        return "lanes" in self._style()["far"]
+
+    def _lane_band(self, index: int, count: int) -> str:
+        """Which deck colours lane `index` of `count`: top third far, middle
+        mid, bottom near — the same top-down order the deck regions use."""
+        f = (index + 0.5) / count
+        return "far" if f < 1 / 3 else "mid" if f < 2 / 3 else "near"
+
+    def _bake_bands(self) -> None:
+        """Planetary layers: `lanes * cloud_count` equal lanes down the sky,
+        one full-width band per lane, each `fill` of its lane tall."""
+        style = self._style()
+        count = max(2, round(style["far"]["lanes"] * self.config.cloud_count))
+        lane_h = self.height_px / count
+        self.puffs = {band: [] for band in GRID_ORDER}
+        for i in range(count):
+            band = self._lane_band(i, count)
+            p = style[band]
+            h = max(1, int(lane_h * self.rng.uniform(*p["fill"])))
+            y0 = int(i * lane_h + (lane_h - h) / 2.0)
+            self.puffs[band].append(self._spawn(band, lane=(i, y0, h)))
 
     def _bake(self) -> None:
         self.width_px = max(self.cols * PX_X, 1)
         self.height_px = max(self.sky_rows * PX_Y, 1)
         self._baked_style = self.config.cloud_style
+        if self._is_bands():
+            self._bake_bands()
+            return
         self.puffs: dict[str, list[_Puff]] = {}
         for band in GRID_ORDER:
             p = self._style()[band]
@@ -1695,6 +1764,9 @@ class PuffSky:
             self._bake()
             return
         if config.cloud_count != old.cloud_count:
+            if self._is_bands():
+                self._bake_bands()  # lanes are laid out from the count; re-cut them
+                return
             for band in GRID_ORDER:
                 want = self._target_count(self._style()[band])
                 have = self.puffs[band]
@@ -1718,7 +1790,7 @@ class PuffSky:
             for i, puff in enumerate(puffs):
                 puff.age += dt
                 if puff.age >= puff.life:
-                    puffs[i] = self._spawn(band, age=0.0)
+                    puffs[i] = self._spawn(band, age=0.0, lane=puff.lane)
                     continue
                 puff.x = (puff.x + puff.vx * dt) % w
 

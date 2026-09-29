@@ -112,8 +112,8 @@ CACTUS_MID_MAX = 100
 # shift, and glyph set with the parallax sky itself. A "flock" with zero
 # followers is a lone bird. Every rate below is per second; `advance(dt)`
 # scales a probability as `p_per_second * dt` and a distance as `rate * dt`.
-FLOCK_MAX_ALIVE = 3
-FLOCK_SPAWN_P = 0.02  # per second, while fewer than FLOCK_MAX_ALIVE are alive
+FLOCK_MAX_ALIVE = 3  # default of `SkyConfig.bird_max` (v8: the config is what `advance` reads)
+FLOCK_SPAWN_P = 0.02  # default of `SkyConfig.bird_rate`, per second, while fewer than bird_max are alive
 LONE_BIRD_P = 0.25  # of spawns, a lone bird instead of a flock
 FLOCK_FOLLOWERS = (4, 12)  # inclusive range
 GLIDE_P = 0.125  # 1 in 8 birds glides instead of flapping
@@ -355,7 +355,8 @@ class World:
         self.wind = raw * math.exp(-WIND_THETA * dt)
 
     def _advance_birds(self, dt: float) -> None:
-        if len(self._flocks) < FLOCK_MAX_ALIVE and self.rng.random() < FLOCK_SPAWN_P * dt:
+        cfg = self.sky.config
+        if len(self._flocks) < cfg.bird_max and self.rng.random() < cfg.bird_rate * dt:
             self._spawn_flock()
         alive_flocks = []
         birds: list[Bird] = []
@@ -381,8 +382,22 @@ class World:
         self._flocks = alive_flocks
         self.birds = birds
 
+    def bird_bands(self) -> tuple[str, ...]:
+        """The depth bands `SkyConfig.birds` lets a flock spawn in (v8):
+        `all` is every band, `none` is empty, a name or a `+`-joined pair
+        is exactly those."""
+        choice = self.sky.config.birds
+        if choice == "all":
+            return tuple(DEPTH_BAND)
+        if choice == "none":
+            return ()
+        return tuple(b for b in choice.split("+") if b in DEPTH_BAND)
+
     def _spawn_flock(self) -> None:
-        band = self.rng.choice(tuple(DEPTH_BAND))
+        bands = self.bird_bands()
+        if not bands:
+            return
+        band = self.rng.choice(bands)
         depth = DEPTH_BAND[band]
         speed = DEPTH_SPEED[band]
         from_left = self.rng.random() < 0.5

@@ -539,4 +539,17 @@ scope.
   braille only (a single dot on the fringe, the dither inside, the full
   cell at a core), the keys stay so an older sky.toml still loads. `_render_tuning` refilters on every
   redraw and keeps the cursor on the same key when it survives.
+- `cloud_style = "bands"` (v8, planetary layers) is the puffs engine's
+  fourth style: `lanes * cloud_count` equal lanes down the whole sky, one
+  full-width `_Puff` per lane (`lane=(index, y0, h)`), its noise lattice
+  fitted to the width so it wraps with no seam, neighbouring lanes flowing
+  opposite ways (odd east, even west). A dead band respawns in its own lane;
+  a `cloud_count` change re-cuts every lane. Lanes colour by thirds: top far,
+  middle mid, bottom near.
+- Birds are levers on `SkyConfig` (v8), read off `World.sky.config` like
+  `seed_wind`: `birds` picks the depth bands a flock may spawn in (`all`,
+  `far`, `mid`, `near`, `far+mid`, `mid+near`, `none`; `World.bird_bands`),
+  `bird_rate` the spawns per second, `bird_max` how many flocks fly at once
+  (0 grounds them). `FLOCK_SPAWN_P`/`FLOCK_MAX_ALIVE` are only the defaults'
+  documentation now. The glyph set per depth stays `field.DEPTH_GLYPHS`.
 

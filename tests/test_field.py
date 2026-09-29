@@ -671,3 +671,34 @@ def test_seed_wind_follows_the_near_deck_and_the_seed_wind_lever() -> None:
     assert world.seed_wind() == pytest.approx(0.15)
     world.drop(5)
     assert world.seeds[-1].vx == pytest.approx(0.15)
+
+
+def test_birds_lever_picks_which_depths_spawn_and_none_grounds_them() -> None:
+    """v8: `SkyConfig.birds` chooses the depth bands a flock may spawn in,
+    `bird_rate`/`bird_max` how often and how many; `none` spawns nothing."""
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture", birds="none", bird_rate=1.0, bird_max=6)
+    world = World(cols=40, rows=12, rng=random.Random(9), sky_config=cfg)
+    for _ in range(200):
+        world.advance(0.5)
+    assert not world.birds
+
+    cfg.birds = "far"
+    world.apply_sky_config(cfg)
+    for _ in range(200):
+        world.advance(0.5)
+    assert world.birds and {b.band for b in world.birds} == {"far"}
+    assert world.bird_bands() == ("far",)
+
+    cfg.birds = "mid+near"
+    assert World(cols=40, rows=12, rng=random.Random(1), sky_config=cfg).bird_bands() == ("mid", "near")
+    cfg.birds = "all"
+    assert World(cols=40, rows=12, rng=random.Random(1), sky_config=cfg).bird_bands() == ("far", "mid", "near")
+
+    cfg.birds = "all"
+    cfg.bird_max = 0
+    world2 = World(cols=40, rows=12, rng=random.Random(2), sky_config=cfg)
+    for _ in range(200):
+        world2.advance(0.5)
+    assert not world2.birds
