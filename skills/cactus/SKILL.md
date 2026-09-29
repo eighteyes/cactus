@@ -143,7 +143,8 @@ whose text starts the same way.
 
 `-f PATH` attaches a file. Attach every file the question is about: the plan,
 spec, diff, config, or draft the human would otherwise have to go find. They
-open it from the card with `f` (view) or `F` (edit). Repeat for more;
+open it from the card with `f` (view) or `F` (edit), or preview it inline
+with `o` (a diff vs git HEAD when changed). Repeat for more;
 `edit -f` replaces the list. A row about a file with no `-f` is a row the
 human answers blind.
 

@@ -1397,3 +1397,119 @@ async def test_tuning_overlay_arrows_move_and_nudge(
         await pilot.press("S")
         await pilot.pause()
         assert "press a digit 1-9 to name and save" in app._tuning_text()
+
+
+# --- file preview (`o`): shell.file_preview and the card block ---------------
+
+
+def _repo(tmp_path: Path) -> Path:
+    """A throwaway repository with one committed file, `a.txt`."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.txt").write_text("one\ntwo\n")
+    who = ["-c", "user.name=t", "-c", "user.email=t@t"]
+    for args in (["init", "-q"], ["add", "a.txt"], [*who, "commit", "-qm", "init"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    return repo
+
+
+def test_file_preview_modified_file_shows_diff(tmp_path: Path) -> None:
+    from cactus.shell import file_preview
+
+    repo = _repo(tmp_path)
+    (repo / "a.txt").write_text("one\nTWO\n")
+    lines = file_preview(str(repo / "a.txt"))
+    assert lines[0] == f"── {repo / 'a.txt'}  (diff vs HEAD) ──"
+    assert "-two" in lines and "+TWO" in lines
+
+
+def test_file_preview_untracked_shows_head(tmp_path: Path) -> None:
+    from cactus.shell import file_preview
+
+    repo = _repo(tmp_path)
+    (repo / "new.txt").write_text("fresh\n")
+    lines = file_preview(str(repo / "new.txt"))
+    assert "(untracked)" in lines[0]
+    assert lines[1:] == ["fresh"]
+
+
+def test_file_preview_unchanged_shows_head(tmp_path: Path) -> None:
+    from cactus.shell import file_preview
+
+    repo = _repo(tmp_path)
+    lines = file_preview(str(repo / "a.txt"))
+    assert "(unchanged)" in lines[0]
+    assert lines[1:] == ["one", "two"]
+
+
+def test_file_preview_missing_and_binary(tmp_path: Path) -> None:
+    from cactus.shell import file_preview
+
+    assert file_preview(str(tmp_path / "gone")) == [f"missing: {tmp_path / 'gone'}"]
+    blob = tmp_path / "b.bin"
+    blob.write_bytes(b"ab\0cd")
+    lines = file_preview(str(blob))
+    assert lines[1] == "binary, 5 bytes"
+
+
+def test_file_preview_caps_with_tail_line(tmp_path: Path) -> None:
+    from cactus.shell import file_preview
+
+    big = tmp_path / "big.txt"
+    big.write_text("".join(f"l{i}\n" for i in range(50)))
+    lines = file_preview(str(big), limit=40)
+    assert len(lines) == 1 + 40 + 1
+    assert lines[-1] == "… 10 more lines · f to open"
+
+
+def test_file_preview_outside_a_repo_shows_head(tmp_path: Path) -> None:
+    from cactus.shell import file_preview
+
+    plain = tmp_path / "p.txt"
+    plain.write_text("hello\n")
+    lines = file_preview(str(plain))
+    assert "(no repo)" in lines[0]
+    assert lines[1:] == ["hello"]
+
+
+async def test_preview_o_hidden_on_row_without_files(store: Store, project: str) -> None:
+    store.ask("no files", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "o" not in keybar_keys(app)
+        await pilot.press("o")
+        await pilot.pause()
+        assert app.preview_open is False
+
+
+async def test_preview_o_toggles_block_and_row_move_closes_it(
+    store: Store, project: str, tmp_path: Path
+) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("preview-me\n")
+    store.ask("has files", project=project, cwd=project, agent=AGENT, files=[str(target)])
+    store.ask("other", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert keybar_keys(app)["o"] == "preview"
+        assert "preview-me" not in str(app.query_one("#card-text", Static).content)
+
+        await pilot.press("o")
+        await pilot.pause()
+        assert app.preview_open is True
+        assert "preview-me" in str(app.query_one("#card-text", Static).content)
+
+        await pilot.press("o")
+        await pilot.pause()
+        assert "preview-me" not in str(app.query_one("#card-text", Static).content)
+
+        await pilot.press("o")
+        await pilot.press("j")
+        await pilot.pause()
+        assert app.preview_open is False

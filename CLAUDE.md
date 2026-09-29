@@ -447,6 +447,13 @@ scope.
   falling back on `SuspendNotSupported` (the headless test driver);
   `CACTUS_PAGER`/`CACTUS_EDITOR` override the pager/editor template with
   `{path}` substitution, and tests set them to an inert logging script.
+- `o` toggles an inline preview of the focused row's files in the card
+  (q387/q393/q394), bound only on a row with files (`check_action`, keybar
+  `o preview`). Nothing is stored: `shell.file_preview` asks the file's
+  repository at render time — `diff HEAD` when changed, else head of content
+  (untracked, unchanged, no repo), capped at 40 lines per file — and git
+  failure or a 2s timeout falls back to the head. `preview_open` resets on
+  a row move and the block is recomputed only while open; markup stays off.
 - `Store.projects()`'s `due_count` is `open + elaborate` (q351) — `live` is
   re-answerable but never blocks anyone, so it stays out of "due"; the
   projects page and the projects pane both rank by it, `due_count DESC,

@@ -260,6 +260,7 @@ def _card_lines(
     show_project: bool,
     run_output: list[str] | None = None,
     run_state: str = "",
+    preview: list[str] | None = None,
 ) -> str:
     """Full detail for the one question being answered."""
     # LABEL:qN when spanning projects (q166) — the bare key alone can recur
@@ -286,6 +287,9 @@ def _card_lines(
         for i, path in enumerate(q.files, start=1):
             label = "files" if i == 1 else ""
             lines.append(f"  {label:<8}{i} {path}")
+    if preview:
+        lines.append("")
+        lines.extend(f"  {row}" for row in preview)
 
     if q.status == "elaborate":
         lines.append("")
@@ -679,6 +683,7 @@ class CactusApp(App[int]):
         Binding("O", "open_output", "Output", show=False),
         Binding("f", "view_file", "View file", show=False),
         Binding("F", "edit_file", "Edit file", show=False),
+        Binding("o", "toggle_preview", "Preview files", show=False),
         Binding("d", "dismiss", "Dismiss", show=False),
         Binding("r", "refresh_view", "Refresh"),
         # Manual seed drop (q368) / garden toggles: the bare glyph (`grave`)
@@ -770,6 +775,8 @@ class CactusApp(App[int]):
         self.file_pending: str | None = None
         self.file_pending_key: str | None = None
         self.file_pending_timer = None
+        # `o` inline preview of the focused row's files; resets on a row move.
+        self.preview_open = False
         # Field: an in-memory sky/weather/cactus simulation living inside the
         # card, anchored to the bottom under the key bar. Sized 1x10 until
         # the first render, when the FieldView's actual size is known.
@@ -1474,6 +1481,11 @@ class CactusApp(App[int]):
             self.refresh_bindings()
             return
         card.border_title = f"answering  {q.key}"
+        preview: list[str] | None = None
+        if self.preview_open and q.files:
+            from .shell import file_preview
+
+            preview = [row for path in q.files for row in file_preview(path)]
         text.update(
             _card_lines(
                 q,
@@ -1482,6 +1494,7 @@ class CactusApp(App[int]):
                 show_project=self._show_project,
                 run_output=self.run_output.get(q.key),
                 run_state=self.run_state.get(q.key, ""),
+                preview=preview,
             )
         )
         # check_action is a pure function of the focused question and its
@@ -1566,6 +1579,8 @@ class CactusApp(App[int]):
             items.append(("f", "view"))
         if self.check_action("edit_file", ()):
             items.append(("F", "edit"))
+        if self.check_action("toggle_preview", ()):
+            items.append(("o", "preview"))
         if self.check_action("poke", ()):
             items.append(("p", "poke"))
         if self.check_action("visit", ()):
@@ -1677,7 +1692,7 @@ class CactusApp(App[int]):
             # Stopped accepting answers until `edit` addresses the request —
             # only navigation, clearing, undo (withdrawing the request), and
             # poking the owning agent still mean anything here.
-            if action in ("view_file", "edit_file"):
+            if action in ("view_file", "edit_file", "toggle_preview"):
                 return bool(q.files)
             if action == "select_choice":
                 return self.file_pending is not None
@@ -1696,7 +1711,7 @@ class CactusApp(App[int]):
             return bool(self._command_of(q))
         if action == "open_output":
             return bool(self.run_output.get(q.key))
-        if action in ("view_file", "edit_file"):
+        if action in ("view_file", "edit_file", "toggle_preview"):
             return bool(q.files)
         if action == "dismiss":
             return q.act in ("notify", "data")
@@ -1908,6 +1923,14 @@ class CactusApp(App[int]):
     def action_view_file(self) -> None:
         """Preview the focused row's file (q-files) in the human's pager."""
         self._start_file_action("view")
+
+    def action_toggle_preview(self) -> None:
+        """Show or hide the inline preview (diff vs HEAD) of the row's files."""
+        q = self._current_question()
+        if q is None or not q.files:
+            return
+        self.preview_open = not self.preview_open
+        self._rebuild_card()
 
     def action_edit_file(self) -> None:
         """Open the focused row's file (q-files) in the human's editor."""
@@ -2172,6 +2195,7 @@ class CactusApp(App[int]):
         self.free_text_mode = False
         self._cancel_step_buffer()
         self._cancel_file_pending()
+        self.preview_open = False
         self._hide_input()
         for key in (prior_key, new_key):
             if key is None:
@@ -2394,8 +2418,8 @@ class CactusApp(App[int]):
                 self.flash = f"{q.key} was posted outside herdr; nothing to visit"
                 self._rebuild_status_bar()
                 event.stop()
-        if event.key in ("f", "F"):
-            # view_file/edit_file only bind on a row carrying files (check_action).
+        if event.key in ("f", "F", "o"):
+            # view/edit/preview only bind on a row carrying files (check_action).
             q = self._current_question()
             if q is not None and not q.files:
                 self.flash = f"{q.key} carries no file"

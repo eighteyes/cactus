@@ -8,6 +8,8 @@ Responsibilities:
 - Preview (`view`) or edit (`edit`) a row's attached file in the human's
   own pager/editor, resolved from CACTUS_PAGER/CACTUS_EDITOR or the usual
   PAGER/VISUAL/EDITOR fallbacks.
+- Build an inline preview of an attached file: a diff against HEAD when the
+  file changed in its repository, else the head of its content.
 """
 
 from __future__ import annotations
@@ -145,3 +147,63 @@ def edit(path: str) -> str:
         or "vi"
     )
     return _run_program(template, path)
+
+
+def _vcs(directory: str, *args: str) -> subprocess.CompletedProcess[str] | None:
+    """Run the repository tool in `directory`; None when missing, slow, or unusable."""
+    try:
+        return subprocess.run(
+            ["git", "-C", directory, *args],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def file_preview(path: str, limit: int = 40) -> list[str]:
+    """Lines previewing `path`: its diff against HEAD, else its head.
+
+    Header line first, `── path  (state) ──`, where state is `diff vs HEAD`,
+    `untracked`, `unchanged`, or `no repo`. Body is capped at `limit` lines
+    with a `… N more lines · f to open` tail. A missing file is one
+    `missing: PATH` line, a binary one a header plus `binary, N bytes`.
+    Nothing is stored; the repository is asked at call time, and any failure
+    there falls back to the head of the content.
+    """
+    target = Path(path)
+    if not target.is_file():
+        return [f"missing: {path}"]
+    try:
+        raw = target.read_bytes()
+    except OSError as exc:
+        return [f"missing: {path} ({exc.strerror or exc})"]
+
+    def header(state: str) -> str:
+        return f"── {path}  ({state}) ──"
+
+    if b"\0" in raw[:8192]:
+        return [header("binary"), f"binary, {len(raw)} bytes"]
+
+    directory = str(target.parent)
+    state = "no repo"
+    body: list[str] | None = None
+    inside = _vcs(directory, "rev-parse", "--is-inside-work-tree")
+    if inside is not None and inside.returncode == 0:
+        tracked = _vcs(directory, "ls-files", "--error-unmatch", "--", target.name)
+        if tracked is not None and tracked.returncode != 0:
+            state = "untracked"
+        else:
+            state = "unchanged"
+            diff = _vcs(
+                directory, "diff", "HEAD", "--no-color", "--no-ext-diff", "--", target.name
+            )
+            if diff is not None and diff.returncode == 0 and diff.stdout.strip():
+                state = "diff vs HEAD"
+                body = diff.stdout.splitlines()
+    if body is None:
+        body = raw.decode("utf-8", errors="replace").splitlines()
+
+    lines = [header(state), *body[:limit]]
+    if len(body) > limit:
+        lines.append(f"… {len(body) - limit} more lines · f to open")
+    return lines
