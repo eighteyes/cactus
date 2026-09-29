@@ -44,6 +44,7 @@ from cactus.sky import (
     CORE_GLYPH,
     GRID_BAND_REGION,
     GRID_ORDER,
+    SLOT_COUNT,
     Air,
     GridConfig,
     Sky,
@@ -52,6 +53,8 @@ from cactus.sky import (
     _project_composite,
     _screen_projection_row,
     downsample,
+    slot_path,
+    slots_present,
     tuning_fields,
 )
 
@@ -360,8 +363,9 @@ def test_dump_of_one_changed_key_writes_exactly_that_live_line(tmp_path) -> None
         line for line in text.splitlines()
         if line.strip() and not line.lstrip().startswith("#") and not line.startswith("[")
     ]
-    assert live_lines == ["sky_engine = 'fluid'  # which sky renderer runs: "
-                           "'fluid' (cellular automaton) or 'texture' (cheaper baked noise)"]
+    from cactus.sky import _SHARED_COMMENTS
+
+    assert live_lines == [f"sky_engine = 'fluid'  # {_SHARED_COMMENTS['sky_engine']}"]
     assert SkyConfig.load(path) == changed
 
 
@@ -396,6 +400,38 @@ def test_tuning_fields_exposes_pile_style_choices() -> None:
     row = rows["pile_style"]
     assert row.choices == ("blocks", "dots")
     assert row.step is None
+
+
+# ---- save/recall slots (v6g) --------------------------------------------
+
+
+def test_save_slot_then_load_slot_round_trips(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    changed = SkyConfig().overlay({"near": {"nucleate_p": 0.9}})
+    changed.save_slot(3)
+    loaded = SkyConfig.load_slot(3)
+    assert loaded == changed
+
+
+def test_load_slot_of_empty_slot_is_none(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    assert SkyConfig.load_slot(4) is None
+
+
+def test_slot_path_rejects_out_of_range() -> None:
+    with pytest.raises(ValueError):
+        slot_path(0)
+    with pytest.raises(ValueError):
+        slot_path(SLOT_COUNT + 1)
+
+
+def test_slots_present_reflects_files_on_disk(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    assert slots_present() == {n: False for n in range(1, SLOT_COUNT + 1)}
+    SkyConfig().save_slot(2)
+    present = slots_present()
+    assert present[2] is True
+    assert all(v is False for n, v in present.items() if n != 2)
 
 
 # ---- perspective (v7) -----------------------------------------------------

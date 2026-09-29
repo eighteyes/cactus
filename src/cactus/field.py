@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 
 from rich.text import Text
 
-from .sky import PX_X, PX_Y, Sky, SkyConfig, TextureSky, atmospheric_colour, make_sky, _ordered_dither
+from .sky import PX_X, PX_Y, PuffSky, Sky, SkyConfig, TextureSky, atmospheric_colour, make_sky, _ordered_dither
 
 SUB_X = 2
 SUB_Y = 2
@@ -238,12 +238,16 @@ class World:
     height: int = field(init=False)
     structure: dict[tuple[int, int], int] = field(default_factory=dict)
     drops: int = 0
+    # Landings since the garden was last saved (garden.py); the TUI resets
+    # this to 0 after each save. The world stays file-agnostic — it only
+    # counts, it never reads or writes garden.json itself.
+    landed_since_save: int = 0
     wind: float = 0.0
     seeds: list[Clump] = field(default_factory=list)
     birds: list[Bird] = field(default_factory=list)  # flat render/nudge surface; see `_flocks`
     _flocks: list[Flock] = field(default_factory=list, init=False)
     sky_config: SkyConfig | None = None
-    sky: Sky | TextureSky = field(init=False)
+    sky: Sky | TextureSky | PuffSky = field(init=False)
     terminal_vy: float = field(init=False)
 
     def __post_init__(self) -> None:
@@ -269,8 +273,7 @@ class World:
         other engine (v6f): `apply` alone can only retune the engine that is
         already running, never turn a `Sky` into a `TextureSky` or back.
         Rebuilding re-bakes the weather from scratch, same as a resize."""
-        current_engine = "texture" if isinstance(self.sky, TextureSky) else "fluid"
-        if config.sky_engine != current_engine:
+        if config.sky_engine != getattr(self.sky, "ENGINE", "fluid"):
             self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette, config)
         else:
             self.sky.apply(config)
@@ -479,6 +482,7 @@ class World:
             cx, cy = int(clump.x + m.dx), int(clump.y + m.dy)
             cell = (cx, 0) if cy <= 0 else (cx, cy)
             self.structure[cell] = self.drops
+        self.landed_since_save += 1
         return True
 
     # ---- age / colour -----------------------------------------------------
@@ -689,15 +693,37 @@ class World:
 
     # ---- render -----------------------------------------------------------
 
-    def render(self) -> Text:
-        """Render `rows` lines of `cols` cells, one style span per run."""
-        bird_cells = self._bird_cells()
-        seed_canvas, seed_cells = self._seed_splat_canvas()
-        pile_canvas, pile_cells = (
-            self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else ({}, set())
-        )
-        ground_line_cells = self._ground_line_cells()
-        sky_grid = self.sky.render_cells()
+    def pile_rows(self) -> int:
+        """Terminal rows tall enough to show the whole landed pile: the
+        ground band plus every row the structure currently occupies, plus
+        one row of headroom. Used by the TUI to size the field strip in
+        pile-only mode."""
+        if not self.structure:
+            return GROUND_ROWS + 1
+        tallest_cy = max(cy for _cx, cy in self.structure)
+        return GROUND_ROWS + tallest_cy // SUB_Y + 1
+
+    def render(self, pile_only: bool = False) -> Text:
+        """Render `rows` lines of `cols` cells, one style span per run.
+
+        `pile_only` (the `` ` `` toggle with the field strip hidden) skips
+        the sky, birds, falling seeds, ground speckle, and ground lines —
+        every cell not part of the landed structure renders blank.
+        """
+        if pile_only:
+            bird_cells: dict[tuple[int, int], tuple[str, str]] = {}
+            seed_canvas, seed_cells = {}, set()
+            pile_canvas, pile_cells = {}, set()
+            ground_line_cells: dict[tuple[int, int], tuple[str, str]] = {}
+            sky_grid: list[list[tuple[str, str | None]]] = []
+        else:
+            bird_cells = self._bird_cells()
+            seed_canvas, seed_cells = self._seed_splat_canvas()
+            pile_canvas, pile_cells = (
+                self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else ({}, set())
+            )
+            ground_line_cells = self._ground_line_cells()
+            sky_grid = self.sky.render_cells()
         text = Text()
         for r in range(self.rows):
             cy = self.rows - 1 - r
@@ -706,6 +732,7 @@ class World:
             for cx in range(self.cols):
                 ch, style = self._sample_cell(
                     cx, cy, seed_canvas, seed_cells, bird_cells, sky_row, pile_canvas, pile_cells, ground_line_cells,
+                    pile_only=pile_only,
                 )
                 if runs and runs[-1][1] == style:
                     runs[-1][0] += ch  # type: ignore[operator]
@@ -731,6 +758,7 @@ class World:
         pile_canvas: dict[tuple[int, int], float] | None = None,
         pile_cells: set[tuple[int, int]] | None = None,
         ground_line_cells: dict[tuple[int, int], tuple[str, str]] | None = None,
+        pile_only: bool = False,
     ) -> tuple[str, str | None]:
         if (cx, cy) in seed_cells:
             block = self._seed_pixel_block(cx, cy, seed_canvas)
@@ -755,6 +783,9 @@ class World:
                 if block is not None:
                     return _ordered_dither(block), colour
             return QUADRANT[struct_bits], colour
+
+        if pile_only:
+            return " ", None
 
         bird_cell = bird_cells.get((cx, cy))
         if bird_cell is not None:

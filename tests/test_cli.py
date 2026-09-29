@@ -299,3 +299,29 @@ def test_sky_dump_refuses_an_existing_file_without_force(cli, scratch_env):
     assert "exists" in second.stderr and "--force" in second.stderr
     forced = cli("sky", "--dump", "--force")
     assert forced.returncode == 0
+
+
+def test_garden_prints_path_and_clear_removes_file(cli, scratch_env):
+    from pathlib import Path
+
+    empty = cli("garden")
+    assert empty.returncode == 0
+    assert "empty" in empty.stdout
+
+    path = Path(scratch_env["CACTUS_DB"]).parent / "garden.json"
+    path.write_text('{"version": 1, "drops": 3, "cells": [[1, 0, 0]]}', encoding="utf-8")
+
+    present = cli("garden")
+    assert present.returncode == 0
+    assert str(path) in present.stdout
+    assert "1 cells" in present.stdout
+    assert "3 drops" in present.stdout
+
+    cleared = cli("garden", "--clear")
+    assert cleared.returncode == 0
+    assert "cleared" in cleared.stdout
+    assert not path.exists()
+
+    again = cli("garden", "--clear")
+    assert again.returncode == 0
+    assert "nothing to clear" in again.stdout

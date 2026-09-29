@@ -13,20 +13,27 @@ Responsibilities:
 - Undo restores an answered row to open.
 - An empty multi submit records nothing and flashes instead.
 - Answering drops a block onto the pachinko field; clearing a row does not.
-- Backtick/tilde drop a seed anytime except while typing, empty inbox included.
+- Backtick drops a seed anytime except while typing, empty inbox included, or
+  (with the field hidden) toggles pile-only instead; tilde always toggles the
+  field itself.
 - The card is always displayed, showing the empty-state message with an
   empty store; the field lives inside it, sized to the card's remaining
   height once the text and key bar rows are accounted for.
+- The garden (the landed pile) is shared and persisted: it survives a
+  restart and stays in sync across every TUI on the same database.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 from textual.widgets import Footer, Input, Static
 from textual.widgets._footer import FooterKey
 
+from cactus import garden
+from cactus.field import World
 from cactus.store import Choice, Store
 from cactus.tui import CactusApp, QuestionBlock
 
@@ -596,7 +603,7 @@ async def test_backtick_drops_a_seed_on_any_row(store: Store, project: str) -> N
         assert len(app.world.seeds) == 1
 
 
-async def test_tilde_also_drops_a_seed(store: Store, project: str) -> None:
+async def test_tilde_toggles_the_field(store: Store, project: str) -> None:
     store.ask(
         "pick one", project=project, cwd=project, agent=AGENT,
         kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
@@ -605,9 +612,11 @@ async def test_tilde_also_drops_a_seed(store: Store, project: str) -> None:
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
+        assert app.tui_settings["field"] is True
         await pilot.press("tilde")
         await pilot.pause()
-        assert len(app.world.seeds) == 1
+        assert app.tui_settings["field"] is False
+        assert app.query_one("#field").display is False
 
 
 async def test_backtick_drops_a_seed_with_an_empty_inbox(store: Store, project: str) -> None:
@@ -633,6 +642,85 @@ async def test_backtick_in_free_text_mode_types_instead_of_dropping(store: Store
         await pilot.pause()
         assert not app.world.seeds
         assert "`" in app.query_one("#answer-input", Input).value
+
+
+async def test_landing_persists_and_a_second_app_loads_the_same_garden(store: Store, project: str) -> None:
+    store.ask("pick one", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.world.structure[(1, 0)] = 0
+        app.world.drops = 1
+        app.world.landed_since_save = 1
+        app._save_garden()
+        assert app._garden_path.exists()
+        assert app.world.landed_since_save == 0
+
+    other = CactusApp(store, project=project)
+    async with other.run_test() as pilot:
+        await pilot.pause()
+        assert other.world.structure == {(1, 0): 0}
+        assert other.world.drops == 1
+
+
+async def test_external_garden_write_is_reloaded_after_a_poll(store: Store, project: str) -> None:
+    store.ask("pick one", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        other_world = World(cols=5, rows=5)
+        other_world.structure[(2, 0)] = 0
+        other_world.drops = 1
+        time.sleep(0.01)  # a distinct mtime from whatever on_mount already wrote
+        garden.save(other_world, app._garden_path)
+        app._sky_reload_last = None  # force the poll clock to fire on the next tick
+        app._field_tick()
+        assert app.world.structure == {(2, 0): 0}
+        assert app.flash == "garden updated"
+
+
+async def test_tilde_hides_field_and_persists_setting(store: Store, project: str) -> None:
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("tilde")
+        await pilot.pause()
+        assert app.tui_settings["field"] is False
+
+    second = CactusApp(store, project=project)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        assert second.tui_settings["field"] is False
+
+
+async def test_backtick_toggles_pile_only_when_field_hidden(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("tilde")
+        await pilot.pause()
+        assert app.tui_settings["field"] is False
+        assert app.tui_settings["pile_only"] is False
+
+        await pilot.press("grave_accent")
+        await pilot.pause()
+        assert not app.world.seeds
+        assert app.tui_settings["pile_only"] is True
+        assert app.query_one("#field").display is True
+
+        await pilot.press("tilde")
+        await pilot.pause()
+        assert app.tui_settings["field"] is True
+        await pilot.press("grave_accent")
+        await pilot.pause()
+        assert len(app.world.seeds) == 1
 
 
 # The answers view and projects pane (sublists) are a separate change; until
@@ -1098,6 +1186,58 @@ async def test_tuning_overlay_escape_closes_and_keeps_nudge(
         assert app.tuning_open is False
         assert app.query_one("#tuning-panel", Static).display is False
         assert getattr(app._tuning_obj(row.group), row.name) == nudged
+
+
+async def test_tuning_overlay_save_and_recall_slot(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v6g: `S` then a digit saves the live config to that slot; a bare
+    digit recalls it, applying live and rewriting sky.toml. `r` (reset)
+    then recalling the same slot brings the nudged value back."""
+    from cactus.sky import SkyConfig, slot_path
+
+    path = tmp_path / "sky.toml"
+    monkeypatch.setenv("CACTUS_SKY", str(path))
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("T")
+        await pilot.pause()
+        row = app.tuning_rows[0]
+        default_value = getattr(app._tuning_obj(row.group), row.name)
+
+        await pilot.press("l")
+        await pilot.pause()
+        nudged = getattr(app._tuning_obj(row.group), row.name)
+        assert nudged != default_value
+
+        await pilot.press("S")
+        await pilot.pause()
+        assert app.tuning_save_armed is True
+        await pilot.press("2")
+        await pilot.pause()
+        assert app.tuning_save_armed is False
+        assert slot_path(2).exists()
+        saved_cfg = SkyConfig.load_slot(2)
+        assert saved_cfg is not None
+        saved_obj = saved_cfg if row.group == "shared" else getattr(saved_cfg, row.group)
+        assert getattr(saved_obj, row.name) == nudged
+
+        await pilot.press("r")
+        await pilot.pause()
+        assert getattr(app._tuning_obj(row.group), row.name) == default_value
+        mtime_before_recall = path.stat().st_mtime
+
+        await pilot.press("2")
+        await pilot.pause()
+        assert getattr(app._tuning_obj(row.group), row.name) == nudged
+        assert path.stat().st_mtime >= mtime_before_recall
+        assert "recalled slot 2" in app.flash
+
+        await pilot.press("3")
+        await pilot.pause()
+        assert "slot 3 is empty" in app.flash
 
 
 # ---- perf (v6f) -------------------------------------------------------

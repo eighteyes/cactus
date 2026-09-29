@@ -40,7 +40,10 @@ Responsibilities:
   string-valued lever, `pile_style` (v6d, "blocks" or "dots" — how field.py
   renders a landed cactus cell), carries a `choices` tuple instead.
   `tuning_fields()` flattens both shapes, the whole set (far/mid/near/shared),
-  into `TuneField` rows for tui.py's `T` overlay.
+  into `TuneField` rows for tui.py's `T` overlay. Nine save/recall slots
+  (v6g) live beside `config_path()` as `sky-slot-N.toml`: `save_slot`/
+  `load_slot` round-trip through the same sparse `dump`/`load`, and
+  `slots_present()` reports which are filled for the overlay to show.
 - Downsample the composited canvas, `PX_X` by `PX_Y` pixels per terminal
   cell, to one toned glyph: blank, a fringe speck, an ordered-dither braille
   pattern, a flat cirrus stroke, a tapering edge stroke, or a solid core —
@@ -59,10 +62,20 @@ Responsibilities:
   `SkyConfig.fps` (shared group) is how often the TUI samples the field at
   all — `Air.advance`/`Sky.advance` still take the true elapsed `dt`, so
   raising or lowering it only changes the sampling rate, not the physics.
-  `SkyConfig.sky_engine` ("fluid" default, "texture") picks between this
-  module's cellular automaton and `TextureSky`, v5's baked-noise sky restored
-  behind the same four-method interface (`make_sky` is the one place that
-  chooses); `field.py`'s `run_bench()` (`cactus sky --bench`) times both.
+  `SkyConfig.sky_engine` ("texture" default, "fluid", "puffs") picks the
+  engine from `SKY_ENGINES` — this module's cellular automaton, `TextureSky`
+  (v5's baked-noise sky restored behind the same four-method interface), or
+  `PuffSky` (`make_sky` is the one place that chooses; each class carries an
+  `ENGINE` tag `field.py` reads back). `field.py`'s `run_bench()` (`cactus
+  sky --bench`) times the default engine.
+- Puffs (v8): `PuffSky` is a population of individual clouds, no whole-sky
+  scroll. Each `_Puff` has its own drift (`cloud_drift`, band-scaled, its
+  own sign), its own life (`cloud_life`), and two baked noise patches it
+  morphs between; its cutoff starts at 1.0 and sinks to the style's resting
+  value, so the cloud unfolds from its densest cores outward, holds, then
+  recedes the same way and is replaced. `cloud_style` picks a `_PUFF_STYLES`
+  table (`drift`, `bloom`, `streaks`), `cloud_count` scales the population.
+  `camera_x` stays 0: the sky changes more than it travels.
 """
 
 from __future__ import annotations
@@ -109,6 +122,23 @@ CONFIG_ENV = "CACTUS_SKY"
 def config_path() -> Path:
     override = os.environ.get(CONFIG_ENV)
     return Path(override) if override else Path.home() / ".config" / "cactus" / "sky.toml"
+
+
+# Save/recall slots (v6g): nine spare config files beside sky.toml, for a
+# tuning session to stash and swap between without overwriting the file the
+# TUI keeps live-dumping to.
+SLOT_COUNT = 9
+
+
+def slot_path(n: int) -> Path:
+    if not 1 <= n <= SLOT_COUNT:
+        raise ValueError(f"slot {n} out of range 1..{SLOT_COUNT}")
+    return config_path().with_name(f"sky-slot-{n}.toml")
+
+
+def slots_present() -> dict[int, bool]:
+    """`{n: slot_path(n).exists()}` for every slot, 1..`SLOT_COUNT`."""
+    return {n: slot_path(n).exists() for n in range(1, SLOT_COUNT + 1)}
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -250,7 +280,11 @@ _SHARED_COMMENTS = {
     "ground_lines": "how many faint perspective lines cross the ground band (0 disables)",
     "deck_altitude_px": "the deck's world y — how far above the horizon its top peeks through",
     "fps": "how often the TUI samples and redraws the field, per second",
-    "sky_engine": "which sky renderer runs: 'fluid' (cellular automaton) or 'texture' (cheaper baked noise)",
+    "sky_engine": "which sky renderer runs: 'fluid' (cellular automaton), 'texture' (cheaper baked noise), or 'puffs' (individual clouds, no whole-sky scroll)",
+    "cloud_style": "puffs engine look: 'drift' (each cloud wanders its own way), 'bloom' (near-still clouds unfold and recede), 'streaks' (long thin bands)",
+    "cloud_count": "puffs engine population scale: 1.0 is one cloud per band per ~40 columns",
+    "cloud_drift": "puffs engine top drift speed, pixels per second, before a band's own wind_scale; each cloud picks its own direction",
+    "cloud_life": "puffs engine seconds a cloud lives, unfold to recede",
 }
 
 
@@ -315,7 +349,13 @@ class SkyConfig:
     # Which sky renderer runs: "fluid" is the cellular-automaton `Sky` above,
     # "texture" is the cheaper v5 baked-noise `TextureSky` (same interface),
     # restored as a lever rather than a replacement (v6f, q384).
-    sky_engine: str = field(default="texture", metadata={"choices": ("fluid", "texture")})
+    sky_engine: str = field(default="texture", metadata={"choices": ("fluid", "texture", "puffs")})
+    # Puffs engine levers (v8): a population of individual clouds, each with
+    # its own drift and life, no whole-sky scroll — see `PuffSky`.
+    cloud_style: str = field(default="drift", metadata={"choices": ("drift", "bloom", "streaks")})
+    cloud_count: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.2, "hi": 4.0})
+    cloud_drift: float = field(default=1.5, metadata={"step": 0.25, "lo": 0.0, "hi": 12.0})
+    cloud_life: float = field(default=90.0, metadata={"step": 10.0, "lo": 10.0, "hi": 900.0})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkyConfig":
@@ -387,6 +427,18 @@ class SkyConfig:
                 lines.append(f"{key} = {v!r}  # {_SHARED_COMMENTS[key]}")
         p.write_text("\n".join(lines) + "\n")
         return p
+
+    def save_slot(self, n: int) -> Path:
+        """Dump this config to slot `n`, same sparse format as `dump`."""
+        return self.dump(slot_path(n))
+
+    @classmethod
+    def load_slot(cls, n: int) -> "SkyConfig | None":
+        """Load slot `n`, or `None` when that slot has never been saved."""
+        p = slot_path(n)
+        if not p.exists():
+            return None
+        return cls.load(p)
 
 
 @dataclass(frozen=True)
@@ -1052,6 +1104,8 @@ def _project_composite(
 class Sky:
     """Owns the three depth grids for one field."""
 
+    ENGINE = "fluid"
+
     def __init__(self, cols: int, sky_rows: int, rng: random.Random, palette, config: SkyConfig | None = None) -> None:
         self.cols = max(cols, 0)
         self.sky_rows = max(sky_rows, 0)
@@ -1333,6 +1387,8 @@ class TextureSky:
     `downsample()`, but with no cellular automaton and no perspective
     projection — the cheap look a fraction of the fluid engine's frame cost."""
 
+    ENGINE = "texture"
+
     def __init__(self, cols: int, sky_rows: int, rng: random.Random, palette, config: SkyConfig | None = None) -> None:
         self.cols = max(cols, 0)
         self.sky_rows = max(sky_rows, 0)
@@ -1376,10 +1432,273 @@ class TextureSky:
         return downsample(self.layers, self.palette, self.sky_rows, self.cols, self.config, density=density, owner=owner)
 
 
-def make_sky(cols: int, sky_rows: int, rng: random.Random, palette, config: SkyConfig | None = None) -> "Sky | TextureSky":
-    """`Sky` or `TextureSky`, chosen by `config.sky_engine` (default "fluid",
-    `SkyConfig()` when `config` is omitted) — the one place that picks
-    between the two engines, so `field.py` never has to know which it got."""
+# ---- puffs engine (v8) --------------------------------------------------
+#
+# The third engine: a population of individual clouds. Nothing scrolls the
+# whole sky — `camera_x` stays 0 — and each cloud carries its own slow
+# left-or-right drift, its own life, and its own pair of baked noise patches
+# it morphs between. A cloud is born invisible and *unfolds*: its cutoff
+# starts at 1.0 and sinks to the style's resting cutoff over the first part
+# of its life, so the densest cores appear first and the fringes grow out of
+# them; it holds, then the cutoff climbs back and the cloud recedes the same
+# way in reverse. The look the texture engine's whole-layer scroll and morph
+# could only approximate — clouds that change more than they travel.
+#
+# `_PUFF_STYLES` is one table per `cloud_style`, one entry per band:
+#   w, h         a cloud's pixel width/height range (inclusive)
+#   scale_x/y    noise lattice spacing inside the patch, pixels per node
+#   octaves      fbm octaves
+#   cutoff       the resting cutoff once unfolded (lower = fuller)
+#   gain         density slope above the cutoff
+#   drift        this band's share of `cloud_drift` (px/s), on top of a
+#                random 0.3-1.0 per cloud; each cloud picks its own sign
+#   spacing      columns of sky per cloud at `cloud_count == 1.0`
+#   rise/fall    fraction of `cloud_life` spent unfolding / receding
+#   morph        seconds for one a -> b -> a morph cycle
+_PUFF_STYLES: dict[str, dict[str, dict]] = {
+    "drift": {
+        "far": dict(w=(30, 60), h=(4, 7), scale_x=10, scale_y=3, octaves=3, cutoff=0.38, gain=3.2,
+                    drift=0.25, spacing=22, rise=0.30, fall=0.30, morph=80.0),
+        "mid": dict(w=(26, 52), h=(6, 10), scale_x=9, scale_y=3, octaves=3, cutoff=0.36, gain=3.2,
+                    drift=0.55, spacing=26, rise=0.30, fall=0.30, morph=70.0),
+        "near": dict(w=(20, 44), h=(8, 14), scale_x=8, scale_y=4, octaves=2, cutoff=0.34, gain=3.0,
+                     drift=1.0, spacing=32, rise=0.30, fall=0.30, morph=60.0),
+    },
+    "bloom": {
+        "far": dict(w=(40, 80), h=(5, 8), scale_x=12, scale_y=3, octaves=3, cutoff=0.32, gain=2.8,
+                    drift=0.05, spacing=26, rise=0.45, fall=0.35, morph=120.0),
+        "mid": dict(w=(34, 70), h=(8, 12), scale_x=11, scale_y=4, octaves=3, cutoff=0.30, gain=2.8,
+                    drift=0.10, spacing=30, rise=0.45, fall=0.35, morph=100.0),
+        "near": dict(w=(28, 60), h=(10, 16), scale_x=10, scale_y=5, octaves=2, cutoff=0.28, gain=2.6,
+                     drift=0.15, spacing=38, rise=0.45, fall=0.35, morph=90.0),
+    },
+    "streaks": {
+        "far": dict(w=(70, 140), h=(2, 4), scale_x=14, scale_y=2, octaves=2, cutoff=0.40, gain=3.4,
+                    drift=0.20, spacing=28, rise=0.35, fall=0.35, morph=90.0),
+        "mid": dict(w=(60, 120), h=(3, 5), scale_x=12, scale_y=2, octaves=2, cutoff=0.38, gain=3.2,
+                    drift=0.40, spacing=34, rise=0.35, fall=0.35, morph=80.0),
+        "near": dict(w=(50, 100), h=(4, 6), scale_x=10, scale_y=2, octaves=2, cutoff=0.36, gain=3.0,
+                     drift=0.70, spacing=40, rise=0.35, fall=0.35, morph=70.0),
+    },
+}
+
+
+def _plateau(n: int, margin: float = 0.3) -> list[float]:
+    """`n` weights: 1 across the middle, a cosine fade to 0 over the outer
+    `margin` of each end — a cloud's soft rim around a body that keeps its
+    full weight."""
+    if n <= 1:
+        return [1.0] * n
+    m = max(margin * n, 1.0)
+    out = []
+    for i in range(n):
+        edge = min(i + 0.5, n - i - 0.5)
+        out.append(1.0 if edge >= m else 0.5 - 0.5 * math.cos(math.pi * edge / m))
+    return out
+
+
+def _puff_patch(rng: random.Random, w: int, h: int, p: dict) -> tuple[list[list[float]], list[list[float]]]:
+    """One cloud's raw fbm patch, `h` rows of `w` in [0, 1], plus its edge
+    window: a raised cosine in both axes, applied to the *thresholded*
+    density at draw time so the cloud's cores keep their full weight and
+    only its rim fades — windowing the raw noise would push every pixel
+    under the cutoff."""
+    lw = max(3, -(-w // p["scale_x"]) + 1)
+    lh = max(3, -(-h // p["scale_y"]) + 1)
+    noise = _TexNoise(rng, lw, lh)
+    ex = _plateau(w)
+    ey = _plateau(h)
+    sx, sy, octaves = p["scale_x"], p["scale_y"], p["octaves"]
+    raw = [[noise.fbm(x / sx, y / sy, octaves) for x in range(w)] for y in range(h)]
+    win = [[ex[x] * ey[y] for x in range(w)] for y in range(h)]
+    return raw, win
+
+
+class _Puff:
+    """One cloud: where it is, how it drifts, and how far through its life."""
+
+    __slots__ = ("x", "y0", "w", "h", "vx", "age", "life", "patch_a", "patch_b", "window", "p", "band")
+
+    def __init__(self, band: str, p: dict, width_px: int, height_px: int, rng: random.Random,
+                 drift: float, life: float, *, age: float | None = None) -> None:
+        self.band = band
+        self.p = p
+        self.w = min(rng.randint(*p["w"]), max(width_px, 1))
+        self.h = min(rng.randint(*p["h"]), max(height_px, 1))
+        lo, hi = GRID_BAND_REGION[band]
+        # Band regions count from the bottom; the canvas is top-down.
+        centre = (1.0 - rng.uniform(lo, hi)) * height_px
+        self.y0 = int(_clamp(centre - self.h / 2.0, 0.0, max(height_px - self.h, 0)))
+        self.x = rng.uniform(0.0, max(width_px, 1))
+        self.vx = rng.choice((-1.0, 1.0)) * rng.uniform(0.3, 1.0) * drift * p["drift"]
+        self.life = max(life, 1.0)
+        self.age = rng.uniform(0.0, self.life) if age is None else age
+        self.patch_a, self.window = _puff_patch(rng, self.w, self.h, p)
+        self.patch_b, _ = _puff_patch(rng, self.w, self.h, p)
+
+    def cutoff(self) -> float:
+        """1.0 unborn, sinking to the style's resting cutoff as the cloud
+        unfolds, climbing back as it recedes."""
+        t = self.age / self.life
+        rise, fall = self.p["rise"], self.p["fall"]
+        if t < rise:
+            reveal = _smoothstep(t / rise)
+        elif t > 1.0 - fall:
+            reveal = _smoothstep((1.0 - t) / fall)
+        else:
+            reveal = 1.0
+        base = self.p["cutoff"]
+        return base + (1.0 - base) * (1.0 - reveal)
+
+    def blend(self) -> float:
+        return 0.5 - 0.5 * math.cos(2.0 * math.pi * self.age / self.p["morph"])
+
+
+class PuffSky:
+    """Individual clouds, no whole-sky scroll (v8, `sky_engine == "puffs"`).
+    Same four-method interface as `Sky` and `TextureSky`, read through the
+    same `downsample()`. `cloud_style` picks a `_PUFF_STYLES` table,
+    `cloud_count` scales the population, `cloud_drift` the top speed a
+    cloud may wander at, `cloud_life` how long one lasts. `camera_x` never
+    moves: the ground lines and the falling seeds still read the world's
+    wind, but the sky behind them only unfolds, never slides."""
+
+    ENGINE = "puffs"
+
+    def __init__(self, cols: int, sky_rows: int, rng: random.Random, palette, config: SkyConfig | None = None) -> None:
+        self.cols = max(cols, 0)
+        self.sky_rows = max(sky_rows, 0)
+        self.rng = rng
+        self.palette = palette
+        self.config = config or SkyConfig()
+        self.camera_x = 0.0
+        self._bake()
+
+    # ---- population -------------------------------------------------
+
+    def _style(self) -> dict[str, dict]:
+        return _PUFF_STYLES.get(self.config.cloud_style, _PUFF_STYLES["drift"])
+
+    def _target_count(self, p: dict) -> int:
+        return max(1, round(self.cols / p["spacing"] * self.config.cloud_count))
+
+    def _spawn(self, band: str, *, age: float | None = None) -> _Puff:
+        p = self._style()[band]
+        return _Puff(band, p, self.width_px, self.height_px, self.rng,
+                     self.config.cloud_drift, self.config.cloud_life, age=age)
+
+    def _bake(self) -> None:
+        self.width_px = max(self.cols * PX_X, 1)
+        self.height_px = max(self.sky_rows * PX_Y, 1)
+        self._baked_style = self.config.cloud_style
+        self.puffs: dict[str, list[_Puff]] = {}
+        for band in GRID_ORDER:
+            p = self._style()[band]
+            self.puffs[band] = [self._spawn(band) for _ in range(self._target_count(p))]
+
+    def apply(self, config: SkyConfig) -> None:
+        """Retune live. A style change re-bakes the population — every patch
+        was cut to the old style's shape. A count change grows or trims each
+        band's list in place so the surviving clouds keep their place; drift
+        and life reach only clouds born after the change."""
+        old = self.config
+        self.config = config
+        if config.cloud_style != self._baked_style:
+            self._bake()
+            return
+        if config.cloud_count != old.cloud_count:
+            for band in GRID_ORDER:
+                want = self._target_count(self._style()[band])
+                have = self.puffs[band]
+                while len(have) < want:
+                    have.append(self._spawn(band))
+                del have[want:]
+
+    def resize(self, cols: int, sky_rows: int) -> None:
+        self.cols = max(cols, 0)
+        self.sky_rows = max(sky_rows, 0)
+        self._bake()
+
+    # ---- time -------------------------------------------------------
+
+    def advance(self, dt: float, wind: float = 0.0) -> None:
+        """Every cloud ages and drifts by its own `vx`; one past its life is
+        replaced by a newborn at a fresh spot. `wind` is accepted for
+        interface parity and ignored: no whole-sky motion here."""
+        w = self.width_px
+        for band, puffs in self.puffs.items():
+            for i, puff in enumerate(puffs):
+                puff.age += dt
+                if puff.age >= puff.life:
+                    puffs[i] = self._spawn(band, age=0.0)
+                    continue
+                puff.x = (puff.x + puff.vx * dt) % w
+
+    def tick(self, wind: float = 0.0) -> None:
+        """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
+        self.advance(_DEFAULT_DT, wind)
+
+    # ---- draw -------------------------------------------------------
+
+    def composite(self) -> tuple[list[list[float]], list[list[str]], list[bool]]:
+        """Top-down `density`/`owner` canvases plus a per-pixel-row empty
+        flag. Bands stamp far to near, so a nearer cloud overwrites where
+        it clears `DENSITY_FLOOR` — the same nearest-first ownership rule
+        `_composite` and `_texture_composite` use."""
+        W, H = self.width_px, self.height_px
+        density = [[0.0] * W for _ in range(H)]
+        owner = [[""] * W for _ in range(H)]
+        row_empty = [True] * H
+        for band in reversed(GRID_ORDER):
+            for puff in self.puffs[band]:
+                cut = puff.cutoff()
+                if cut >= 1.0:
+                    continue
+                gain = puff.p["gain"]
+                blend = puff.blend()
+                x0 = int(puff.x)
+                pa, pb, win = puff.patch_a, puff.patch_b, puff.window
+                for r in range(puff.h):
+                    y = puff.y0 + r
+                    if y >= H:
+                        break
+                    drow, orow = density[y], owner[y]
+                    ra, rb, wr = pa[r], pb[r], win[r]
+                    touched = False
+                    for c in range(puff.w):
+                        a = ra[c]
+                        raw = a + (rb[c] - a) * blend
+                        d = (raw - cut) * gain
+                        if d <= 0.0:
+                            continue
+                        d = (1.0 if d > 1.0 else d ** 0.7) * wr[c]
+                        if d <= DENSITY_FLOOR:
+                            continue
+                        x = (x0 + c) % W
+                        if d > drow[x] or orow[x] != band:
+                            drow[x] = d
+                            orow[x] = band
+                        touched = True
+                    if touched:
+                        row_empty[y] = False
+        return density, owner, row_empty
+
+    def render_cells(self) -> list[list[tuple[str, str | None]]]:
+        if self.cols <= 0 or self.sky_rows <= 0:
+            return []
+        density, owner, row_empty = self.composite()
+        return downsample({}, self.palette, self.sky_rows, self.cols, self.config,
+                          density=density, owner=owner, row_empty=row_empty)
+
+
+SKY_ENGINES: dict[str, type] = {"fluid": Sky, "texture": TextureSky, "puffs": PuffSky}
+
+
+def make_sky(cols: int, sky_rows: int, rng: random.Random, palette, config: SkyConfig | None = None) -> "Sky | TextureSky | PuffSky":
+    """The engine `config.sky_engine` names (`SKY_ENGINES`; `SkyConfig()`'s
+    default when `config` is omitted, an unknown name falls back to the
+    fluid `Sky`) — the one place that picks, so `field.py` never has to
+    know which it got; it reads the class's `ENGINE` tag back instead."""
     engine = (config or SkyConfig()).sky_engine
-    cls = TextureSky if engine == "texture" else Sky
+    cls = SKY_ENGINES.get(engine, Sky)
     return cls(cols, sky_rows, rng, palette, config)

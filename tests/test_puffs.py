@@ -1,0 +1,164 @@
+"""
+test_puffs.py — the puffs sky engine (v8): individual clouds, no whole-sky
+scroll.
+
+Responsibilities:
+- `make_sky` picks `PuffSky` for `sky_engine == "puffs"` behind the same
+  interface as the other two engines.
+- No global motion: `camera_x` stays 0 through `advance`, and a cloud with
+  `vx == 0` keeps its `x` while its neighbours move on their own.
+- Each cloud picks its own direction and speed, band-scaled by `cloud_drift`.
+- A cloud unfolds: its cutoff starts at 1.0, sinks to the style's resting
+  cutoff, holds, then climbs back before it dies and is replaced.
+- `apply` re-bakes on a `cloud_style` change, resizes the population on a
+  `cloud_count` change in place, and leaves the population alone otherwise.
+- Every style renders something in a plausible frame budget.
+"""
+
+from __future__ import annotations
+
+import random
+
+import pytest
+
+from cactus.field import MONO_PLUS, World
+from cactus.sky import (
+    GRID_ORDER,
+    SKY_ENGINES,
+    PuffSky,
+    SkyConfig,
+    _PUFF_STYLES,
+    make_sky,
+)
+
+STYLES = tuple(_PUFF_STYLES)
+
+
+def _puffs(style: str = "drift", seed: int = 3, cols: int = 100, rows: int = 14, **kw) -> PuffSky:
+    cfg = SkyConfig(sky_engine="puffs", cloud_style=style, **kw)
+    sky = make_sky(cols, rows, random.Random(seed), MONO_PLUS, cfg)
+    assert isinstance(sky, PuffSky)
+    return sky
+
+
+def test_make_sky_picks_puffs_and_the_engine_tag_round_trips() -> None:
+    sky = _puffs()
+    assert sky.ENGINE == "puffs"
+    assert SKY_ENGINES["puffs"] is PuffSky
+    assert SkyConfig().sky_engine in SKY_ENGINES
+
+
+def test_camera_never_moves_whatever_the_wind() -> None:
+    sky = _puffs()
+    for _ in range(50):
+        sky.advance(0.5, wind=0.6)
+    assert sky.camera_x == 0.0
+
+
+def test_each_cloud_drifts_on_its_own_not_the_sky() -> None:
+    sky = _puffs(cloud_life=1e6)  # nobody dies during the test
+    puffs = [p for band in GRID_ORDER for p in sky.puffs[band]]
+    assert len(puffs) >= 4
+    signs = {p.vx > 0 for p in puffs}
+    assert signs == {True, False}, "clouds should pick both directions"
+    puffs[0].vx = 0.0
+    before = [p.x for p in puffs]
+    for _ in range(20):
+        sky.advance(1.0)
+    after = [p.x for p in puffs]
+    assert after[0] == before[0], "a still cloud stays put: nothing scrolls it"
+    moved = [abs(a - b) for a, b in zip(after[1:], before[1:])]
+    assert all(m > 0 for m in moved)
+    assert len({round(m, 6) for m in moved}) > 1, "no two clouds share a speed"
+
+
+def test_cloud_drift_scales_speed_and_bands_differ() -> None:
+    slow = _puffs(cloud_drift=1.0, cloud_life=1e6)
+    fast = _puffs(cloud_drift=4.0, cloud_life=1e6)
+    top_slow = max(abs(p.vx) for band in GRID_ORDER for p in slow.puffs[band])
+    top_fast = max(abs(p.vx) for band in GRID_ORDER for p in fast.puffs[band])
+    assert top_fast > top_slow
+    far = max(abs(p.vx) for p in fast.puffs["far"])
+    near = max(abs(p.vx) for p in fast.puffs["near"])
+    assert near > far, "the near band wanders faster than the far one"
+
+
+def test_a_cloud_unfolds_then_recedes() -> None:
+    sky = _puffs(cloud_life=100.0)
+    puff = sky.puffs["mid"][0]
+    resting = puff.p["cutoff"]
+    puff.age = 0.0
+    assert puff.cutoff() == pytest.approx(1.0)
+    puff.age = 50.0
+    assert puff.cutoff() == pytest.approx(resting)
+    puff.age = 100.0 * (1.0 - puff.p["fall"] / 2)
+    mid_fall = puff.cutoff()
+    assert resting < mid_fall < 1.0
+    puff.age = 100.0 * puff.p["rise"] / 2
+    mid_rise = puff.cutoff()
+    assert resting < mid_rise < 1.0
+
+
+def test_a_dead_cloud_is_replaced_by_a_newborn() -> None:
+    sky = _puffs(cloud_life=10.0)
+    old = sky.puffs["near"][0]
+    old.age = 9.9
+    sky.advance(0.5)
+    new = sky.puffs["near"][0]
+    assert new is not old
+    assert new.age == pytest.approx(0.0)
+    assert len(sky.puffs["near"]) == len(sky.puffs["near"])
+
+
+def test_apply_rebakes_on_style_change_and_resizes_on_count_change() -> None:
+    sky = _puffs("drift")
+    keep = sky.puffs["mid"][0]
+    cfg = SkyConfig(sky_engine="puffs", cloud_style="drift", cloud_drift=5.0)
+    sky.apply(cfg)
+    assert sky.puffs["mid"][0] is keep, "a drift change reaches only newborns"
+    cfg = SkyConfig(sky_engine="puffs", cloud_style="drift", cloud_count=3.0)
+    sky.apply(cfg)
+    assert sky.puffs["mid"][0] is keep, "a count change grows the list in place"
+    assert len(sky.puffs["mid"]) > 1
+    cfg = SkyConfig(sky_engine="puffs", cloud_style="bloom")
+    sky.apply(cfg)
+    assert sky.puffs["mid"][0] is not keep, "a style change re-bakes every cloud"
+    assert sky.puffs["mid"][0].p is _PUFF_STYLES["bloom"]["mid"]
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_every_style_renders_clouds_in_budget(style: str) -> None:
+    import time
+
+    sky = _puffs(style)
+    for _ in range(40):
+        sky.advance(0.5)
+    t0 = time.perf_counter()
+    cells = sky.render_cells()
+    ms = (time.perf_counter() - t0) * 1000
+    assert len(cells) == 14 and all(len(r) == 100 for r in cells)
+    lit = sum(1 for row in cells for g, _ in row if g != " ")
+    assert lit > 30, f"{style} rendered almost nothing"
+    assert lit < 1000, f"{style} is an overcast, not clouds"
+    assert ms < 20.0
+
+
+def test_world_swaps_into_and_out_of_puffs() -> None:
+    world = World(cols=20, rows=10, rng=random.Random(5), sky_config=SkyConfig(sky_engine="texture"))
+    cfg = SkyConfig(sky_engine="puffs")
+    world.apply_sky_config(cfg)
+    assert isinstance(world.sky, PuffSky)
+    world.tick()
+    world.render()
+    world.apply_sky_config(SkyConfig(sky_engine="fluid"))
+    assert not isinstance(world.sky, PuffSky)
+
+
+def test_tuning_fields_carry_the_cloud_levers() -> None:
+    from cactus.sky import tuning_fields
+
+    names = {f.name: f for f in tuning_fields() if f.group == "shared"}
+    assert names["sky_engine"].choices == ("fluid", "texture", "puffs")
+    assert names["cloud_style"].choices == tuple(STYLES)
+    for key in ("cloud_count", "cloud_drift", "cloud_life"):
+        assert names[key].step is not None

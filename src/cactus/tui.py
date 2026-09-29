@@ -48,9 +48,10 @@ from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
+from . import garden
 from .field import World
 from .scope import project_label
-from .sky import SkyConfig, TuneField, config_path as sky_config_path, tuning_fields
+from .sky import SkyConfig, TuneField, config_path as sky_config_path, slots_present, tuning_fields
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
 
@@ -60,7 +61,10 @@ POLL_INTERVAL = 0.5
 # falling seed jump.
 FIELD_MAX_DT = 0.5
 
-TUI_SETTINGS_DEFAULTS = {"orientation": "side", "figlet_header": False, "projects_pane": True}
+TUI_SETTINGS_DEFAULTS = {
+    "orientation": "side", "figlet_header": False, "projects_pane": True,
+    "field": True, "pile_only": False,
+}
 
 
 def _tui_settings_path() -> Path:
@@ -81,6 +85,10 @@ def _load_tui_settings() -> dict[str, Any]:
         settings["figlet_header"] = data["figlet_header"]
     if isinstance(data, dict) and isinstance(data.get("projects_pane"), bool):
         settings["projects_pane"] = data["projects_pane"]
+    if isinstance(data, dict) and isinstance(data.get("field"), bool):
+        settings["field"] = data["field"]
+    if isinstance(data, dict) and isinstance(data.get("pile_only"), bool):
+        settings["pile_only"] = data["pile_only"]
     return settings
 
 
@@ -673,10 +681,12 @@ class CactusApp(App[int]):
         Binding("F", "edit_file", "Edit file", show=False),
         Binding("d", "dismiss", "Dismiss", show=False),
         Binding("r", "refresh_view", "Refresh"),
-        # Manual seed drop (q368): both the bare and shifted glyph of the same
-        # physical key fire it; only the unshifted one shows in the footer.
-        Binding("grave_accent", "drop_seed", "seed", key_display="`"),
-        Binding("tilde", "drop_seed", "seed", show=False, key_display="`"),
+        # Manual seed drop (q368) / garden toggles: the bare glyph (`grave`)
+        # drops a seed while the field is shown, or flips `pile_only` while
+        # it is hidden — one binding either way, `action_grave` dispatches.
+        # The shifted glyph (`tilde`) always toggles the field itself.
+        Binding("grave_accent", "grave", "drop", key_display="`"),
+        Binding("tilde", "toggle_field", "field", show=False, key_display="`"),
         Binding("q", "quit_app", "Quit"),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         # Neutral label: the digits pick a choice on an ask row but toggle a
@@ -729,6 +739,9 @@ class CactusApp(App[int]):
         self.tuning_open = False
         self.tuning_rows: list[TuneField] = []
         self.tuning_index = 0
+        # Save/recall slots (v6g): armed by `S`, a following digit 1-9 saves
+        # the live config to that slot; a bare digit (not armed) recalls it.
+        self.tuning_save_armed = False
         self._figlet_label: str | None = None
         self._figlet_text = ""
         self.free_text_mode = False
@@ -776,6 +789,11 @@ class CactusApp(App[int]):
         # `_rebuild_keybar` — `_field_column` reads this to drop a seed under
         # the key that answered.
         self._keybar_x: dict[str, int] = {}
+        # Garden persistence: the landed pile is shared across every TUI on
+        # this database, saved beside it (garden.py) and reloaded whenever
+        # another process's write is newer than ours.
+        self._garden_path = garden.garden_path(self.store.path)
+        self._garden_mtime: float | None = None
 
     @property
     def pending_text(self) -> str:
@@ -833,6 +851,7 @@ class CactusApp(App[int]):
         self.call_after_refresh(self.refresh_bindings)
         self.set_interval(POLL_INTERVAL, self._poll)
         self._reload_sky_config(initial=True)
+        self._load_garden()
         self._sky_reload_last = time.monotonic()
         self._field_last_time = time.monotonic()
         self._sync_field_interval()
@@ -843,6 +862,20 @@ class CactusApp(App[int]):
         body.set_class(self.tui_settings["orientation"] == "bottom", "bottom")
         self._rebuild_project_banner()
         self._rebuild_projects_pane()
+        self._apply_field_visibility()
+
+    def _apply_field_visibility(self) -> None:
+        """Show/hide `#field` per `field`/`pile_only`. The timer keeps
+        running either way: a hidden garden still grows — every answer's
+        seed still falls and lands, and the landing still reaches
+        garden.json for the other TUIs — only the draw is skipped
+        (`_render_field` returns early while nothing is on screen)."""
+        try:
+            widget = self.query_one("#field", FieldView)
+        except NoMatches:
+            return
+        widget.display = self.tui_settings["field"] or self.tui_settings["pile_only"]
+        self._sync_field_interval()
 
     def _rebuild_project_banner(self) -> None:
         banner = self.query_one("#project-banner", Static)
@@ -1201,8 +1234,15 @@ class CactusApp(App[int]):
             marker = "▸" if i == self.tuning_index else " "
             value = getattr(self._tuning_obj(row.group), row.name)
             lines.append(f"{marker} {row.name}  {value!r}  # {row.comment}")
+        lines.append("")
+        if self.tuning_save_armed:
+            lines.append("save to slot? 1-9")
+        else:
+            present = slots_present()
+            lines.append("slots: " + " ".join(f"{n}{'●' if present[n] else '○'}" for n in sorted(present)))
         lines.extend([
-            "", "j/k move   h/l nudge   H/L nudge x10   r reset", "esc or T  return to inbox",
+            "j/k move   h/l nudge   H/L nudge x10   r reset   1-9 recall   S+digit save",
+            "esc or T  return to inbox",
         ])
         return "\n".join(lines)
 
@@ -1570,7 +1610,7 @@ class CactusApp(App[int]):
         # Manual seed drop (q368): reachable from every screen state — panels
         # open, an elaborate row, even an empty inbox — except while typing,
         # where the same physical key must reach the input instead.
-        if action == "drop_seed":
+        if action in ("drop_seed", "grave", "toggle_field"):
             return not self.free_text_mode
         # Each of the three panel-open keys stays reachable from inside any of
         # the others (`_close_other_panels` makes the switch itself a no-op
@@ -2161,6 +2201,27 @@ class CactusApp(App[int]):
         This runs after bindings, so an enabled `u`/`y`/`n` never reaches here.
         """
         if self.tuning_open:
+            if self.tuning_save_armed:
+                if event.key == "escape":
+                    self.tuning_save_armed = False
+                    self.flash = "save cancelled"
+                    self._render_tuning()
+                    self._rebuild_status_bar()
+                    event.stop()
+                    return
+                if event.key.isdigit() and event.key != "0":
+                    n = int(event.key)
+                    self.tuning_save_armed = False
+                    self.world.sky.config.save_slot(n)
+                    self.flash = f"saved slot {n}"
+                    self._render_tuning()
+                    self._rebuild_status_bar()
+                    event.stop()
+                    return
+                self.tuning_save_armed = False
+                self._render_tuning()
+                self._rebuild_status_bar()
+                # fall through: this key still does its own thing below
             if event.key in ("escape", "T"):
                 self._close_tuning()
             elif event.key == "j":
@@ -2177,6 +2238,23 @@ class CactusApp(App[int]):
                 self._nudge_tuning(10)
             elif event.key == "r":
                 self._reset_tuning()
+            elif event.key == "S":
+                self.tuning_save_armed = True
+                self.flash = "save to slot 1-9?"
+                self._render_tuning()
+                self._rebuild_status_bar()
+            elif event.key.isdigit() and event.key != "0":
+                n = int(event.key)
+                cfg = SkyConfig.load_slot(n)
+                if cfg is None:
+                    self.flash = f"slot {n} is empty"
+                    self._rebuild_status_bar()
+                else:
+                    self.world.apply_sky_config(cfg)
+                    self._apply_and_dump_tuning()
+                    self.flash = f"recalled slot {n}"
+                    self._render_tuning()
+                    self._rebuild_status_bar()
             else:
                 return
             event.stop()
@@ -2897,6 +2975,28 @@ class CactusApp(App[int]):
         self.world.drop(self.world.rng.randrange(self.world.cols))
         self._render_field()
 
+    def action_grave(self) -> None:
+        """The bare backtick: drop a seed while the field is shown, or flip
+        `pile_only` while it is hidden — one action either way, so the
+        Binding stays one entry."""
+        if self.tui_settings["field"]:
+            self.action_drop_seed()
+            return
+        self.tui_settings["pile_only"] = not self.tui_settings["pile_only"]
+        self._save_settings()
+        self._apply_tui_settings()
+        self.flash = "pile shown" if self.tui_settings["pile_only"] else "pile hidden"
+        self._rebuild_status_bar()
+
+    def action_toggle_field(self) -> None:
+        """Tilde: show or hide the field strip, giving the card the room
+        back when hidden. Persisted like every other TUI setting."""
+        self.tui_settings["field"] = not self.tui_settings["field"]
+        self._save_settings()
+        self._apply_tui_settings()
+        self.flash = "garden shown" if self.tui_settings["field"] else "garden hidden"
+        self._rebuild_status_bar()
+
     def _field_column(self, key: str) -> int:
         """Resolve the drop column for a key via its own key bar glyph's x.
 
@@ -2957,9 +3057,12 @@ class CactusApp(App[int]):
         dt = min(max(now - last, 0.0), FIELD_MAX_DT)
         self._field_last_time = now
         self.world.advance(dt)
+        if self.world.landed_since_save > 0:
+            self._save_garden()
         if self._sky_reload_last is None or now - self._sky_reload_last >= self.SKY_RELOAD_SECONDS:
             self._sky_reload_last = now
             self._reload_sky_config()
+            self._reload_garden_if_changed()
         self._render_field()
 
     def _reload_sky_config(self, *, initial: bool = False) -> None:
@@ -2985,6 +3088,59 @@ class CactusApp(App[int]):
             self.flash = "sky config reloaded"
             self._rebuild_status_bar()
 
+    def _load_garden(self) -> None:
+        """The garden (shared landed pile) is a file beside the database, not
+        a per-process default — every TUI on this database reads the same
+        one. A missing file leaves the world's fresh, empty pile as-is; a
+        malformed one flashes and is otherwise ignored."""
+        try:
+            mtime = self._garden_path.stat().st_mtime
+        except OSError:
+            return
+        data = garden.read(self._garden_path)
+        if data is None:
+            return
+        try:
+            garden.load_into(self.world, data)
+        except ValueError:
+            self.flash = "garden.json unreadable"
+            self._rebuild_status_bar()
+            return
+        self._garden_mtime = mtime
+
+    def _save_garden(self) -> None:
+        """Flush landings since the last save (`World.landed_since_save`) to
+        the shared garden file. Fails soft: a write error leaves the counter
+        alone so the next tick retries."""
+        try:
+            self._garden_mtime = garden.save(self.world, self._garden_path)
+        except OSError:
+            return
+        self.world.landed_since_save = 0
+
+    def _reload_garden_if_changed(self) -> None:
+        """Another TUI on this database may have written a newer garden —
+        polled at the same `SKY_RELOAD_SECONDS` cadence as the sky config,
+        one clock for both. Fails soft on OSError."""
+        try:
+            mtime = self._garden_path.stat().st_mtime
+        except OSError:
+            return
+        if mtime == self._garden_mtime:
+            return
+        data = garden.read(self._garden_path)
+        if data is None:
+            return
+        try:
+            garden.load_into(self.world, data)
+        except ValueError:
+            self.flash = "garden.json unreadable"
+            self._rebuild_status_bar()
+            return
+        self._garden_mtime = mtime
+        self.flash = "garden updated"
+        self._rebuild_status_bar()
+
     def on_unmount(self) -> None:
         if self._field_timer is not None:
             self._field_timer.stop()
@@ -2998,11 +3154,21 @@ class CactusApp(App[int]):
                 self._field_timer.stop()
                 self._field_timer = None
             return
+        if not self.tui_settings["field"] and not self.tui_settings["pile_only"]:
+            return  # fully hidden — nothing to draw
+        pile_only = not self.tui_settings["field"] and self.tui_settings["pile_only"]
+        if pile_only:
+            rows = self.world.pile_rows()
+            widget.styles.max_height = rows
+            widget.styles.min_height = rows
+        else:
+            widget.styles.max_height = None
+            widget.styles.min_height = None
         width = max(widget.size.width, 1)
         height = max(widget.size.height, 1)
         if width != self.world.cols or height != self.world.rows:
             self.world.resize(width, height)
-        text = self.world.render()
+        text = self.world.render(pile_only=pile_only)
         # Change-only redraw (v6f, perf): a still sky between two samples at
         # a low `fps` is common, and Textual's own `update` still triggers a
         # layout/paint even when nothing changed — skip it when this frame's

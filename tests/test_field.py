@@ -87,6 +87,14 @@ def test_seed_dropped_over_flat_ground_lands() -> None:
     assert not world.seeds
 
 
+def test_landing_bumps_landed_since_save() -> None:
+    world = World(cols=10, rows=8, rng=random.Random(1))
+    assert world.landed_since_save == 0
+    world.drop(4)
+    run_ticks(world, 900)
+    assert world.landed_since_save == 1
+
+
 def test_seed_dropped_above_structure_cell_anchors_on_top() -> None:
     world = World(cols=10, rows=8, rng=random.Random(1))
     world.structure[(8, 0)] = 0

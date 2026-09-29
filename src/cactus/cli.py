@@ -1240,6 +1240,33 @@ def cmd_sky(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     return EXIT_OK
 
 
+def cmd_garden(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Inspect or clear the shared garden file (unrelated to the inbox;
+    ignores `project`/`cwd`, kept only for the usual `cmd_*` signature)."""
+    from . import garden
+
+    path = garden.garden_path(store.path)
+    if args.clear:
+        cleared = garden.clear(path)
+        if args.json:
+            print(json.dumps({"path": str(path), "cleared": cleared}))
+        else:
+            print(f"cleared {path}" if cleared else "nothing to clear")
+        return EXIT_OK
+
+    data = garden.read(path)
+    cells = len(data["cells"]) if data else 0
+    drops = data["drops"] if data else 0
+    if args.json:
+        print(json.dumps({"path": str(path), "cells": cells, "drops": drops}))
+        return EXIT_OK
+    if data is None:
+        print(f"{path}  empty")
+    else:
+        print(f"{path}  {cells} cells  {drops} drops")
+    return EXIT_OK
+
+
 # ---- parser ---------------------------------------------------------------
 
 
@@ -1510,6 +1537,10 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("--bench", action="store_true",
                     help="run a 50-frame perf probe (100x20, 3 seeds) and print the frame-time breakdown")
     sk.set_defaults(fn=cmd_sky)
+
+    gd = verb("garden", help="inspect or clear the shared landed-pile file")
+    gd.add_argument("--clear", action="store_true", help="remove the garden file")
+    gd.set_defaults(fn=cmd_garden)
 
     return p
 

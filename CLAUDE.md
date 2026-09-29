@@ -485,3 +485,22 @@ scope.
   `CACTUS_POKE` still overrides. A project with no stamped pane flashes
   `no herdr panes (K rows unstamped)`. `check_action` admits `poke` while
   `projects_open`; the inbox `p` row poke is unchanged.
+- Sky config save/recall slots (v6g): nine files beside `sky.toml`,
+  `sky-slot-N.toml`, sparse-dumped the same way `sky.toml` itself is. The `T`
+  overlay's bare digit `1`-`9` recalls a slot (applies live, rewrites
+  `sky.toml`, flashes empty when unset); `S` arms, and the next digit saves
+  the live config there instead. The overlay shows which slots are filled.
+- The garden (the field's landed cactus pile) is a shared, persistent file
+  (`garden.py`), `garden.json` beside the database — every TUI on the same
+  database reads and writes the same one, and it survives a restart.
+  `World` only counts `landed_since_save`; it never touches the file
+  itself. A landing saves on the next `_field_tick`; every `SKY_RELOAD_SECONDS`
+  poll (the same clock the sky config reload uses) also stats the file and
+  reloads it if another process's write is newer, flashing "garden updated".
+  `~` hides/shows the field strip (`tui_settings["field"]`, persisted);
+  backtick drops a seed while shown, or while hidden flips `pile_only`
+  (persisted) to show the pile alone without the sky/birds/seeds. A hidden
+  garden still grows: the field timer keeps ticking and only the draw is
+  skipped, so an answer's seed still lands and reaches the file. `cactus
+  garden` prints the file's path, cell count, and drop count (or "empty");
+  `--clear` removes it (`nothing to clear` if it was already gone).
