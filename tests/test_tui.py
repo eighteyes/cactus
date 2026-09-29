@@ -1344,7 +1344,7 @@ async def test_fps_nudge_restarts_the_field_timer_at_the_new_interval(
 
 @pytest.mark.slow
 async def test_headless_field_cpu_stays_under_20_percent_of_one_core(store: Store, project: str) -> None:
-    """v6f: over a 3 s wall-clock window at the default 5 fps, a headless
+    """v6f: over a 3 s wall-clock window at the default 6 fps, a headless
     120x40 TUI's own CPU time (the field timer plus everything else it does
     meanwhile) should stay well under 10% of one core. Loose in CI (shared,
     noisy hardware), tight by hand — see the v6f perf spec's target."""

@@ -552,13 +552,19 @@ scope.
   full-width `_Puff` per lane (`lane=(index, y0, h)`), its noise lattice
   fitted to the width so it wraps with no seam, neighbouring lanes flowing
   opposite ways (odd east, even west). A dead band respawns in its own lane;
-  a `cloud_count`, `band_gap`, or `band_flow` change re-cuts every lane.
+  a `cloud_count` (while `band_height` is 0), `band_gap`, or `band_flow`
+  change re-cuts every lane.
   Lanes colour by thirds: top far, middle mid, bottom near. A lane never
   unfolds, recedes, or dies: its cutoff sits at rest (even lanes dense
   zones, odd lanes sparse belts) and only its morph phase wraps.
   `band_gap` is the empty share of each lane (0 = touching), `band_flow`
-  deals directions (`alternate`, `same`, `random`); both show on the T page
-  only under puffs/bands.
+  deals directions (`alternate`, `same`, `random`). `band_height` > 0 fixes
+  each lane at that many rows, laid top to bottom with leftover rows empty
+  and `cloud_count` ignored (0 = count from `cloud_count`); `band_edge` is
+  the share of a band's height that is a noisy fringe top and bottom, its
+  depth wandering per column (`_lane_window`, periodic like the lattice).
+  All four show on the T page only under puffs/bands, and any change
+  re-cuts every lane.
 - Birds are levers on `SkyConfig` (v8), read off `World.sky.config` like
   `seed_wind`: `birds` picks the depth bands a flock may spawn in (`all`,
   `far`, `mid`, `near`, `far+mid`, `mid+near`, `none`; `World.bird_bands`),
@@ -573,4 +579,15 @@ scope.
   rests only on a diagonal drops a row at a time until something is
   directly under it or a target cell is taken; a lone block keeps its
   perch; `keep`: lands as it hit). Both always show on the T page.
+- `cloud_fade` (v8, seconds, default 1.2; 0 = pop, the grid passes
+  through) is `World._fade_sky`, run on the sky grid after `_sky_cells` is
+  cached, so `cloud_at` still reads the engine's own cells. Each cell's
+  presence climbs while lit and sinks once cleared; its colour blends from
+  `Palette.fade_from` toward the tone, and a cleared cell holds its last
+  glyph until presence hits 0. Blends quantise to 16 steps, cached per
+  (`fade_from`, tone, step) in `_fade_tint`. A row with no presence and an
+  all-blank source passes through untouched. Time is `_frame_dt`:
+  accumulated by every `advance`, zeroed by each `_fade_sky`, so the fade
+  runs on wall time whatever `fps` is. Default `fps` is 8 — 10 broke the
+  headless CPU test.
 

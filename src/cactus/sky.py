@@ -328,7 +328,7 @@ _SHARED_COMMENTS = {
     "fps": "how often the TUI samples and redraws the field, per second",
     "sky_engine": "which sky renderer runs: 'fluid' (cellular automaton), 'texture' (cheaper baked noise), or 'puffs' (individual clouds, no whole-sky scroll)",
     "cloud_style": "puffs engine look: 'drift' (each cloud wanders its own way), 'bloom' (near-still clouds unfold and recede), 'streaks' (long thin bands), 'bands' (planetary layers: full-width lanes, neighbours flowing opposite ways)",
-    "cloud_count": "puffs engine population scale: 1.0 is one cloud per band per ~40 columns",
+    "cloud_count": "puffs engine population scale: 1.0 is one cloud per band per ~40 columns (bands style: lane count, ignored while band_height > 0)",
     "cloud_drift": "puffs engine top drift speed, pixels per second, before a band's own wind_scale; each cloud picks its own direction",
     "cloud_life": "puffs engine seconds a cloud lives, unfold to recede",
     "perspective": "fluid engine: 'on' projects the three decks through horizon/focal/z_far (v7); 'off' draws each deck's bands flat across the sky, the v6 look",
@@ -337,8 +337,11 @@ _SHARED_COMMENTS = {
     "bird_max": "how many flocks may be aloft at once (0 grounds every bird)",
     "band_gap": "bands style: the empty share of each lane's height (0 = lanes touch)",
     "band_flow": "bands style: how neighbouring lanes flow: 'alternate' (opposite ways), 'same', or 'random'",
+    "band_height": "bands style: each lane's height in terminal rows, laid top to bottom (0 = lane count from cloud_count)",
+    "band_edge": "bands style: the share of a band's height that is a noisy fringe at top and bottom, wandering along the band",
     "seed_mass": "'accrete': a falling seed gains a block per cloud it enters; 'single': it stays one block (charge still counts)",
     "pile_settle": "'drop': a landed shelf of 2+ blocks resting only on a diagonal drops a row to close the gap; 'keep': lands as it hit",
+    "cloud_fade": "seconds a sky cell takes to fade in when it lights and fade out when it clears (0 = pop)",
     "seed_wind": "a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)",
 }
 
@@ -401,7 +404,7 @@ class SkyConfig:
     # physics' own `dt` integration — `advance(dt)` still takes the true
     # elapsed wall time, so raising or lowering `fps` only changes how often
     # a frame is drawn, never how fast the sky or a falling seed moves.
-    fps: int = field(default=5, metadata={"step": 1, "lo": 1, "hi": 20})
+    fps: int = field(default=6, metadata={"step": 1, "lo": 1, "hi": 30})
     # Which sky renderer runs: "fluid" is the cellular-automaton `Sky` above,
     # "texture" is the cheaper v5 baked-noise `TextureSky` (same interface),
     # restored as a lever rather than a replacement (v6f, q384).
@@ -415,6 +418,11 @@ class SkyConfig:
     # A falling seed's share of the wind (v8): the near deck's wind times
     # this, so a sky tuned to creep does not leave the seeds swaying in a
     # gale — `World.seed_wind()` is the one reader.
+    # Smoothness (v8): `World._fade_sky` blends a cell's colour from the
+    # palette's `fade_from` toward its tone as it lights, and holds the last
+    # glyph while it fades back out, over `cloud_fade` seconds — so a cloud
+    # cell never pops. 0 turns it off. `fps` 6 (default; the CPU budget) gives the fade its steps, raise it on the T page for smoother motion.
+    cloud_fade: float = field(default=1.2, metadata={"step": 0.1, "lo": 0.0, "hi": 6.0})
     # Pile shape (v8): whether a cloud pass fattens a seed, and whether a
     # shelf that landed on a diagonal settles down a row. `field.py` reads
     # both off `World.sky.config`.
@@ -422,8 +430,13 @@ class SkyConfig:
     pile_settle: str = field(default="drop", metadata={"choices": ("drop", "keep")})
     # Planetary bands (v8, `cloud_style == "bands"`): how much of each lane
     # stays empty, and whether neighbouring lanes flow opposite ways.
+    # `band_height` fixes each lane's height in rows (0 = lane count from
+    # `cloud_count`); `band_edge` is the share of a band's height that is a
+    # noisy, per-column wandering fringe at its top and bottom.
     band_gap: float = field(default=0.3, metadata={"step": 0.05, "lo": 0.0, "hi": 0.8})
     band_flow: str = field(default="alternate", metadata={"choices": ("alternate", "same", "random")})
+    band_height: int = field(default=0, metadata={"step": 1, "lo": 0, "hi": 20})
+    band_edge: float = field(default=0.35, metadata={"step": 0.05, "lo": 0.0, "hi": 0.9})
     # Birds (v8): which depth bands may spawn a flock, how often, how many.
     # `field.py` reads these off `World.sky.config`, the same way `seed_wind`
     # reaches it; the glyph sets per depth stay in `field.DEPTH_GLYPHS`.
@@ -569,7 +582,7 @@ def tuning_fields() -> list[TuneField]:
 # (braille only, v8); the keys stay so an older sky.toml still loads.
 _TUNE_ALWAYS = frozenset((
     "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind",
-    "birds", "bird_rate", "bird_max", "seed_mass", "pile_settle",
+    "birds", "bird_rate", "bird_max", "seed_mass", "pile_settle", "cloud_fade",
     "tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
     "blank_mean", "core_mean", "semi_core_mean",
 ))
@@ -592,7 +605,7 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
         return engine == "fluid"
     if row.name in _TUNE_ALWAYS:
         return True
-    if row.name in ("band_gap", "band_flow"):
+    if row.name in ("band_gap", "band_flow", "band_height", "band_edge"):
         return engine == "puffs" and cfg.cloud_style == "bands"
     if row.name in _TUNE_ENGINE.get(engine, frozenset()):
         return True
@@ -1666,7 +1679,8 @@ _PUFF_STYLES: dict[str, dict[str, dict]] = {
     # resting cutoff is `cutoff + zone` or `cutoff + belt`. `w`/`h` are
     # unused (the lane sets them); `lanes` is the band count at
     # `cloud_count == 1.0`; `SkyConfig.band_gap`/`band_flow` set a lane's
-    # empty share and which way neighbours flow.
+    # empty share and which way neighbours flow, `band_height`/`band_edge`
+    # its fixed row height and the depth of its noisy top/bottom fringe.
     "bands": {
         "far": dict(w=(0, 0), h=(0, 0), scale_x=26, scale_y=3, octaves=2, cutoff=0.30, gain=2.0,
                     drift=0.25, spacing=0, rise=0.10, fall=0.10, morph=180.0, lanes=7, belt=0.16, zone=-0.06),
@@ -1702,27 +1716,47 @@ def _plateau(n: int, margin: float = 0.3) -> list[float]:
 
 def _puff_patch(rng: random.Random, w: int, h: int, p: dict, *, periodic: bool = False) -> tuple[list[list[float]], list[list[float]]]:
     """One cloud's raw fbm patch, `h` rows of `w` in [0, 1], plus its edge
-    window: a raised cosine in both axes, applied to the *thresholded*
+    window: a raised cosine in both axes (a `bands` lane, `periodic`, gets
+    `_lane_window`'s wandering fringe instead), applied to the *thresholded*
     density at draw time so the cloud's cores keep their full weight and
     only its rim fades — windowing the raw noise would push every pixel
     under the cutoff."""
     lw = max(3, -(-w // p["scale_x"]) + 1)
     lh = max(3, -(-h // p["scale_y"]) + 1)
     noise = _TexNoise(rng, lw, lh)
-    ey = _plateau(h, 0.15 if periodic else 0.3)
     sx, sy, octaves = float(p["scale_x"]), p["scale_y"], p["octaves"]
     if periodic:
         # A band wraps the whole sky: fit the lattice to `w` exactly so the
-        # noise is periodic in x and no seam shows, and keep x unwindowed.
+        # noise is periodic in x and no seam shows; its fringe window uses
+        # the same fitted lattice width, so it wraps too.
         lw = max(3, round(w / sx))
         noise = _TexNoise(rng, lw, lh)
         sx = w / lw
-        ex = [1.0] * w
-    else:
-        ex = _plateau(w)
+        raw = [[noise.fbm(x / sx, y / sy, octaves) for x in range(w)] for y in range(h)]
+        return raw, _lane_window(rng, w, h, p.get("edge", 0.0), lw)
+    ex, ey = _plateau(w), _plateau(h)
     raw = [[noise.fbm(x / sx, y / sy, octaves) for x in range(w)] for y in range(h)]
     win = [[ex[x] * ey[y] for x in range(w)] for y in range(h)]
     return raw, win
+
+
+def _lane_window(rng: random.Random, w: int, h: int, edge: float, lw: int) -> list[list[float]]:
+    """A `bands` lane's 2D edge window: a solid body whose top and bottom
+    fringes wander along the band. Per column, each edge draws its own
+    fringe depth `edge * h/2 * (0.4 + 0.6 n(x))` from a periodic 1D noise
+    (`lw` lattice points fitted to `w`, so it wraps with no seam); the
+    window is a smoothstep of distance-from-that-edge over that depth, 1 in
+    the body. `edge` 0 leaves a hard slab with a 1-pixel soft lip."""
+    step = w / lw
+    top, bottom = _TexNoise(rng, lw, 3), _TexNoise(rng, lw, 3)
+    half = _clamp(edge, 0.0, 1.0) * h / 2.0
+    win = [[1.0] * w for _ in range(h)]
+    for x in range(w):
+        dt = max(half * (0.4 + 0.6 * top.sample(x / step, 1.0)), 1.0)
+        db = max(half * (0.4 + 0.6 * bottom.sample(x / step, 1.0)), 1.0)
+        for y in range(h):
+            win[y][x] = min(_smoothstep((y + 0.5) / dt), _smoothstep((h - y - 0.5) / db))
+    return win
 
 
 class _Puff:
@@ -1859,13 +1893,19 @@ class PuffSky:
         return "far" if f < 1 / 3 else "mid" if f < 2 / 3 else "near"
 
     def _bake_bands(self) -> None:
-        """Planetary layers: `lanes * cloud_count` equal lanes down the sky,
-        one full-width band per lane, each `1 - band_gap` of its lane tall,
-        flowing the way `band_flow` deals."""
+        """Planetary layers: `lanes * cloud_count` equal lanes down the sky
+        (or, with `band_height` > 0, as many `band_height`-row lanes as fit,
+        top to bottom, leftover rows left empty), one full-width band per
+        lane, each `1 - band_gap` of its lane tall, flowing the way
+        `band_flow` deals."""
         style = self._style()
         cfg = self.config
-        count = max(2, round(style["far"]["lanes"] * cfg.cloud_count))
-        lane_h = self.height_px / count
+        if cfg.band_height > 0:
+            count = max(1, (self.height_px // PX_Y) // cfg.band_height)
+            lane_h = float(cfg.band_height * PX_Y)
+        else:
+            count = max(2, round(style["far"]["lanes"] * cfg.cloud_count))
+            lane_h = self.height_px / count
         fill = 1.0 - _clamp(cfg.band_gap, 0.0, 0.95)
         same_sign = self.rng.choice((-1.0, 1.0))
         self.puffs = {band: [] for band in GRID_ORDER}
@@ -1880,13 +1920,20 @@ class PuffSky:
             else:
                 direction = 1.0 if i % 2 else -1.0
             self.puffs[band].append(self._spawn(band, lane=(i, y0, h, direction)))
-        self._baked_bands = (cfg.band_gap, cfg.band_flow)
+        self._baked_bands = self._band_key(cfg)
+
+    @staticmethod
+    def _band_key(cfg: SkyConfig) -> tuple:
+        """The levers a baked lane layout was cut from; any change re-bakes."""
+        return (cfg.band_gap, cfg.band_flow, cfg.band_height, cfg.band_edge)
 
     def _lane_params(self, band: str, index: int) -> dict:
         """A lane's own copy of the style: even lanes are dense zones, odd
-        lanes sparse belts, by shifting the resting cutoff."""
+        lanes sparse belts, by shifting the resting cutoff; `edge` carries
+        `band_edge` to the lane's fringe window."""
         p = dict(self._style()[band])
         p["cutoff"] = _clamp(p["cutoff"] + (p["zone"] if index % 2 == 0 else p["belt"]), 0.05, 0.95)
+        p["edge"] = self.config.band_edge
         return p
 
     def _bake(self) -> None:
@@ -1911,12 +1958,13 @@ class PuffSky:
         if config.cloud_style != self._baked_style:
             self._bake()
             return
-        if self._is_bands() and (config.band_gap, config.band_flow) != getattr(self, "_baked_bands", None):
+        if self._is_bands() and self._band_key(config) != getattr(self, "_baked_bands", None):
             self._bake_bands()
             return
         if config.cloud_count != old.cloud_count:
             if self._is_bands():
-                self._bake_bands()  # lanes are laid out from the count; re-cut them
+                if config.band_height <= 0:
+                    self._bake_bands()  # lanes are laid out from the count; re-cut them
                 return
             for band in GRID_ORDER:
                 want = self._target_count(self._style()[band])

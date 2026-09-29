@@ -63,6 +63,10 @@ Responsibilities:
   when `sky_engine` itself changed (`sky.apply` alone can only retune the
   engine already running). `run_bench()` (`cactus sky --bench`) times 50
   frames of a 100x20, 3-seed world and prints the per-step breakdown.
+- Cloud fade (v8, `SkyConfig.cloud_fade`): `_fade_sky` gives each sky cell a
+  presence that climbs while lit and sinks once cleared, blending its colour
+  from `Palette.fade_from` toward its tone and holding the last glyph while
+  it fades out; blank rows pass through, blends are cached in 16 steps.
 
 Pure Python: no persistence, no store, no Textual import.
 """
@@ -76,7 +80,7 @@ from dataclasses import dataclass, field
 
 from rich.text import Text
 
-from .sky import PX_X, PX_Y, PuffSky, Sky, SkyConfig, TextureSky, atmospheric_colour, make_sky, _ordered_dither
+from .sky import PX_X, PX_Y, PuffSky, Sky, SkyConfig, TextureSky, atmospheric_colour, make_sky, _lerp_hex, _ordered_dither
 
 SUB_X = 2
 SUB_Y = 2
@@ -193,6 +197,7 @@ class Palette:
     cactus_mid: str = "#3fae3f"
     cactus_old: str = "#2a7a2a"
     sand_dot: str = "grey42"
+    fade_from: str = "#262a36"  # where a lighting sky cell's colour starts (v8 `cloud_fade`)
     ground_line_near: str = "grey42"
     ground_line_far: str = "grey30"
 
@@ -287,6 +292,11 @@ class World:
     # `render()` for `cloud_at` — engine-agnostic, and `None` before the
     # first render (headless `advance()` in that case awards nothing).
     _sky_cells: list[list[tuple[str, str | None]]] | None = field(default=None, init=False)
+    # `_fade_sky` state: per sky row `(alphas, glyphs, colours, live)`,
+    # `live` true while any alpha in the row is above 0.
+    _fade_cells: list[list] | None = field(default=None, init=False)
+    _fade_tint: dict[tuple[str, str, int], str] = field(default_factory=dict, init=False)
+    _frame_dt: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
         self.width = self.cols * SUB_X
@@ -351,6 +361,7 @@ class World:
         self.advance(TICK_SECONDS)
 
     def advance(self, dt: float) -> None:
+        self._frame_dt += dt
         self._advance_wind(dt)
         self.sky.advance(dt, self.wind)
         self._advance_birds(dt)
@@ -660,6 +671,94 @@ class World:
             exploded.extend(self._explode(clump))
         return True
 
+    def _fade_sky(self, grid: list[list[tuple[str, str | None]]]) -> list[list[tuple[str, str | None]]]:
+        """Smooth the sky between frames (v8, `cloud_fade`): every cell keeps
+        a presence `a` in [0, 1] that climbs while the engine lights it and
+        sinks after it clears, `cloud_fade` seconds end to end. The drawn
+        colour is `fade_from` blended toward the cell's tone by `a`; a cell
+        the engine just cleared keeps drawing its last glyph while `a`
+        sinks, so nothing pops in or out. `cloud_fade == 0` returns `grid`
+        untouched. Uses the wall time `advance` accumulated since the last
+        render (`_frame_dt`), then zeroes it.
+
+        Cheap per frame: a row with no presence left and an all-blank source
+        passes through as the source row itself, cells untouched; inside a
+        row, state is three flat lists and the output row is copied from the
+        source only once a cell differs from it. The blend is quantised to
+        16 steps (`round(a * 16)`) and cached per (`fade_from`, tone, step)
+        in `_fade_tint`, so `_lerp_hex` runs at most 17 times per tone."""
+        fade = self.sky.config.cloud_fade
+        dt, self._frame_dt = self._frame_dt, 0.0
+        if fade <= 0.0:
+            self._fade_cells = None
+            return grid
+        rows, cols = len(grid), (len(grid[0]) if grid else 0)
+        state = self._fade_cells
+        if state is None or len(state) != rows or (rows and len(state[0][0]) != cols):
+            state = [[[0.0] * cols, [" "] * cols, [None] * cols, False] for _ in range(rows)]
+            self._fade_cells = state
+        step = dt / fade
+        start = self.palette.fade_from
+        tint = self._fade_tint
+        if len(tint) > 4096:
+            tint.clear()
+        blank = (" ", None)
+        out: list[list[tuple[str, str | None]]] = []
+        for r in range(rows):
+            src, st = grid[r], state[r]
+            if not st[3] and src.count(blank) == cols:
+                out.append(src)
+                continue
+            alphas, glyphs, colours = st[0], st[1], st[2]
+            row: list[tuple[str, str | None]] | None = None
+            live = False
+            for c in range(cols):
+                cell = src[c]
+                glyph, colour = cell
+                a = alphas[c]
+                if glyph != " ":
+                    if a < 1.0:
+                        a += step
+                        if a > 1.0:
+                            a = 1.0
+                        alphas[c] = a
+                    glyphs[c] = glyph
+                    colours[c] = colour
+                    live = True
+                    if a >= 1.0 or colour is None:
+                        continue
+                elif a > 0.0:
+                    a -= step
+                    if a < 0.0:
+                        a = 0.0
+                    alphas[c] = a
+                    colour = colours[c]
+                    if a <= 0.0 or colour is None:
+                        if cell != blank:
+                            if row is None:
+                                row = list(src)
+                            row[c] = blank
+                        continue
+                    live = True
+                    glyph = glyphs[c]
+                else:
+                    if cell != blank:
+                        if row is None:
+                            row = list(src)
+                        row[c] = blank
+                    continue
+                q = round(a * 16)
+                key = (start, colour, q)
+                shade = tint.get(key)
+                if shade is None:
+                    shade = tint[key] = _lerp_hex(start, colour, q / 16)
+                if row is None:
+                    row = list(src)
+                row[c] = (glyph, shade)
+            st[3] = live
+            out.append(src if row is None else row)
+        return out
+
     def _settle(self, cells: list[tuple[int, int]]) -> list[tuple[int, int]]:
         """The arm adjustment (v8, `pile_settle == "drop"`): a landed shelf
         — two or more blocks side by side in the clump's lowest row — that
@@ -923,6 +1022,7 @@ class World:
             ground_line_cells = self._ground_line_cells()
             sky_grid = self.sky.render_cells()
             self._sky_cells = sky_grid
+            sky_grid = self._fade_sky(sky_grid)
         text = Text()
         for r in range(self.rows):
             cy = self.rows - 1 - r

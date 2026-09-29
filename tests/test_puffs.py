@@ -24,11 +24,13 @@ import pytest
 from cactus.field import MONO_PLUS, World
 from cactus.sky import (
     GRID_ORDER,
+    PX_Y,
     SKY_ENGINES,
     PuffSky,
     SkyConfig,
     _PUFF_STYLES,
     make_sky,
+    tuning_fields_for,
 )
 
 STYLES = tuple(_PUFF_STYLES)
@@ -261,6 +263,66 @@ def test_bands_style_lays_full_width_lanes_flowing_opposite_ways() -> None:
     assert sum(len(v) for v in sky.puffs.values()) == 14
     cells = sky.render_cells()
     assert sum(1 for r in cells for g, _ in r if g != " ") > 200
+
+
+def _lanes(sky: PuffSky) -> list:
+    return sorted((p for band in GRID_ORDER for p in sky.puffs[band]), key=lambda p: p.y0)
+
+
+def test_band_height_lays_fixed_height_lanes_top_to_bottom() -> None:
+    """`band_height` > 0: as many `band_height`-row lanes as fit, top to
+    bottom, each `1 - band_gap` of its lane tall; leftover rows stay empty.
+    0 keeps the lane count from `lanes * cloud_count`."""
+    sky = _puffs("bands", cols=60, rows=20, band_height=6)
+    lanes = _lanes(sky)
+    assert len(lanes) == 3
+    lane_px = 6 * PX_Y
+    for i, p in enumerate(lanes):
+        assert p.h == int(lane_px * (1.0 - sky.config.band_gap))
+        assert i * lane_px <= p.y0 and p.y0 + p.h <= (i + 1) * lane_px
+    _, _, row_empty = sky.composite()
+    assert all(row_empty[3 * lane_px:]), "leftover rows at the bottom stay empty"
+    assert len(_lanes(_puffs("bands", cols=60, rows=20, band_height=0))) == 7
+    # cloud_count is ignored while band_height > 0
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_height=6, cloud_count=2.0))
+    assert len(_lanes(sky)) == 3
+    # a band_height change re-bakes the lanes
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_height=4))
+    assert len(_lanes(sky)) == 5
+
+
+def test_band_edge_fringe_wanders_along_the_band_and_wraps() -> None:
+    """`band_edge`: a lane's window is a solid body with a noisy fringe at
+    top and bottom whose depth wanders per column; 0 is a hard slab with a
+    1-pixel soft lip. The fringe noise is periodic, so it wraps unseamed."""
+    sky = _puffs("bands", cols=60, rows=20, band_height=8, band_gap=0.0, band_edge=0.6)
+    for lane in _lanes(sky):
+        win = lane.window
+        assert all(v == 1.0 for v in win[lane.h // 2]), "the body centre is solid"
+        top = [win[1][x] for x in range(lane.w)]
+        assert max(top) - min(top) > 0.05, "the top fringe wanders across columns"
+        steps = [abs(a - b) for a, b in zip(top, top[1:])]
+        assert abs(top[0] - top[-1]) <= max(steps) + 1e-9, "the fringe wraps with no seam"
+    slab = _puffs("bands", cols=60, rows=20, band_height=8, band_gap=0.0, band_edge=0.0)
+    for lane in _lanes(slab):
+        win = lane.window
+        assert all(v == 1.0 for row in win[1:-1] for v in row)
+        assert len(set(win[0])) == 1 and len(set(win[-1])) == 1, "a uniform edge"
+        assert 0.0 < win[0][0] < 1.0, "a 1-pixel soft lip"
+    # a band_edge change re-bakes the lanes' windows
+    slab.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_height=8, band_gap=0.0, band_edge=0.6))
+    assert any(len(set(lane.window[1])) > 1 for lane in _lanes(slab))
+
+
+def test_band_height_and_edge_show_only_under_puffs_bands() -> None:
+    def shown(cfg: SkyConfig) -> set[str]:
+        return {row.name for row in tuning_fields_for(cfg)}
+
+    levers = {"band_height", "band_edge"}
+    assert levers <= shown(SkyConfig(sky_engine="puffs", cloud_style="bands"))
+    assert not levers & shown(SkyConfig(sky_engine="puffs", cloud_style="drift"))
+    assert not levers & shown(SkyConfig(sky_engine="fluid", cloud_style="bands"))
+    assert not levers & shown(SkyConfig(sky_engine="texture", cloud_style="bands"))
 
 
 # ---- scatter (a falling seed pushes the cloud aside) -----------------------

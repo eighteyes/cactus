@@ -703,7 +703,8 @@ def test_render_matches_fixture_before_the_v6f_perf_pass() -> None:
     generated from HEAD before that pass touched anything). Re-baked at v8
     when the renderer gained grain markers and lost the edge slashes — a
     deliberate look change, so the fixture follows it; the test still pins
-    every render change after that."""
+    every render change after that. Re-baked again for v8 `cloud_fade`,
+    which holds a cleared cell's glyph while it fades out."""
     with open(FIXTURES / "field_render_v6f.json") as fh:
         expected = json.load(fh)
 
@@ -845,3 +846,34 @@ def test_seed_mass_single_keeps_a_seed_one_block_but_still_charges() -> None:
         world.advance(0.2)
     assert len(clump.members) == n0
     assert clump.charge == 1
+
+
+def test_cloud_fade_blends_a_lit_cell_in_and_holds_it_while_it_fades_out() -> None:
+    """v8 smoothness: with `cloud_fade` on, a cell the engine just lit draws
+    its glyph in a colour between `fade_from` and its tone, reaches the
+    tone after `cloud_fade` seconds, and after the engine clears it keeps
+    drawing the last glyph while its colour sinks back, then blanks."""
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture", cloud_fade=1.0)
+    world = World(cols=6, rows=6, rng=random.Random(1), sky_config=cfg)
+    lit = [[("⣿", "#d0ccc0")] * 6 for _ in range(4)]
+    blank = [[(" ", None)] * 6 for _ in range(4)]
+
+    world._frame_dt = 0.25
+    first = world._fade_sky(lit)
+    g, colour = first[1][2]
+    assert g == "⣿" and colour not in ("#d0ccc0", world.palette.fade_from)
+    world._frame_dt = 1.0
+    assert world._fade_sky(lit)[1][2] == ("⣿", "#d0ccc0")
+
+    world._frame_dt = 0.5
+    going = world._fade_sky(blank)[1][2]
+    assert going[0] == "⣿" and going[1] not in ("#d0ccc0", None), "holds the glyph while fading out"
+    world._frame_dt = 1.0
+    assert world._fade_sky(blank)[1][2] == (" ", None)
+
+    cfg.cloud_fade = 0.0
+    world.apply_sky_config(cfg)
+    world._frame_dt = 0.1
+    assert world._fade_sky(lit) is lit, "0 is a pop, the grid passes through"
