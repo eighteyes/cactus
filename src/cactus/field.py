@@ -47,7 +47,8 @@ Responsibilities:
 - Charge (hidden rule, no UI text): a falling clump gains +1 charge on each
   clear-sky-to-cloud entry (once per entry, not per frame spent inside one),
   and under `seed_mass == "accrete"` `accrete_count` members grown as a rod
-  off its tip plus an `accrete_spin` kick of random sign; +1 charge per
+  off its tip (`accrete_shape` `rod`) or on any side/diagonal neighbour,
+  outer cells and the tip favoured (`branch`, default), plus an `accrete_spin` kick of random sign; +1 charge per
   distinct bird it shares a terminal
   cell with; landing bursts `charge` single-member clumps only if the clump
   touched at least one bird (`birds_hit`), spawned just above the pile top
@@ -518,11 +519,15 @@ class World:
         return glyph != " "
 
     def _grow_clump(self, clump: Clump) -> None:
-        """Cloud mass: `accrete_count` new `Member`s grown as a rod in the
-        clump's own frame. The tip is the member farthest from the centre;
-        each new block goes one step past it along the tip's dominant axis
-        away from the centre (a tip at the centre picks a random horizontal
-        side), so repeated accretion extends one arm rather than a blob."""
+        """Cloud mass: `accrete_count` new `Member`s grown in the clump's own
+        frame, shaped by `accrete_shape`. `rod`: the tip is the member
+        farthest from the centre; each new block goes one step past it along
+        the tip's dominant axis away from the centre (a tip at the centre
+        picks a random horizontal side), so repeated accretion extends one
+        arm rather than a blob. `branch`: `_grow_branch`."""
+        if self.sky.config.accrete_shape == "branch":
+            self._grow_branch(clump)
+            return
         tip = max(clump.members, key=lambda m: m.dx * m.dx + m.dy * m.dy)
         if tip.dx == 0.0 and tip.dy == 0.0:
             step = (self.rng.choice((-1.0, 1.0)), 0.0)
@@ -533,6 +538,31 @@ class World:
         x, y = tip.dx, tip.dy
         for _ in range(self.sky.config.accrete_count):
             x, y = x + step[0], y + step[1]
+            clump.members.append(Member(dx=x, dy=y, angle=self.rng.uniform(0.0, 2 * math.pi)))
+
+    def _grow_branch(self, clump: Clump) -> None:
+        """`accrete_shape == "branch"`: each new block takes a free cell among
+        the 8 neighbours (sides and diagonals) of an existing member, in the
+        clump's unrotated frame. A candidate weighs 1 + its distance from the
+        centre, doubled when offered by the current tip (the member farthest
+        from centre), so the shape still reaches outward into an arm. A cell
+        offered by several members sums their weights; an occupied offset is
+        never picked."""
+        for _ in range(self.sky.config.accrete_count):
+            taken = {(round(m.dx), round(m.dy)) for m in clump.members}
+            tip = max(clump.members, key=lambda m: m.dx * m.dx + m.dy * m.dy)
+            weights: dict[tuple[float, float], float] = {}
+            for m in clump.members:
+                scale = 2.0 if m is tip else 1.0
+                for ox in (-1.0, 0.0, 1.0):
+                    for oy in (-1.0, 0.0, 1.0):
+                        cx, cy = m.dx + ox, m.dy + oy
+                        if (round(cx), round(cy)) in taken:
+                            continue
+                        w = scale * (1.0 + math.hypot(cx, cy))
+                        weights[(cx, cy)] = weights.get((cx, cy), 0.0) + w
+            cells = list(weights)
+            x, y = self.rng.choices(cells, weights=[weights[c] for c in cells])[0]
             clump.members.append(Member(dx=x, dy=y, angle=self.rng.uniform(0.0, 2 * math.pi)))
 
     def _collect_charge(self) -> None:

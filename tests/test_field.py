@@ -872,7 +872,7 @@ def test_a_rod_lands_along_its_angle() -> None:
 def test_accrete_count_grows_a_rod_per_cloud_entry() -> None:
     from cactus.sky import SkyConfig
 
-    cfg = SkyConfig(sky_engine="texture", accrete_count=3)
+    cfg = SkyConfig(sky_engine="texture", accrete_count=3, accrete_shape="rod")
     world = World(cols=10, rows=10, rng=random.Random(1), sky_config=cfg)
     world._sky_cells = make_sky_cells(world, [(2, 4), (6, 4)])
     clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0)  # row_from_bottom 7: cloud
@@ -891,6 +891,35 @@ def test_accrete_count_grows_a_rod_per_cloud_entry() -> None:
     world._collect_charge()
     assert clump.charge == 2
     assert sorted(m.dx * side for m in clump.members) == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+def test_accrete_branch_grows_on_sides_and_diagonals() -> None:
+    """`accrete_shape="branch"`: every new block is 8-adjacent to another
+    member, never on a taken offset, and across seeds the shape leaves the
+    straight rod — some block sits off row 0 or touches only diagonally."""
+    from cactus.sky import SkyConfig
+
+    left_the_rod = False
+    for seed in range(6):
+        cfg = SkyConfig(sky_engine="texture", accrete_count=4, accrete_shape="branch")
+        world = World(cols=10, rows=10, rng=random.Random(seed), sky_config=cfg)
+        world._sky_cells = make_sky_cells(world, [(2, 4), (6, 4)])
+        clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0)  # row_from_bottom 7: cloud
+        world.seeds = [clump]
+
+        world._collect_charge()
+        assert clump.charge == 1
+        assert len(clump.members) == 5
+        cells = [(m.dx, m.dy) for m in clump.members]
+        assert len(set(cells)) == len(cells), "no duplicate offsets"
+        for i, (x, y) in enumerate(cells[1:], start=1):
+            others = [c for j, c in enumerate(cells) if j != i]
+            touching = [c for c in others if max(abs(c[0] - x), abs(c[1] - y)) == 1]
+            assert touching, f"seed {seed}: block {(x, y)} touches no member"
+            diagonal_only = all(c[0] != x and c[1] != y for c in touching)
+            if y != 0.0 or diagonal_only:
+                left_the_rod = True
+    assert left_the_rod, "branch never left a straight horizontal rod"
 
 
 def test_accrete_spin_kicks_the_clump_on_each_cloud_entry() -> None:

@@ -341,7 +341,8 @@ _SHARED_COMMENTS = {
     "band_edge": "bands style: the share of a band's height that is a noisy fringe at top and bottom, wandering along the band",
     "seed_mass": "'accrete': a falling seed gains a block per cloud it enters; 'single': it stays one block (charge still counts)",
     "accrete_spin": "rad/s kick a cloud accretion gives the whole clump; 0 keeps it upright",
-    "accrete_count": "blocks one cloud entry adds, grown as a rod off the clump's tip (accrete only; charge is still +1)",
+    "accrete_count": "blocks one cloud entry adds, grown per `accrete_shape` (accrete only; charge is still +1)",
+    "accrete_shape": "'branch': new blocks go on any side or diagonal, outer cells and the tip favoured; 'rod': a straight rod off the tip",
     "pile_settle": "'drop': a landed shelf of 2+ blocks resting only on a diagonal drops a row to close the gap; 'keep': lands as it hit",
     "cloud_fade": "seconds a sky cell takes to fade in when it lights and fade out when it clears (0 = pop)",
     "seed_wind": "a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)",
@@ -433,6 +434,7 @@ class SkyConfig:
     # gives the whole clump, and how many blocks it grows as a rod.
     accrete_spin: float = field(default=1.2, metadata={"step": 0.2, "lo": 0.0, "hi": 6.0})
     accrete_count: int = field(default=1, metadata={"step": 1, "lo": 1, "hi": 6})
+    accrete_shape: str = field(default="branch", metadata={"choices": ("branch", "rod")})
     pile_settle: str = field(default="drop", metadata={"choices": ("drop", "keep")})
     # Planetary bands (v8, `cloud_style == "bands"`): how much of each lane
     # stays empty, and whether neighbouring lanes flow opposite ways.
@@ -588,7 +590,7 @@ def tuning_fields() -> list[TuneField]:
 # (braille only, v8); the keys stay so an older sky.toml still loads.
 _TUNE_ALWAYS = frozenset((
     "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind",
-    "birds", "bird_rate", "bird_max", "seed_mass", "accrete_spin", "accrete_count", "pile_settle", "cloud_fade",
+    "birds", "bird_rate", "bird_max", "seed_mass", "accrete_spin", "accrete_count", "accrete_shape", "pile_settle", "cloud_fade",
     "tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
     "blank_mean", "core_mean", "semi_core_mean",
 ))

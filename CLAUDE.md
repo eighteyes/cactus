@@ -585,11 +585,14 @@ scope.
   rotated by the clump's `angle`; a lone seed is never rotated. Landing
   freezes the turned cells, so a rod horizontal at touchdown lands as an
   arm. Each member's glyph tumble is unchanged. Under `seed_mass ==
-  "accrete"`, a cloud entry grows `accrete_count` blocks as a rod off the
+  "accrete"`, a cloud entry grows `accrete_count` blocks shaped by
+  `accrete_shape`: `rod`, a rod off the
   tip (the member farthest from centre, stepping along its dominant axis;
-  a tip at centre picks a random horizontal side) and kicks `spin` by
+  a tip at centre picks a random horizontal side); `branch` (default), each
+  block on a free side/diagonal neighbour of a member, weighted 1 + distance
+  from centre, tip doubled (`_grow_branch`); and kicks `spin` by
   `accrete_spin` with random sign; charge stays +1. Multi-member spin damps
-  by `ACCRETE_SPIN_DAMP` per second. Both levers always show on the T page.
+  by `ACCRETE_SPIN_DAMP` per second. All three levers always show on the T page.
 - `cloud_fade` (v8, seconds, default 1.2; 0 = pop, the grid passes
   through) is `World._fade_sky`, run on the sky grid after `_sky_cells` is
   cached, so `cloud_at` still reads the engine's own cells. Each cell's
