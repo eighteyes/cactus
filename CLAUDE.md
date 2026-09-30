@@ -601,4 +601,18 @@ scope.
   accumulated by every `advance`, zeroed by each `_fade_sky`, so the fade
   runs on wall time whatever `fps` is. Default `fps` is 8 — 10 broke the
   headless CPU test.
-
+- Review/plan rows show sent / heard / responded (q404-q406), computed per
+  row from the latest verdict's time `T` (`Question.heard_state`): `sent`
+  after a verdict, `heard` once `heard_at > T`, normal once `responded_at > T`
+  or with no verdict. `heard_at`/`responded_at` are additive columns, kept
+  through the key-rebuild table copy, and never enter `monitor._signature`
+  (the agent must not be woken by its own read or reply). `Store.mark_heard`
+  moves only forward past the latest verdict and no-ops (no `updated_at`
+  bump) otherwise; both stamps bump `updated_at` so the TUI poll sees them.
+  Stamping is `cli.py`'s job, behind the ownership check: `get --agent ID`
+  (owner only, review/plan rows) marks heard; `plan`/`review`/`edit --agent
+  ID` (owner only) mark responded. A TUI write never stamps either. The card
+  and the row's rail block take `-sent`/`-heard` classes (dimmed) plus a
+  status line; `x` (`close_row`, bound by `check_action` only on a review/plan
+  row) is `c`'s store call and undo entry; a finished plan or a review with a
+  verdict prompts `finished? x closes it (or the agent will)`.

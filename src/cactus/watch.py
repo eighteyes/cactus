@@ -42,6 +42,12 @@ def _fmt_answer_text(q: Question) -> str:
     return " — ".join(parts) if parts else "(empty)"
 
 
+def _heard_tag(q: Question) -> str:
+    """` [sent]` / ` [heard ✓]` for a review/plan row awaiting its agent (q405)."""
+    state = q.heard_state
+    return {"sent": " [sent]", "heard": " [heard ✓]"}.get(state or "", "")
+
+
 @dataclass
 class _Seen:
     """Last displayed (status, updated_at) for one question key."""
@@ -162,7 +168,7 @@ class WatchApp(App[None]):
         log = self.query_one("#feed", RichLog)
         indent = "  " * q.depth
         key = f"{project_label(q.project)}:{q.key}" if self.project is None else q.key
-        head = f"[{q.created_at}] ASK {key}"
+        head = f"[{q.created_at}] ASK {key}{_heard_tag(q)}"
         if q.thread:
             # Agent-scoped (q164/q165): shown as owner/thread, since the name
             # alone is only unique within one agent.
@@ -184,7 +190,7 @@ class WatchApp(App[None]):
         log = self.query_one("#feed", RichLog)
         label = "ANSWER" if q.status == "answered" else "CLEAR"
         key = f"{project_label(q.project)}:{q.key}" if self.project is None else q.key
-        head = f"[{q.updated_at}] {label} {key}"
+        head = f"[{q.updated_at}] {label} {key}{_heard_tag(q)}"
         log.write(f"{head}\n  -> {_fmt_answer_text(q)}")
 
     def _refresh_status(self) -> None:

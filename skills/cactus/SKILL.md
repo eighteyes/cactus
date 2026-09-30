@@ -195,6 +195,12 @@ update them as it moves.
 The latest verdict is `answer`; the full log is `answers`. Re-read rather than
 cache: a human can undo a verdict and the row reads `open` again.
 
+Read a review or plan row with `cactus get KEY --agent "$AGENT"`: that read is
+what tells the human you heard the verdict (the card shows `sent`, then
+`heard ✓`). After acting on a verdict, respond with `plan`, `review`, or `edit`
+and `--agent "$AGENT"` (the card returns to normal), and `clear` the row when
+the work is done.
+
 ## Data: hand over chunks
 
 Also persistent. Each `-c` is one chunk — SQL, a command, a snippet — label

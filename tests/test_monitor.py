@@ -29,7 +29,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from cactus.monitor import run_monitor  # noqa: E402
-from cactus.store import Store  # noqa: E402
+from cactus.store import Choice, Store  # noqa: E402
 
 
 def start_monitor(scratch_env: dict[str, str], project: str, *extra_args: str) -> subprocess.Popen:
@@ -262,3 +262,22 @@ def test_once_ignores_edit_under_agent_then_exits_on_answered(scratch_env, proje
     assert rc == 0
     assert not any(e["event"] == "edited" for e in events)
     assert any(e["event"] == "answered" and e["key"] == q.key for e in events)
+
+
+def test_heard_and_responded_stamps_wake_nobody(scratch_env, project, store):
+    q = store.ask(
+        "check it", project=project, cwd=project, agent="agent-a",
+        kind="confirm", act="review", choices=[Choice("pass"), Choice("fail")],
+    )
+    store.answer(q.key, project=project, selected=["pass"])
+    proc = start_monitor(scratch_env, project, "--agent", "agent-a")
+    try:
+        wait_a_tick()
+        store.mark_heard(q.id)
+        wait_a_tick()
+        store.mark_responded(q.id)
+        wait_a_tick()
+    finally:
+        events = stop_and_read(proc)
+
+    assert not any(e.get("key") == q.key for e in events)

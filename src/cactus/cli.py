@@ -122,6 +122,9 @@ WORKFLOW (required)
                                      asked or edited
   2  cactus ask ... --agent ID        every decision, not chat
   3  work; act on each event
+     review/plan verdict: read it with cactus get KEY --agent ID (that
+     tells the human you heard), then respond with cactus plan / review /
+     edit KEY --agent ID
   4  cactus clear KEY --agent ID      own rows only
 
   --monitor --agent ID               unbounded stream, for a host that can
@@ -133,7 +136,7 @@ SYNOPSIS
   cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [-f PATH]... [options]
   cactus run CMD --agent ID [--cwd DIR] [--why X] [-t T]
              [--recommend approve|deny --confidence L]
-  cactus get KEY... [-w] [--timeout S]
+  cactus get KEY... [-w] [--timeout S] [--agent ID]
   cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
   cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X] [-f PATH]... [--agent ID]
   cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N] [-f PATH]... [--agent ID]
@@ -639,6 +642,14 @@ def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         if not found:
             return _no_match()
 
+    if args.agent:
+        # The owner's read is what the human sees as `heard ✓` (q406). Stamped
+        # after the fetch, so the printed rows are exactly what `get` returned
+        # before; a non-owner or a bare `get` never stamps.
+        for q in found:
+            if q.agent == args.agent and q.act in ("review", "plan"):
+                store.mark_heard(q.id)
+
     _print_questions(found, as_json=args.json, show_project=args.all)
     return EXIT_OK
 
@@ -767,6 +778,7 @@ def cmd_edit(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
     _warn_long_question(result)
+    _mark_responded(store, result, args.agent)
     _emit_one(result, as_json=args.json)
     return EXIT_OK
 
@@ -784,6 +796,16 @@ def _refuse_if_not_owner(action: str, key: str, q, agent: str | None) -> str | N
             f"(owned by {q.agent})"
         )
     return None
+
+
+def _mark_responded(store: Store, q: Question, agent: str | None) -> None:
+    """Stamp `responded_at` when the row's owner writes to a review/plan row.
+
+    Lives here, not in `Store`, so a TUI write through the same store methods
+    never counts as the agent answering (q406).
+    """
+    if agent and q.agent == agent and q.act in ("review", "plan"):
+        store.mark_responded(q.id)
 
 
 def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
@@ -808,6 +830,7 @@ def cmd_review(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             fail_when=args.fail,
             then_do=args.then,
         )
+        _mark_responded(store, q, args.agent)
     except KeyError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_EMPTY
@@ -862,6 +885,8 @@ def cmd_plan(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         for n in args.undone or []:
             store.set_step_done(rkey, _plan_index(n, len(q.steps)), False, project=rproj)
         q = store.get(rkey, project=rproj)
+        if q is not None:
+            _mark_responded(store, q, args.agent)
     except KeyError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_EMPTY
@@ -1392,6 +1417,8 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("--answered-only", action="store_true",
                      help="drop anything still open or cleared")
     get.add_argument("--all", action="store_true", help="show the owning project")
+    get.add_argument("--agent", help="declare who is reading; the owner's read of a "
+                     "review/plan row tells the human it was heard")
     get.set_defaults(fn=cmd_get)
 
     ls = verb("list", aliases=["ls"], help="list questions in this project")

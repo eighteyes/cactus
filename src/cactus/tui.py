@@ -252,6 +252,25 @@ def _verdict_repr(a: Answer) -> str:
     return "—"
 
 
+def _heard_line(q: Question) -> str:
+    """The sent / heard status line for a review or plan row (q405)."""
+    state = q.heard_state
+    if state == "sent":
+        return "sent · waiting for the agent"
+    if state == "heard":
+        return "heard ✓ · agent is on it"
+    return ""
+
+
+def _finished_prompt(q: Question) -> bool:
+    """A plan with every step done, or a review with a verdict, may be closed (q404)."""
+    if q.status != "live":
+        return False
+    if q.act == "plan":
+        return bool(q.steps) and all(st.done for st in q.steps)
+    return q.act == "review" and q.answer is not None
+
+
 def _card_lines(
     q: Question,
     *,
@@ -305,6 +324,14 @@ def _card_lines(
         reprs = [_verdict_repr(a) for a in q.answers]
         lines.append("")
         lines.append(f"verdicts: {', '.join(reprs)}  (latest: {reprs[-1]})")
+
+    heard = _heard_line(q)
+    if heard:
+        lines.append("")
+        lines.append(heard)
+    if _finished_prompt(q):
+        lines.append("")
+        lines.append("finished? x closes it (or the agent will)")
 
     if q.chosen:
         lines.append("")
@@ -410,6 +437,8 @@ def _card_lines(
         if q.status in ("open", "live"):
             extras.append(("e", "elaborate"))
             extras.append(("D", "decompose"))
+    if q.act in ("review", "plan") and q.status == "live":
+        lines.append("enter = note · x = close")
     lines.append(KEY_GAP.join(filter(None, [hint, _keys(*extras)])))
     return "\n".join(lines)
 
@@ -452,6 +481,7 @@ class QuestionBlock(ListItem):
         self.key = question.key
         self._text = Static(self._block(question, active, draft), markup=False)
         self.set_class(active, "active")
+        self._dim(question)
 
     @staticmethod
     def _kind_line(q: Question, draft: bool) -> str:
@@ -504,6 +534,13 @@ class QuestionBlock(ListItem):
     def update(self, question: Question, *, active: bool, draft: bool) -> None:
         self._text.update(self._block(question, active, draft))
         self.set_class(active, "active")
+        self._dim(question)
+
+    def _dim(self, question: Question) -> None:
+        """`-sent` / `-heard` while a review/plan verdict awaits the agent (q405)."""
+        state = question.heard_state
+        self.set_class(state == "sent", "-sent")
+        self.set_class(state == "heard", "-heard")
 
 
 class CactusApp(App[int]):
@@ -618,6 +655,12 @@ class CactusApp(App[int]):
         margin: 0 1;
         height: 1fr;
     }
+    #card.-sent #card-text, #card.-heard #card-text {
+        opacity: 60%;
+    }
+    QuestionBlock.-sent, QuestionBlock.-heard {
+        opacity: 60%;
+    }
     #card-text {
         height: auto;
         max-height: 35%;
@@ -662,6 +705,7 @@ class CactusApp(App[int]):
         # ever shows the global keys.
         Binding("s", "skip", "Skip (answers)", show=False),
         Binding("c", "clear_focused", "Clear", show=False),
+        Binding("x", "close_row", "Close", show=False),
         Binding("i", "toggle_free_text", "type", show=False),
         Binding("y", "confirm_yes", "Yes", show=False),
         Binding("n", "confirm_no", "No", show=False),
@@ -1495,11 +1539,15 @@ class CactusApp(App[int]):
         q = self._current_question()
         if q is None:
             card.border_title = "answering"
+            card.set_class(False, "-sent")
+            card.set_class(False, "-heard")
             text.update("inbox empty — waiting for questions")
             self._rebuild_keybar()
             self.refresh_bindings()
             return
         card.border_title = f"answering  {q.key}"
+        card.set_class(q.heard_state == "sent", "-sent")
+        card.set_class(q.heard_state == "heard", "-heard")
         preview: list[str] | None = None
         if self.preview_open and q.files:
             from .shell import file_preview
@@ -1590,6 +1638,8 @@ class CactusApp(App[int]):
         if self.check_action("skip", ()):
             items.append(("s", "skip"))
         items.append(("c", "clear"))
+        if self.check_action("close_row", ()):
+            items.append(("x", "close"))
         if self.check_action("elaborate", ()):
             items.append(("e", "elaborate"))
         if self.check_action("decompose", ()):
@@ -1719,6 +1769,11 @@ class CactusApp(App[int]):
                 "focus_next", "focus_prev", "prev_project", "next_project",
                 "clear_focused", "undo", "poke", "visit", "refresh_view", "quit_app",
             )
+
+        if action == "close_row":
+            # A finished review or plan closes with `x` (q404); every other
+            # row already has `c`/`d`, so the key stays off there.
+            return q.act in ("review", "plan") and q.persistent
 
         always = {
             "focus_next", "focus_prev", "prev_project", "next_project",
@@ -2437,6 +2492,12 @@ class CactusApp(App[int]):
                 self.flash = f"{q.key} was posted outside herdr; nothing to visit"
                 self._rebuild_status_bar()
                 event.stop()
+        if event.key == "x":
+            q = self._current_question()
+            if q is not None and q.act not in ("review", "plan"):
+                self.flash = f"x closes review/plan rows — {q.key} is act='{q.act}'; c clears it"
+                self._rebuild_status_bar()
+                event.stop()
         if event.key in ("f", "F", "o"):
             # view/edit/preview only bind on a row carrying files (check_action).
             q = self._current_question()
@@ -2990,6 +3051,10 @@ class CactusApp(App[int]):
         if q is None:
             return
         await self._submit_answer(q, selected=[], text=None, skipped=True, key="s")
+
+    async def action_close_row(self) -> None:
+        """`x`: close a review/plan row — the same store call and undo as `c`."""
+        await self.action_clear_focused()
 
     async def action_clear_focused(self) -> None:
         q = self._current_question()
