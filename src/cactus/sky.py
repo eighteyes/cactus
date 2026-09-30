@@ -345,7 +345,7 @@ _SHARED_COMMENTS = {
     "accrete_shape": "'branch': new blocks go on any side or diagonal, outer cells and the tip favoured; 'rod': a straight rod off the tip",
     "pile_settle": "'drop': a landed shelf of 2+ blocks resting only on a diagonal drops a row to close the gap; 'keep': lands as it hit",
     "cloud_fade": "seconds a sky cell takes to fade in when it lights and fade out when it clears (0 = pop)",
-    "seed_wind": "a falling seed's wind as a multiple of the near deck's (world wind x near.wind_scale x this)",
+    "seed_wind": "a falling seed's wind as a multiple of the world's (world wind x this; no deck's wind_scale applies)",
 }
 
 
@@ -418,9 +418,9 @@ class SkyConfig:
     cloud_count: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.2, "hi": 4.0})
     cloud_drift: float = field(default=1.5, metadata={"step": 0.25, "lo": 0.0, "hi": 12.0})
     cloud_life: float = field(default=90.0, metadata={"step": 10.0, "lo": 10.0, "hi": 900.0})
-    # A falling seed's share of the wind (v8): the near deck's wind times
-    # this, so a sky tuned to creep does not leave the seeds swaying in a
-    # gale — `World.seed_wind()` is the one reader.
+    # A falling seed's share of the wind (v8): the world's wind times this,
+    # independent of every deck's `wind_scale` — `World.seed_wind()` is the
+    # one reader.
     # Smoothness (v8): `World._fade_sky` blends a cell's colour from the
     # palette's `fade_from` toward its tone as it lights, and holds the last
     # glyph while it fades back out, over `cloud_fade` seconds — so a cloud

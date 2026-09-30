@@ -14,7 +14,10 @@ Responsibilities:
   by `dt` at the call site — nothing steps once per tick or once per second.
 - Drop a seed into a column; anchor it to the floor or beside the structure,
   including the two "reverse pawn" diagonals below it. Count every drop, so
-  the structure can carry age in decisions rather than in time.
+  the structure can carry age in decisions rather than in time. Under
+  `pile_settle == "drop"` a shelf perched on a diagonal settles at most one
+  row, and only onto support (`_settle`). A seed feels world wind x
+  `seed_wind`, never a deck's `wind_scale` (`seed_wind()`).
 - Merge seeds that touch during the fall into a rigid `Clump` (v6e): every
   frame, after motion, any two clumps with a member pair within
   `stick_distance` (a shared `SkyConfig` lever) combine into one — mass-
@@ -103,7 +106,11 @@ _STRUCT_OFFSETS = tuple(enumerate(((0, 1), (1, 1), (0, 0), (1, 0))))
 TICK_SECONDS = 0.1
 LANDING_SECONDS = 60.0
 GRAVITY = 0.2  # sub-cells/s^2: reaches terminal velocity within a couple of seconds
-WIND_COUPLING = 0.003  # how much wind nudges a falling seed's vx, per second
+# How much wind nudges a falling seed's vx, per second. Steady drift is
+# wind * WIND_COUPLING / SEED_DRAG_THETA sub-cells/s over a ~60 s fall: at
+# 0.08, a wind of 0.2 carries a seed ~3 columns and a 0.6 gust ~9 (0.003
+# gave a quarter column even at the clamp).
+WIND_COUPLING = 0.08
 SEED_DRAG_THETA = -math.log(0.98) / TICK_SECONDS  # per second: seed vx's exponential decay rate
 # Wind's Ornstein-Uhlenbeck process: THETA is the mean-reversion rate and
 # SIGMA the noise scale, chosen so `advance(TICK_SECONDS)` reproduces v6's
@@ -348,13 +355,13 @@ class World:
     # ---- dropping ---------------------------------------------------------
 
     def seed_wind(self) -> float:
-        """The wind a falling seed feels (v8): the world's wind through the
-        near deck's own `wind_scale`, times the shared `seed_wind` lever —
-        so a sky tuned to creep does not leave its seeds swaying in a gale.
-        The stock config (`near.wind_scale == 1.0`, `seed_wind == 1.0`)
-        reads exactly the old raw `self.wind`."""
-        cfg = self.sky.config
-        return self.wind * cfg.near.wind_scale * cfg.seed_wind
+        """The wind a falling seed feels: the world's wind times the shared
+        `seed_wind` lever, independent of any deck's `wind_scale` — the
+        puffs engine ignores wind and the texture engine reads only
+        `shear_base`, so a near deck tuned to creep (0.1) would otherwise
+        cut the seeds' wind tenfold with nothing on screen to show for it.
+        The stock config (`seed_wind == 1.0`) reads the raw `self.wind`."""
+        return self.wind * self.sky.config.seed_wind
 
     def drop(self, col: int) -> None:
         """Spawn a seed above column `col`. Several seeds may be in flight at once."""
@@ -829,23 +836,25 @@ class World:
         """The arm adjustment (v8, `pile_settle == "drop"`): a landed shelf
         — two or more blocks side by side in the clump's lowest row — that
         rests only on a diagonal (nothing directly under any of its cells)
-        drops one row at a time until something is under it, the ground
-        or a block, or a target cell is taken. `(0,0) (1,0) (2,1) (3,1)`
-        becomes a flat `(0,0) (1,0) (2,0) (3,0)`. A lone block keeps its
-        diagonal perch: the jar is the shelf, not the step."""
+        drops exactly one row, and only when that row sets at least one
+        shelf cell directly on the ground or a block and no target cell is
+        taken; otherwise it keeps the landing as hit. `(0,0) (1,0) (2,1)
+        (3,1)` becomes a flat `(0,0) (1,0) (2,0) (3,0)`. It never slides a
+        shelf down a pile's side: a multi-row drop used to carry overhangs
+        toward the ground. A lone block keeps its diagonal perch: the jar
+        is the shelf, not the step."""
         low = min(cy for _, cy in cells)
         bottom = sorted(cx for cx, cy in cells if cy == low)
         shelf = any(b - a == 1 for a, b in zip(bottom, bottom[1:]))
-        if not shelf:
+        if not shelf or low == 0:
             return cells
-        while low > 0:
-            if any((cx, cy - 1) in self.structure for cx, cy in cells if cy == low):
-                break
-            dropped = [(cx, cy - 1) for cx, cy in cells]
-            if any(c in self.structure for c in dropped):
-                break
-            cells = dropped
-            low -= 1
+        if any((cx, low - 1) in self.structure for cx in bottom):
+            return cells
+        dropped = [(cx, cy - 1) for cx, cy in cells]
+        if any(c in self.structure for c in dropped):
+            return cells
+        if low - 1 == 0 or any((cx, low - 2) in self.structure for cx in bottom):
+            return dropped
         return cells
 
     # ---- age / colour -----------------------------------------------------

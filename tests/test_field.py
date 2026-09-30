@@ -704,7 +704,10 @@ def test_render_matches_fixture_before_the_v6f_perf_pass() -> None:
     when the renderer gained grain markers and lost the edge slashes — a
     deliberate look change, so the fixture follows it; the test still pins
     every render change after that. Re-baked again for v8 `cloud_fade`,
-    which holds a cleared cell's glyph while it fades out."""
+    which holds a cleared cell's glyph while it fades out. Re-baked when
+    `WIND_COUPLING` rose 0.003 -> 0.08 so wind visibly carries a seed: the
+    falling seeds land a little downwind (the old coupling still reproduces
+    the previous fixture exactly)."""
     with open(FIXTURES / "field_render_v6f.json") as fh:
         expected = json.load(fh)
 
@@ -738,9 +741,9 @@ def test_apply_sky_config_swaps_engine_class_on_sky_engine_change() -> None:
     assert not isinstance(world.sky, TextureSky)
 
 
-def test_seed_wind_follows_the_near_deck_and_the_seed_wind_lever() -> None:
-    """v8: a seed feels world wind x near.wind_scale x seed_wind, so a sky
-    tuned to creep does not leave its seeds swaying at full strength."""
+def test_seed_wind_follows_the_seed_wind_lever_not_the_near_deck() -> None:
+    """A seed feels world wind x seed_wind; `near.wind_scale` tunes a sky
+    deck only, so a creeping deck (0.1) no longer stills the seeds."""
     from cactus.sky import SkyConfig
 
     cfg = SkyConfig(sky_engine="texture")
@@ -749,12 +752,59 @@ def test_seed_wind_follows_the_near_deck_and_the_seed_wind_lever() -> None:
     assert world.seed_wind() == pytest.approx(0.5)
     cfg.near.wind_scale = 0.1
     world.apply_sky_config(cfg)
-    assert world.seed_wind() == pytest.approx(0.05)
+    assert world.seed_wind() == pytest.approx(0.5)
     cfg.seed_wind = 3.0
     world.apply_sky_config(cfg)
-    assert world.seed_wind() == pytest.approx(0.15)
+    assert world.seed_wind() == pytest.approx(1.5)
     world.drop(5)
-    assert world.seeds[-1].vx == pytest.approx(0.15)
+    assert world.seeds[-1].vx == pytest.approx(1.5)
+
+
+def _landing_cols(world: World, col: int, n: int, keep_pile: bool) -> list[float]:
+    """Drop `n` seeds at `col` one at a time, each falling until it lands;
+    return each landing's mean terminal column. `keep_pile=False` clears
+    the structure before every drop, so each fall is full height."""
+    cols = []
+    for _ in range(n):
+        if not keep_pile:
+            world.structure.clear()
+        before = set(world.structure)
+        world.drop(col)
+        for _ in range(2000):
+            if not world.seeds:
+                break
+            world.advance(0.5)
+        new = [c[0] for c in world.structure if c not in before]
+        if new:
+            cols.append(sum(new) / len(new) / SUB_X)
+    return cols
+
+
+def test_pinned_wind_carries_a_falling_seed_several_columns() -> None:
+    """Wind visibly moves a seed: a pinned +0.6 (the OU clamp) lands the
+    mean seed at least 3 columns downwind of a windless drop."""
+    from cactus.sky import SkyConfig
+
+    means = {}
+    for wind in (0.0, 0.6):
+        cfg = SkyConfig(sky_engine="texture", birds="none")
+        world = World(cols=100, rows=30, rng=random.Random(11), sky_config=cfg)
+        world._advance_wind = lambda dt: None  # type: ignore[method-assign]
+        world.wind = wind
+        cols = _landing_cols(world, 50, 5, keep_pile=False)
+        means[wind] = sum(cols) / len(cols)
+    assert means[0.6] - means[0.0] >= 3.0
+
+
+def test_repeated_drops_at_one_column_build_upward() -> None:
+    """A seed dropped again and again at one spot stacks into a pile
+    rather than spreading along the ground."""
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture", birds="none")
+    world = World(cols=100, rows=30, rng=random.Random(5), sky_config=cfg)
+    _landing_cols(world, 50, 30, keep_pile=True)
+    assert max(cy for _, cy in world.structure) > 3
 
 
 def test_birds_lever_picks_which_depths_spawn_and_none_grounds_them() -> None:
@@ -823,7 +873,13 @@ def test_pile_settle_drops_a_shelf_resting_on_a_diagonal() -> None:
 
     world.structure = {(0, 0): 0, (1, 0): 0, (2, 0): 0, (3, 0): 0, (1, 1): 0, (2, 1): 0, (3, 2): 0}
     _land(world, [(4, 3), (5, 3)])
-    assert (4, 3) not in world.structure and (4, 0) in world.structure and (5, 0) in world.structure, "drops until the ground"
+    assert (4, 3) in world.structure and (5, 3) in world.structure and (4, 0) not in world.structure, (
+        "one row would still leave it unsupported: keeps the landing, never slides down the side"
+    )
+
+    world.structure = {(4, 0): 0, (4, 1): 0, (4, 2): 0, (5, 0): 0, (5, 1): 0}
+    _land(world, [(5, 3), (6, 3)])
+    assert (5, 2) in world.structure and (6, 2) in world.structure, "one row onto a block: drops"
 
     cfg.pile_settle = "keep"
     world.apply_sky_config(cfg)
