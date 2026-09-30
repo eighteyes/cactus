@@ -724,17 +724,20 @@ class World:
         offsets = [self._member_offset(clump, m) for m in clump.members]
         lands = False
         for dx, dy in offsets:
-            cx, cy = int(clump.x + dx), int(clump.y + dy)
+            cx, cy = int(clump.x + dx) % self.width, int(clump.y + dy)
             if cy <= 0:
                 lands = True
                 break
-            neighbours = ((cx, cy - 1), (cx - 1, cy), (cx + 1, cy), (cx - 1, cy - 1), (cx + 1, cy - 1))
+            w = self.width
+            neighbours = ((cx, cy - 1), ((cx - 1) % w, cy), ((cx + 1) % w, cy), ((cx - 1) % w, cy - 1), ((cx + 1) % w, cy - 1))
             if any(n in self.structure for n in neighbours):
                 lands = True
                 break
         if not lands:
             return False
-        cells = [(int(clump.x + dx), max(int(clump.y + dy), 0)) for dx, dy in offsets]
+        # Wrap x like every other horizontal read: a clump straddling the
+        # seam must not land a cell at cx -1 or cx >= width.
+        cells = [(int(clump.x + dx) % self.width, max(int(clump.y + dy), 0)) for dx, dy in offsets]
         if self.sky.config.pile_settle == "drop":
             cells = self._settle(cells)
         for cell in cells:

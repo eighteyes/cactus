@@ -1038,3 +1038,18 @@ def test_cloud_fade_blends_a_lit_cell_in_and_holds_it_while_it_fades_out() -> No
     world.apply_sky_config(cfg)
     world._frame_dt = 0.1
     assert world._fade_sky(lit) is lit, "0 is a pop, the grid passes through"
+
+
+def test_a_clump_straddling_the_seam_lands_inside_the_world() -> None:
+    """A multi-block clump whose centre sits at x=0 lands every cell at
+    0 <= cx < width, wrapping the left block to the right edge instead of
+    storing cx -1 (seen in a live garden.json)."""
+    from cactus.field import Member
+    from cactus.sky import SkyConfig
+
+    world = World(cols=10, rows=8, rng=random.Random(2), sky_config=SkyConfig(sky_engine="texture", pile_settle="keep"))
+    clump = Clump(x=0.0, y=0.0, vx=0.0, vy=0.0, angle=0.0, spin=0.0)
+    clump.members = [Member(dx=-1.0, dy=0.0), Member(dx=0.0, dy=0.0), Member(dx=1.0, dy=0.0)]
+    assert world._anchor(clump, [])
+    assert all(0 <= cx < world.width for cx, _ in world.structure)
+    assert (world.width - 1, 0) in world.structure
