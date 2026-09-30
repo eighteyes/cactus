@@ -517,7 +517,7 @@ scope.
   skipped, so an answer's seed still lands and reaches the file. `cactus
   garden` prints the file's path, cell count, and drop count (or "empty");
   `--clear` removes it (`nothing to clear` if it was already gone).
-- A falling clump has hidden `charge` (no UI text): +1 and +1 member on each
+- A falling clump has hidden `charge` (no UI text): +1 and `accrete_count` members on each
   clear-sky-to-cloud entry (`in_cloud`'s False->True edge, not per frame
   spent inside one), +1 per distinct bird it shares a terminal cell with.
   Landing bursts `charge` single-member clumps only if the clump touched at
@@ -579,6 +579,17 @@ scope.
   rests only on a diagonal drops a row at a time until something is
   directly under it or a target cell is taken; a lone block keeps its
   perch; `keep`: lands as it hit). Both always show on the T page.
+- A multi-member clump turns as one rigid body: every place a member
+  becomes a position (render splat, `_member_cell`, `_anchor`, `_touching`,
+  `_merge`, `_explode`) goes through `World._member_offset`, the offset
+  rotated by the clump's `angle`; a lone seed is never rotated. Landing
+  freezes the turned cells, so a rod horizontal at touchdown lands as an
+  arm. Each member's glyph tumble is unchanged. Under `seed_mass ==
+  "accrete"`, a cloud entry grows `accrete_count` blocks as a rod off the
+  tip (the member farthest from centre, stepping along its dominant axis;
+  a tip at centre picks a random horizontal side) and kicks `spin` by
+  `accrete_spin` with random sign; charge stays +1. Multi-member spin damps
+  by `ACCRETE_SPIN_DAMP` per second. Both levers always show on the T page.
 - `cloud_fade` (v8, seconds, default 1.2; 0 = pop, the grid passes
   through) is `World._fade_sky`, run on the sky grid after `_sky_cells` is
   cached, so `cloud_at` still reads the engine's own cells. Each cell's

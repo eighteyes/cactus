@@ -848,6 +848,82 @@ def test_seed_mass_single_keeps_a_seed_one_block_but_still_charges() -> None:
     assert clump.charge == 1
 
 
+def _rod(x: float, y: float, angle: float) -> Clump:
+    """A 3-member horizontal rod in the clump frame, turned to `angle`, not spinning."""
+    from cactus.field import Member
+
+    clump = Clump(x=x, y=y, vx=0.0, vy=0.0, angle=angle, spin=0.0)
+    clump.members = [Member(dx=-1.0), Member(dx=0.0), Member(dx=1.0)]
+    return clump
+
+
+def test_a_rod_lands_along_its_angle() -> None:
+    """Rigid rotation: a multi-member clump's offsets turn with its `angle`,
+    and landing freezes the turned cells — horizontal at 0, vertical at pi/2."""
+    world = World(cols=20, rows=10, rng=random.Random(4))
+    assert world._anchor(_rod(5.5, 0.5, 0.0), [])
+    assert set(world.structure) == {(4, 0), (5, 0), (6, 0)}
+
+    world.structure = {}
+    assert world._anchor(_rod(5.5, 1.5, math.pi / 2), [])
+    assert set(world.structure) == {(5, 0), (5, 1), (5, 2)}
+
+
+def test_accrete_count_grows_a_rod_per_cloud_entry() -> None:
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture", accrete_count=3)
+    world = World(cols=10, rows=10, rng=random.Random(1), sky_config=cfg)
+    world._sky_cells = make_sky_cells(world, [(2, 4), (6, 4)])
+    clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0)  # row_from_bottom 7: cloud
+    world.seeds = [clump]
+
+    world._collect_charge()
+    assert clump.charge == 1
+    assert len(clump.members) == 4
+    assert {m.dy for m in clump.members} == {0.0}, "one row in the clump frame"
+    side = math.copysign(1.0, clump.members[-1].dx)
+    assert sorted(m.dx * side for m in clump.members) == [0.0, 1.0, 2.0, 3.0]
+
+    clump.angle, clump.y = 0.0, 12.0  # clear
+    world._collect_charge()
+    clump.angle, clump.y = 0.0, 6.0  # cloud again: the same arm extends
+    world._collect_charge()
+    assert clump.charge == 2
+    assert sorted(m.dx * side for m in clump.members) == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+def test_accrete_spin_kicks_the_clump_on_each_cloud_entry() -> None:
+    from cactus.sky import SkyConfig
+
+    for kick, expected in ((2.0, 2.0), (0.0, 0.0)):
+        cfg = SkyConfig(sky_engine="texture", accrete_spin=kick)
+        world = World(cols=10, rows=10, rng=random.Random(1), sky_config=cfg)
+        world._sky_cells = make_sky_cells(world, [(2, 4)])
+        clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0, spin=0.0)
+        world.seeds = [clump]
+        world._collect_charge()
+        assert clump.charge == 1
+        assert abs(clump.spin) == pytest.approx(expected)
+
+
+def test_spin_damps_on_multi_member_clumps_only() -> None:
+    from cactus.field import ACCRETE_SPIN_DAMP
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture", bird_max=0)
+    world = World(cols=20, rows=20, rng=random.Random(5), sky_config=cfg)
+    rod = _rod(10.5, float(world.height - 1), 0.0)
+    rod.spin = 2.0
+    lone = Clump(x=30.5, y=float(world.height - 1), vx=0.0, vy=0.0, spin=2.0)
+    world.seeds = [rod, lone]
+    for _ in range(100):
+        world.advance(0.1)
+    assert rod in world.seeds and lone in world.seeds
+    assert rod.spin == pytest.approx(2.0 * math.exp(-ACCRETE_SPIN_DAMP * 10.0))
+    assert lone.spin == 2.0
+
+
 def test_cloud_fade_blends_a_lit_cell_in_and_holds_it_while_it_fades_out() -> None:
     """v8 smoothness: with `cloud_fade` on, a cell the engine just lit draws
     its glyph in a colour between `fade_from` and its tone, reaches the

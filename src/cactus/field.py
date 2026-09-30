@@ -44,9 +44,11 @@ Responsibilities:
   bottom endpoints drift sideways with `Sky.camera_x`. They sit under the
   sand speckle and under every cactus cell — the lowest-priority layer,
   drawn only where nothing else claims the cell.
-- Charge (hidden rule, no UI text): a falling clump gains +1 charge and +1
-  member on each clear-sky-to-cloud entry (once per entry, not per frame
-  spent inside one) and +1 charge per distinct bird it shares a terminal
+- Charge (hidden rule, no UI text): a falling clump gains +1 charge on each
+  clear-sky-to-cloud entry (once per entry, not per frame spent inside one),
+  and under `seed_mass == "accrete"` `accrete_count` members grown as a rod
+  off its tip plus an `accrete_spin` kick of random sign; +1 charge per
+  distinct bird it shares a terminal
   cell with; landing bursts `charge` single-member clumps only if the clump
   touched at least one bird (`birds_hit`), spawned just above the pile top
   and sent sideways with a small downward `vy`, never up (`bounty=False`,
@@ -165,8 +167,8 @@ SEED_SPLAT_FLOOR = 0.02
 PILE_SPLAT_SIGMA = 1.2
 PILE_SPLAT_RADIUS_PX = 3
 
-# Charge (hidden rule): a clump gains +1 charge (and +1 member, cloud mass)
-# on each clear-sky-to-cloud entry, and +1 charge per distinct bird it shares
+# Charge (hidden rule): a clump gains +1 charge (and `accrete_count` members,
+# cloud mass) on each clear-sky-to-cloud entry, and +1 charge per distinct bird it shares
 # a terminal cell with while falling. Landing bursts `charge` single-member
 # clumps sideways off the pile top, but only if the clump touched a bird;
 # `bounty=False` on those keeps the cascade from ever restarting. Every frame
@@ -176,7 +178,12 @@ EXPLODE_VY = 0.5  # sub-cells/s, downward (applied as -EXPLODE_VY: seeds fall to
 EXPLODE_LIFT = 2.0  # sub-cells above the landing clump's top member, so a burst clears the pile
 SCATTER_RADIUS = 6.0  # sky pixels a falling member pushes cloud density out by
 SCATTER_STRENGTH = 0.6  # share of density within that radius it pushes, per frame
-CLOUD_MASS_OFFSETS = ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))
+# A multi-member clump turns as one rigid body: every member position is its
+# offset rotated by the clump's `angle` (`World._member_offset`). Cloud
+# accretion kicks `spin` (`SkyConfig.accrete_spin`); this exponential damping,
+# per second and on multi-member clumps only, lets a rod settle into a slow
+# turn instead of a blur.
+ACCRETE_SPIN_DAMP = 0.3
 
 
 @dataclass(frozen=True)
@@ -210,7 +217,9 @@ class Member:
     """One seed's place inside its clump's local frame (v6e): a fixed offset
     from the clump's centre and a tumble angle baked in at drop or merge —
     the clump's own `angle` is added to it fresh every frame, so the member
-    still tumbles even after its offset is frozen."""
+    still tumbles even after its offset is frozen. In a multi-member clump
+    the offset itself is also rotated by the clump's `angle` wherever it
+    becomes a position (`World._member_offset`)."""
 
     dx: float = 0.0
     dy: float = 0.0
@@ -230,8 +239,8 @@ class Clump:
     vx: float
     vy: float
     nudged: bool = False
-    angle: float = 0.0  # radians, added to every member's own baked angle
-    spin: float = 0.0  # radians/second, drawn once at drop; see SEED_SPIN_RANGE
+    angle: float = 0.0  # radians, added to every member's own baked angle; rotates offsets when >1 member
+    spin: float = 0.0  # radians/second, drawn at drop, kicked by accretion; see SEED_SPIN_RANGE, ACCRETE_SPIN_DAMP
     members: list[Member] = field(default_factory=lambda: [Member()])
     # Charge (hidden rule): `charge` counts cloud entries plus distinct birds
     # touched; `in_cloud` tracks the clear-to-cloud edge so a long pass through
@@ -453,6 +462,8 @@ class World:
             clump.vx += wind * WIND_COUPLING * dt / math.sqrt(n)
             clump.vx *= math.exp(-SEED_DRAG_THETA * dt)
             clump.vy = max(clump.vy, self.terminal_vy)
+            if n > 1:
+                clump.spin *= math.exp(-ACCRETE_SPIN_DAMP * dt)
             clump.angle += (clump.spin + wind * SEED_WOBBLE_PER_WIND) * dt
             clump.x = (clump.x + clump.vx * dt) % self.width
             clump.y += clump.vy * dt
@@ -469,12 +480,23 @@ class World:
 
     # ---- charge (hidden rule) ----------------------------------------------
 
+    def _member_offset(self, clump: Clump, member: Member) -> tuple[float, float]:
+        """`member`'s offset from the clump centre, rotated by the clump's
+        current `angle` — the one place a member becomes a position, so a
+        multi-member clump turns as a rigid body everywhere it is read. A
+        single-member clump returns its offset unrotated."""
+        if len(clump.members) == 1:
+            return member.dx, member.dy
+        c, s = math.cos(clump.angle), math.sin(clump.angle)
+        return member.dx * c - member.dy * s, member.dx * s + member.dy * c
+
     def _member_cell(self, clump: Clump, member: Member) -> tuple[int, int]:
         """`member`'s terminal `(col, row)`, `row` from the bottom like
         `structure`/`render` — the same SUB_X/SUB_Y conversion `_anchor` and
         `render` use, just one step coarser (sub-cell to terminal cell)."""
-        x = (clump.x + member.dx) % self.width
-        y = clump.y + member.dy
+        dx, dy = self._member_offset(clump, member)
+        x = (clump.x + dx) % self.width
+        y = clump.y + dy
         return int(x) // SUB_X, int(y) // SUB_Y
 
     def cloud_at(self, col: int, row_from_bottom: int) -> bool:
@@ -495,14 +517,23 @@ class World:
         glyph, _ = cells[col]
         return glyph != " "
 
-    def _grow_clump(self, clump: Clump, anchor: Member) -> None:
-        """Cloud mass: a new `Member` adjacent to `anchor`, so the clump
-        visibly fattens as it falls through a cloud."""
-        off_dx, off_dy = self.rng.choice(CLOUD_MASS_OFFSETS)
-        clump.members.append(Member(
-            dx=anchor.dx + off_dx, dy=anchor.dy + off_dy,
-            angle=self.rng.uniform(0.0, 2 * math.pi),
-        ))
+    def _grow_clump(self, clump: Clump) -> None:
+        """Cloud mass: `accrete_count` new `Member`s grown as a rod in the
+        clump's own frame. The tip is the member farthest from the centre;
+        each new block goes one step past it along the tip's dominant axis
+        away from the centre (a tip at the centre picks a random horizontal
+        side), so repeated accretion extends one arm rather than a blob."""
+        tip = max(clump.members, key=lambda m: m.dx * m.dx + m.dy * m.dy)
+        if tip.dx == 0.0 and tip.dy == 0.0:
+            step = (self.rng.choice((-1.0, 1.0)), 0.0)
+        elif abs(tip.dx) >= abs(tip.dy):
+            step = (math.copysign(1.0, tip.dx), 0.0)
+        else:
+            step = (0.0, math.copysign(1.0, tip.dy))
+        x, y = tip.dx, tip.dy
+        for _ in range(self.sky.config.accrete_count):
+            x, y = x + step[0], y + step[1]
+            clump.members.append(Member(dx=x, dy=y, angle=self.rng.uniform(0.0, 2 * math.pi)))
 
     def _collect_charge(self) -> None:
         """Right after clumps move, before landing checks: cloud-entry and
@@ -519,7 +550,8 @@ class World:
             if entered is not None and not clump.in_cloud:
                 clump.charge += 1
                 if self.sky.config.seed_mass == "accrete":
-                    self._grow_clump(clump, entered)
+                    self._grow_clump(clump)
+                    clump.spin += self.sky.config.accrete_spin * self.rng.choice((-1.0, 1.0))
             clump.in_cloud = entered is not None
             if clump.in_cloud:
                 self._scatter_sky(clump)
@@ -559,7 +591,7 @@ class World:
         the pile to land beside it under the ordinary fall code.
         `bounty=False`: an exploded seed never collects charge, so an
         explosion cannot cascade."""
-        top = max(clump.y + m.dy for m in clump.members)
+        top = max(clump.y + self._member_offset(clump, m)[1] for m in clump.members)
         y = top + EXPLODE_LIFT
         seeds = []
         for _ in range(clump.charge):
@@ -590,10 +622,11 @@ class World:
     def _touching(self, a: Clump, b: Clump, stick_distance: float) -> bool:
         """Any member of `a` within `stick_distance` of any member of `b`."""
         thresh2 = stick_distance * stick_distance
+        b_pos = [(b.x + dx, b.y + dy) for dx, dy in (self._member_offset(b, mb) for mb in b.members)]
         for ma in a.members:
-            ax, ay = a.x + ma.dx, a.y + ma.dy
-            for mb in b.members:
-                bx, by = b.x + mb.dx, b.y + mb.dy
+            adx, ady = self._member_offset(a, ma)
+            ax, ay = a.x + adx, a.y + ady
+            for bx, by in b_pos:
                 dx = self._member_dx(ax, bx)
                 dy = ay - by
                 if dx * dx + dy * dy <= thresh2:
@@ -605,7 +638,8 @@ class World:
         (mass is member count), spin averaged then damped by 1/n, and every
         member re-expressed around the new centre with its current absolute
         tumble angle baked in — the shape they touched in is the shape they
-        keep."""
+        keep: offsets are baked already rotated, and the new clump starts
+        at `angle` 0."""
         na, nb = len(a.members), len(b.members)
         total = na + nb
         x = (a.x * na + b.x * nb) / total
@@ -616,9 +650,10 @@ class World:
         members: list[Member] = []
         for clump in (a, b):
             for m in clump.members:
+                mdx, mdy = self._member_offset(clump, m)
                 members.append(Member(
-                    dx=clump.x + m.dx - x,
-                    dy=clump.y + m.dy - y,
+                    dx=clump.x + mdx - x,
+                    dy=clump.y + mdy - y,
                     angle=clump.angle + m.angle,
                 ))
         return Clump(x=x, y=y, vx=vx, vy=vy, nudged=a.nudged or b.nudged, spin=spin, members=members)
@@ -649,9 +684,10 @@ class World:
         charge that touched at least one bird (`birds_hit`) appends `charge`
         exploded clumps (see `_explode`) to `exploded`; cloud charge alone
         never bursts."""
+        offsets = [self._member_offset(clump, m) for m in clump.members]
         lands = False
-        for m in clump.members:
-            cx, cy = int(clump.x + m.dx), int(clump.y + m.dy)
+        for dx, dy in offsets:
+            cx, cy = int(clump.x + dx), int(clump.y + dy)
             if cy <= 0:
                 lands = True
                 break
@@ -661,7 +697,7 @@ class World:
                 break
         if not lands:
             return False
-        cells = [(int(clump.x + m.dx), max(int(clump.y + m.dy), 0)) for m in clump.members]
+        cells = [(int(clump.x + dx), max(int(clump.y + dy), 0)) for dx, dy in offsets]
         if self.sky.config.pile_settle == "drop":
             cells = self._settle(cells)
         for cell in cells:
@@ -940,8 +976,9 @@ class World:
         height_px = self.rows * PX_Y
         for clump in self.seeds:
             for m in clump.members:
-                bx = (clump.x + m.dx) * (PX_X / SUB_X)
-                by = (clump.y + m.dy) * (PX_Y / SUB_Y)
+                dx, dy = self._member_offset(clump, m)
+                bx = (clump.x + dx) * (PX_X / SUB_X)
+                by = (clump.y + dy) * (PX_Y / SUB_Y)
                 self._splat_gaussian(
                     canvas, bx, by, SEED_SIGMA_A, SEED_SIGMA_B, clump.angle + m.angle,
                     SEED_SPLAT_RADIUS_PX, SEED_SPLAT_FLOOR, width_px, height_px,
