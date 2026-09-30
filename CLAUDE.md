@@ -611,6 +611,16 @@ scope.
   accumulated by every `advance`, zeroed by each `_fade_sky`, so the fade
   runs on wall time whatever `fps` is. Default `fps` is 8 — 10 broke the
   headless CPU test.
+- TUI reload and rail rebuild are serialized under one `asyncio.Lock`
+  (`CactusApp._reload_lock`): `_reload`, `_advance_after`, and every
+  `_rebuild_rail_locked` call run inside it, and nothing mutates `#rail-list`
+  outside it — the rebuild awaits `clear`/`append`, and two interleaved
+  rebuilds append the same row id (DuplicateIds). Forced reloads await the
+  lock; `_poll` finding it held sets `_reload_pending` and returns, and the
+  holder loops once more (rebuilding only if the cursor moved). `last_cursor`
+  and `prior_key` are read inside the lock. A `j`/`k` that lands while
+  `_rebuilding` is counted in `_rebuild_move` and replayed through the
+  ListView after focus is restored.
 - Review/plan rows show sent / heard / responded (q404-q406), computed per
   row from the latest verdict's time `T` (`Question.heard_state`): `sent`
   after a verdict, `heard` once `heard_at > T`, normal once `responded_at > T`
