@@ -581,11 +581,13 @@ scope.
   is taken — otherwise it lands as hit, so an overhang never slides down a
   pile's side; a lone block keeps its perch; `keep`: lands as it hit).
   Both always show on the T page.
-- Seed wind: `World.seed_wind()` is world wind x `seed_wind`, never a
-  deck's `wind_scale` (puffs ignores wind, texture reads only
-  `shear_base`, so `near.wind_scale` 0.1 used to still seeds with nothing
-  on screen). `WIND_COUPLING` 0.08 against `SEED_DRAG_THETA` gives ~3
-  columns of drift at wind 0.2 over a full fall, ~9 at the 0.6 clamp.
+- Seed wind: `SkyConfig.seed_wind` is in columns (0-30, default 3), the
+  mean drift over a full fall at typical wind; gusts carry ~3x further.
+  `World.seed_wind()` is world wind x `seed_wind / SEED_WIND_COLS_PER_UNIT`
+  (1.45, measured: drift is linear in the multiplier), never a deck's
+  `wind_scale` (puffs ignores wind, texture reads only `shear_base`, so
+  `near.wind_scale` 0.1 used to still seeds with nothing on screen).
+  `WIND_COUPLING` 0.08 against `SEED_DRAG_THETA`.
 - A multi-member clump turns as one rigid body: every place a member
   becomes a position (render splat, `_member_cell`, `_anchor`, `_touching`,
   `_merge`, `_explode`) goes through `World._member_offset`, the offset

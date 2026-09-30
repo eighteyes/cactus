@@ -707,7 +707,7 @@ def test_render_matches_fixture_before_the_v6f_perf_pass() -> None:
     which holds a cleared cell's glyph while it fades out. Re-baked when
     `WIND_COUPLING` rose 0.003 -> 0.08 so wind visibly carries a seed: the
     falling seeds land a little downwind (the old coupling still reproduces
-    the previous fixture exactly)."""
+    the previous fixture exactly). Re-baked again when `seed_wind` became columns (default 3)."""
     with open(FIXTURES / "field_render_v6f.json") as fh:
         expected = json.load(fh)
 
@@ -741,23 +741,57 @@ def test_apply_sky_config_swaps_engine_class_on_sky_engine_change() -> None:
     assert not isinstance(world.sky, TextureSky)
 
 
-def test_seed_wind_follows_the_seed_wind_lever_not_the_near_deck() -> None:
-    """A seed feels world wind x seed_wind; `near.wind_scale` tunes a sky
-    deck only, so a creeping deck (0.1) no longer stills the seeds."""
+def test_seed_wind_is_in_columns_and_ignores_the_near_deck() -> None:
+    """`seed_wind` is the mean drift in columns over a full fall; the seed
+    feels world wind x seed_wind / SEED_WIND_COLS_PER_UNIT, and
+    `near.wind_scale` tunes a sky deck only."""
+    from cactus.field import SEED_WIND_COLS_PER_UNIT
     from cactus.sky import SkyConfig
 
-    cfg = SkyConfig(sky_engine="texture")
+    cfg = SkyConfig(sky_engine="texture", seed_wind=3.0)
     world = World(cols=20, rows=10, rng=random.Random(3), sky_config=cfg)
     world.wind = 0.5
-    assert world.seed_wind() == pytest.approx(0.5)
+    base = 0.5 * 3.0 / SEED_WIND_COLS_PER_UNIT
+    assert world.seed_wind() == pytest.approx(base)
     cfg.near.wind_scale = 0.1
     world.apply_sky_config(cfg)
-    assert world.seed_wind() == pytest.approx(0.5)
-    cfg.seed_wind = 3.0
+    assert world.seed_wind() == pytest.approx(base)
+    cfg.seed_wind = 30.0
     world.apply_sky_config(cfg)
-    assert world.seed_wind() == pytest.approx(1.5)
+    assert world.seed_wind() == pytest.approx(base * 10)
     world.drop(5)
-    assert world.seeds[-1].vx == pytest.approx(1.5)
+    assert world.seeds[-1].vx == pytest.approx(base * 10)
+
+
+def test_seed_wind_columns_scale_the_drift_roughly_linearly() -> None:
+    """Mean |drift| over full falls grows with seed_wind: 20 columns drifts
+    several times further than 2 (unwrapped, empty field)."""
+    from cactus.sky import SkyConfig
+
+    def mean_drift(cols_lever: float) -> float:
+        cfg = SkyConfig(sky_engine="texture", seed_wind=cols_lever, seed_mass="single")
+        w = World(cols=120, rows=30, rng=random.Random(7), sky_config=cfg)
+        total = []
+        for _ in range(12):
+            w.structure.clear()
+            w.drop(60)
+            c = w.seeds[0]
+            px, acc, steps = c.x, 0.0, 0
+            while w.seeds and steps < 5000:
+                w.advance(0.2)
+                steps += 1
+                if w.seeds:
+                    dx = w.seeds[0].x - px
+                    dx -= w.width if dx > w.width / 2 else 0
+                    dx += w.width if dx < -w.width / 2 else 0
+                    acc += dx
+                    px = w.seeds[0].x
+            total.append(abs(acc) / SUB_X)
+        return sum(total) / len(total)
+
+    small, big = mean_drift(2.0), mean_drift(20.0)
+    assert big > 4 * small
+    assert big > 10.0
 
 
 def _landing_cols(world: World, col: int, n: int, keep_pile: bool) -> list[float]:

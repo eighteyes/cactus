@@ -345,7 +345,7 @@ _SHARED_COMMENTS = {
     "accrete_shape": "'branch': new blocks go on any side or diagonal, outer cells and the tip favoured; 'rod': a straight rod off the tip",
     "pile_settle": "'drop': a landed shelf of 2+ blocks resting only on a diagonal drops a row to close the gap; 'keep': lands as it hit",
     "cloud_fade": "seconds a sky cell takes to fade in when it lights and fade out when it clears (0 = pop)",
-    "seed_wind": "a falling seed's wind as a multiple of the world's (world wind x this; no deck's wind_scale applies)",
+    "seed_wind": "columns a falling seed drifts over a full fall at typical wind, on average (gusts carry it ~3x further; 0 = straight down)",
 }
 
 
@@ -451,7 +451,7 @@ class SkyConfig:
     birds: str = field(default="all", metadata={"choices": ("all", "far", "mid", "near", "far+mid", "mid+near", "none")})
     bird_rate: float = field(default=0.02, metadata={"step": 0.01, "lo": 0.0, "hi": 1.0})
     bird_max: int = field(default=3, metadata={"step": 1, "lo": 0, "hi": 12})
-    seed_wind: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.0, "hi": 5.0})
+    seed_wind: float = field(default=3.0, metadata={"step": 1.0, "lo": 0.0, "hi": 30.0})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkyConfig":

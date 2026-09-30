@@ -111,6 +111,10 @@ GRAVITY = 0.2  # sub-cells/s^2: reaches terminal velocity within a couple of sec
 # 0.08, a wind of 0.2 carries a seed ~3 columns and a 0.6 gust ~9 (0.003
 # gave a quarter column even at the clamp).
 WIND_COUPLING = 0.08
+# Columns of mean drift one unit of raw-wind multiplier gives a falling
+# seed over a full fall (v8, measured at 100-120 columns, 30 rows): turns
+# `SkyConfig.seed_wind`, which is in columns, into a multiplier.
+SEED_WIND_COLS_PER_UNIT = 1.45
 SEED_DRAG_THETA = -math.log(0.98) / TICK_SECONDS  # per second: seed vx's exponential decay rate
 # Wind's Ornstein-Uhlenbeck process: THETA is the mean-reversion rate and
 # SIGMA the noise scale, chosen so `advance(TICK_SECONDS)` reproduces v6's
@@ -355,13 +359,14 @@ class World:
     # ---- dropping ---------------------------------------------------------
 
     def seed_wind(self) -> float:
-        """The wind a falling seed feels: the world's wind times the shared
-        `seed_wind` lever, independent of any deck's `wind_scale` — the
-        puffs engine ignores wind and the texture engine reads only
-        `shear_base`, so a near deck tuned to creep (0.1) would otherwise
-        cut the seeds' wind tenfold with nothing on screen to show for it.
-        The stock config (`seed_wind == 1.0`) reads the raw `self.wind`."""
-        return self.wind * self.sky.config.seed_wind
+        """The wind a falling seed feels. `SkyConfig.seed_wind` is in
+        columns — the mean drift over a full fall at typical wind — so it
+        converts through `SEED_WIND_COLS_PER_UNIT`, measured: a multiplier
+        of 1 on the raw world wind drifts ~1.45 columns, and drift is
+        linear in it (1.7 / 3.0 / 6.0 / 14.2 / 29.1 columns at 1 / 2 / 5 /
+        10 / 20). No deck's `wind_scale` applies: the puffs engine ignores
+        wind and texture reads only `shear_base`."""
+        return self.wind * self.sky.config.seed_wind / SEED_WIND_COLS_PER_UNIT
 
     def drop(self, col: int) -> None:
         """Spawn a seed above column `col`. Several seeds may be in flight at once."""
