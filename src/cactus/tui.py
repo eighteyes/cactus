@@ -31,6 +31,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
@@ -804,6 +805,15 @@ class CactusApp(App[int]):
         self.elaborating = False
         self.last_cursor: tuple[int, str, int] = (-1, "", -1)
         self._rebuilding = False
+        # One lock serializes every reload and every rail rebuild: the rebuild
+        # awaits `clear`/`append`, so two of them interleaving would append the
+        # same row id twice (DuplicateIds). A poll that finds it held sets
+        # `_reload_pending` and returns; the holder loops once more.
+        self._reload_lock = asyncio.Lock()
+        self._reload_pending = False
+        # Row moves (j/k/arrows) requested while a rebuild is in flight,
+        # applied by the rebuild once it has restored focus.
+        self._rebuild_move = 0
         self._synced_key: str | None = None
         # Plan keys already seen fully done, so the "all done" flash fires
         # once per completion rather than on every poll.
@@ -1437,6 +1447,15 @@ class CactusApp(App[int]):
         return [q for group in urgent + [g for g in groups if g not in urgent] for q in group]
 
     async def _reload(self, *, force: bool = False) -> None:
+        async with self._reload_lock:
+            await self._reload_locked(force=force)
+            # Polls that landed while this held the lock coalesced into the
+            # flag; run their rebuild once, and only if the cursor moved.
+            while self._reload_pending:
+                await self._reload_locked(force=False)
+
+    async def _reload_locked(self, *, force: bool) -> None:
+        self._reload_pending = False
         cursor = self.store.cursor()
         if not force and cursor == self.last_cursor:
             return
@@ -1446,11 +1465,14 @@ class CactusApp(App[int]):
         self._rebuild_project_banner()
         self._rebuild_project_head()
         self._rebuild_projects_pane()
-        await self._rebuild_rail()
+        await self._rebuild_rail_locked()
         self._rebuild_card()
         self._rebuild_status_bar()
 
     async def _poll(self) -> None:
+        if self._reload_lock.locked():
+            self._reload_pending = True
+            return
         await self._reload()
 
     async def action_refresh_view(self) -> None:
@@ -1504,10 +1526,13 @@ class CactusApp(App[int]):
             and (self.scoped_project is None or r["project"] == self.scoped_project)
         ]
 
-    async def _rebuild_rail(self) -> None:
+    async def _rebuild_rail_locked(self) -> None:
+        """Rebuild the rail. Caller holds `_reload_lock`; nothing else appends
+        to `#rail-list`."""
         listview = self.query_one("#rail-list", ListView)
         prior_key = self.focused_key
         self._rebuilding = True
+        self._rebuild_move = 0
         try:
             await listview.clear()
             for q in self.questions:
@@ -1532,6 +1557,15 @@ class CactusApp(App[int]):
                     row.update(active_q, active=True, draft=active_q.key in self.drafts)
         finally:
             self._rebuilding = False
+        # A row move that landed mid-rebuild was parked in `_rebuild_move`
+        # (the list was half built); replay it through the ListView so the
+        # highlight handler does its usual focus bookkeeping.
+        move, self._rebuild_move = self._rebuild_move, 0
+        for _ in range(abs(move)):
+            if move > 0:
+                listview.action_cursor_down()
+            else:
+                listview.action_cursor_up()
 
     def _rebuild_card(self) -> None:
         card = self.query_one("#card", Vertical)
@@ -2519,6 +2553,9 @@ class CactusApp(App[int]):
                 self._redraw_answers()
             return
         self._clear_flash()
+        if self._rebuilding:
+            self._rebuild_move += 1
+            return
         listview = self.query_one("#rail-list", ListView)
         listview.focus()
         listview.action_cursor_down()
@@ -2536,6 +2573,9 @@ class CactusApp(App[int]):
                 self._redraw_answers()
             return
         self._clear_flash()
+        if self._rebuilding:
+            self._rebuild_move -= 1
+            return
         listview = self.query_one("#rail-list", ListView)
         listview.focus()
         listview.action_cursor_up()
@@ -3107,16 +3147,19 @@ class CactusApp(App[int]):
         self.drafts.pop(answered_key, None)
         self.free_text_mode = False
         self._hide_input()
-        self._load_questions()
-        self.last_cursor = self.store.cursor()
-        if self.questions:
-            next_index = min(old_index, len(self.questions) - 1)
-            self.focused_key = self.questions[next_index].key
-            self.multi_selected = self._default_multi_selection(self.focused_key)
-        else:
-            self.focused_key = None
-        self._rebuild_project_head()
-        await self._rebuild_rail()
+        async with self._reload_lock:
+            self._load_questions()
+            self.last_cursor = self.store.cursor()
+            if self.questions:
+                next_index = min(old_index, len(self.questions) - 1)
+                self.focused_key = self.questions[next_index].key
+                self.multi_selected = self._default_multi_selection(self.focused_key)
+            else:
+                self.focused_key = None
+            self._rebuild_project_head()
+            await self._rebuild_rail_locked()
+        if self._reload_pending:
+            await self._reload()
         self._rebuild_card()
         self._rebuild_status_bar()
         self._synced_key = None

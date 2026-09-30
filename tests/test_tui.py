@@ -25,11 +25,12 @@ Responsibilities:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
 import pytest
-from textual.widgets import Footer, Input, Static
+from textual.widgets import Footer, Input, ListView, Static
 from textual.widgets._footer import FooterKey
 
 from cactus import garden
@@ -1661,3 +1662,135 @@ async def test_finished_prompt_on_plan_and_review(store: Store, project: str) ->
         await app._reload(force=True)
         await pilot.pause()
         assert prompt in str(app.query_one("#card-text", Static).content)
+
+
+# ---- reload / rail rebuild serialization ----------------------------------
+
+
+class _Gate:
+    """Parks every `ListView.clear` on the rail until `release()`.
+
+    `entered` counts how many rebuilds reached the clear, so a test can tell
+    a serialized second reload (never gets there while the first is parked)
+    from a racing one.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.entered = 0
+        self.total = 0
+        self.first_parked = asyncio.Event()
+        self._open = asyncio.Event()
+        orig = ListView.clear
+        gate = self
+
+        async def clear(view: ListView):
+            if view.id == "rail-list":
+                gate.total += 1
+                gate.entered += 1
+                gate.first_parked.set()
+                await gate._open.wait()
+            return await orig(view)
+
+        monkeypatch.setattr(ListView, "clear", clear)
+
+    def release(self) -> None:
+        self._open.set()
+
+
+async def _yield(n: int = 10) -> None:
+    for _ in range(n):
+        await asyncio.sleep(0)
+
+
+def _rail_ids(app: CactusApp) -> list[str]:
+    return [c.id for c in app.query_one("#rail-list", ListView).children]
+
+
+def _three(store: Store, project: str) -> list[str]:
+    return [
+        store.ask(
+            f"row {i}", project=project, cwd=project, agent=AGENT,
+            kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+        ).key
+        for i in range(3)
+    ]
+
+
+async def test_concurrent_reloads_do_not_duplicate_rail_ids(
+    store: Store, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keys = _three(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.focused_key = keys[1]
+        gate = _Gate(monkeypatch)
+        try:
+            first = asyncio.create_task(app._reload(force=True))
+            await gate.first_parked.wait()
+            second = asyncio.create_task(app._reload(force=True))
+            poll = asyncio.create_task(app._poll())
+            await _yield()
+        finally:
+            gate.release()
+        await asyncio.gather(first, second, poll)
+        await pilot.pause()
+
+        ids = _rail_ids(app)
+        assert ids == [f"row-{q.key}" for q in app.questions]
+        assert len(set(ids)) == len(ids) == 3
+        assert app.focused_key == keys[1]
+        assert gate.entered == 2  # one rebuild per forced reload, serialized
+
+
+async def test_poll_while_locked_coalesces_and_runs_once_after(
+    store: Store, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _three(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        gate = _Gate(monkeypatch)
+        try:
+            held = asyncio.create_task(app._reload(force=True))
+            await gate.first_parked.wait()
+            parked_cursor = app.last_cursor
+            new = store.ask(
+                "late", project=project, cwd=project, agent=AGENT,
+                kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+            )
+            polls = [asyncio.create_task(app._poll()) for _ in range(2)]
+            await _yield()
+            assert all(p.done() for p in polls)  # coalesced, not parked
+            assert app.last_cursor == parked_cursor
+            assert app.last_cursor != store.cursor()
+        finally:
+            gate.release()
+        await held
+        await pilot.pause()
+
+        assert f"row-{new.key}" in _rail_ids(app)
+        assert app.last_cursor == store.cursor()
+        assert gate.entered == 2  # the held rebuild plus one pending rebuild
+
+
+async def test_row_move_during_rebuild_is_honoured(
+    store: Store, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keys = _three(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.focused_key == keys[0]
+        gate = _Gate(monkeypatch)
+        try:
+            held = asyncio.create_task(app._reload(force=True))
+            await gate.first_parked.wait()
+            app.action_focus_next()
+        finally:
+            gate.release()
+        await held
+        await pilot.pause()
+
+        assert app.focused_key == keys[1]
+        assert app.query_one("#rail-list", ListView).index == 1
