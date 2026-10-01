@@ -18,9 +18,9 @@ Responsibilities:
 - Grow a small sky/weather/cactus simulation under the card, dropping a seed
   on every answer, or manually via backtick/tilde at any time outside
   free-text mode. Card first: the field gets only the rows the card's
-  content leaves, hidden below `FIELD_MIN_ROWS`; the centred key bar drops
-  each seed under the key pressed, or at its mirrored column under the
-  `seed_release = "right"` setting.
+  content leaves, hidden below `FIELD_MIN_ROWS`; the key bar (left, centre
+  or right per `keybar_align`) drops each seed under the key pressed, or
+  at its mirrored column under the `seed_release = "right"` setting.
 - Show a `T` tuning overlay listing every `SkyConfig` key, nudge it live
   with h/l/H/L, reset it with r, and keep the on-disk file and the running
   sky in agreement on every nudge.
@@ -73,7 +73,9 @@ FIELD_MIN_ROWS = 4
 TUI_SETTINGS_DEFAULTS = {
     "orientation": "side", "figlet_header": False, "projects_pane": True,
     "field": True, "pile_only": False, "seed_release": "left",
+    "keybar_align": "center",
 }
+KEYBAR_ALIGNS = ("left", "center", "right")
 
 
 def _tui_settings_path() -> Path:
@@ -100,6 +102,8 @@ def _load_tui_settings() -> dict[str, Any]:
         settings["pile_only"] = data["pile_only"]
     if isinstance(data, dict) and data.get("seed_release") in ("left", "right"):
         settings["seed_release"] = data["seed_release"]
+    if isinstance(data, dict) and data.get("keybar_align") in KEYBAR_ALIGNS:
+        settings["keybar_align"] = data["keybar_align"]
     return settings
 
 
@@ -479,7 +483,7 @@ class FieldView(Static):
 
 class KeyBar(Static):
     """The in-card row key bar; content is set by CactusApp._rebuild_keybar,
-    which centres it in this widget's width — so a resize re-centres it."""
+    which aligns it in this widget's width — so a resize re-aligns it."""
 
     def on_resize(self, event: events.Resize) -> None:
         app = self.app
@@ -1027,6 +1031,7 @@ class CactusApp(App[int]):
         figlet = "on" if self.tui_settings["figlet_header"] else "off"
         pane = "on" if self.tui_settings["projects_pane"] else "off"
         release = self.tui_settings["seed_release"]
+        align = self.tui_settings["keybar_align"]
         return "\n".join([
             "settings",
             "",
@@ -1034,6 +1039,7 @@ class CactusApp(App[int]):
             f"2  under / over   detail above, questions bottom {'●' if orientation == 'bottom' else '○'}",
             f"3  projects pane  due-ranked, left of the rail    {pane}",
             f"4  seed release   drop under the key, or mirror   {release}",
+            f"5  key bar        left / center / right           {align}",
             f"f  Figlet project header (cybermedium)            {figlet}",
             "",
             "esc or ?  return to the inbox",
@@ -1549,6 +1555,15 @@ class CactusApp(App[int]):
         self._save_settings()
         self._render_settings()
 
+    def _cycle_keybar_align(self) -> None:
+        """Cycle `keybar_align` left -> center -> right -> left and re-pad
+        the bar, so `_keybar_x` (and every later seed drop) follows it."""
+        i = KEYBAR_ALIGNS.index(self.tui_settings["keybar_align"])
+        self.tui_settings["keybar_align"] = KEYBAR_ALIGNS[(i + 1) % len(KEYBAR_ALIGNS)]
+        self._rebuild_keybar()
+        self._save_settings()
+        self._render_settings()
+
     # ---- data loading ---------------------------------------------------
 
     def _live_projects(self) -> list[str]:
@@ -1852,13 +1867,15 @@ class CactusApp(App[int]):
         return items
 
     def _rebuild_keybar(self) -> None:
-        """Render the row key bar, centred, and record each key's x offset.
+        """Render the row key bar, aligned, and record each key's x offset.
 
         `_field_column` reads `self._keybar_x` to drop a seed under the key
         that answered — so this must run before any seed drop, which is why
-        every caller runs it alongside `refresh_bindings()`. The bar is
-        centred so the digits sit mid-field rather than weighting the pile to
-        the left; each recorded x includes that centring pad and the bar's
+        every caller runs it alongside `refresh_bindings()`. The
+        `keybar_align` setting pads it left (0), center (half the slack, the
+        default, so the digits sit mid-field) or right (all the slack); a bar
+        with no slack is left-flush whatever the setting. Each recorded x
+        includes that pad and the bar's
         own left gutter, so it is the glyph's column in `#field`, which spans
         the same card width from the same left edge.
         """
@@ -1885,7 +1902,9 @@ class CactusApp(App[int]):
             piece = head + shown
             pieces.append(piece)
             pos += len(piece)
-        pad = max((width - pos) // 2, 0)
+        slack = max(width - pos, 0)
+        align = self.tui_settings["keybar_align"]
+        pad = slack // 2 if align == "center" else slack if align == "right" else 0
         left = pad + bar.styles.gutter.left
         self._keybar_x = {key: x + left for key, x in self._keybar_x.items()}
         bar.update(" " * pad + "".join(pieces))
@@ -2647,6 +2666,8 @@ class CactusApp(App[int]):
                 self._toggle_projects_pane()
             elif event.key == "4":
                 self._toggle_seed_release()
+            elif event.key == "5":
+                self._cycle_keybar_align()
             elif event.key == "f":
                 self._toggle_figlet_header()
             else:
@@ -3393,7 +3414,7 @@ class CactusApp(App[int]):
         """Resolve the drop column for a key via its own key bar glyph's x.
 
         `self._keybar_x` (rebuilt on every `_rebuild_keybar`) already counts
-        the bar's centring pad and gutter from the card's left edge, which
+        the bar's alignment pad and gutter from the card's left edge, which
         the field shares, so it is the field column directly — each digit now has its own column, not one
         shared "1" slot. `enter` falls back to `i`'s column when the row has
         no "enter" item of its own (a plan or review row, say), since that is

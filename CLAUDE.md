@@ -555,10 +555,12 @@ scope.
   `pile_rows()` and needs only `min(pile_rows(), 4)`. It runs from every
   `_render_field` (the timer is the backstop), after `_rebuild_card` and
   on App resize. Both orientations: the field lives inside the card in each.
-- The key bar is centred in its width (`_rebuild_keybar`, re-run by
-  `KeyBar.on_resize`); `_keybar_x` records each glyph's field column,
-  centring pad and bar gutter included, so a seed drops under the key
-  pressed. A bar that fills its width has no slack and stays left-flush.
+- The key bar is padded per the `keybar_align` TUI setting (`tui.json`,
+  settings `5` cycles left/center/right, default `center`) in its width
+  (`_rebuild_keybar`, re-run by `KeyBar.on_resize`); `_keybar_x` records
+  each glyph's field column, alignment pad and bar gutter included, so a
+  seed drops under the key pressed. A bar that fills its width has no
+  slack and stays left-flush under every alignment.
   The `seed_release` TUI setting (`tui.json`, settings `4`, default
   `left`) mirrors that column to `width - 1 - col` under `right`, so seeds
   land on the right while the bar stays where it is.

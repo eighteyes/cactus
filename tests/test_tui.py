@@ -655,6 +655,72 @@ async def test_keybar_recentres_on_resize(store: Store, project: str) -> None:
         assert _keybar_centre_check(app) > before
 
 
+@pytest.mark.parametrize("align", ["left", "center", "right"])
+async def test_keybar_align_places_the_glyph_and_the_seed(
+    store: Store, project: str, align: str,
+) -> None:
+    """`keybar_align` pads the bar left (0), center (half the slack) or
+    right (all of it) at 200 columns; "1"'s recorded column is its glyph's
+    screen column and a seed from "1" spawns there."""
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice(c) for c in "abcde"],
+    )
+
+    app = CactusApp(store, project=project)
+    app.tui_settings["orientation"] = "side"
+    app.tui_settings["keybar_align"] = align
+    async with app.run_test(size=(200, 40)) as pilot:
+        await _settle(pilot)
+        bar = app.query_one("#keybar", Static)
+        field = app.query_one("#field")
+        line = str(bar.content)
+        body = line.lstrip(" ")
+        pad = len(line) - len(body)
+        slack = bar.size.width - len(body)
+        assert slack > 0
+        assert pad == {"left": 0, "center": slack // 2, "right": slack}[align]
+        col = app._keybar_x["1"]
+        assert bar.content_region.x + line.index("1 ") == field.region.x + col
+        assert col == bar.styles.gutter.left + pad
+        dropped: list[int] = []
+        real_drop = app.world.drop
+        app.world.drop = lambda c: (dropped.append(c), real_drop(c))[1]
+        await pilot.press("1")
+        await pilot.pause()
+        assert dropped == [col]
+
+
+async def test_keybar_align_settings_cycle_persists(store: Store, project: str) -> None:
+    """Settings `5` cycles center -> right -> left, re-pads the bar at once,
+    and a fresh app reads the saved value back."""
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice(c) for c in "abcde"],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(200, 40)) as pilot:
+        await _settle(pilot)
+        assert app.tui_settings["keybar_align"] == "center"
+        await pilot.press("?")
+        await pilot.pause()
+        await pilot.press("5")
+        await pilot.pause()
+        assert app.tui_settings["keybar_align"] == "right"
+        await pilot.press("5")
+        await pilot.pause()
+        assert app.tui_settings["keybar_align"] == "left"
+        await pilot.press("escape")
+        await _settle(pilot)
+        assert app._keybar_x["1"] == app.query_one("#keybar", Static).styles.gutter.left
+
+    second = CactusApp(store, project=project)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        assert second.tui_settings["keybar_align"] == "left"
+
+
 async def test_field_column_enter_falls_back_to_i(store: Store, project: str) -> None:
     """A plan row's key bar offers "i note" but no "enter" item of its own —
     `_field_column("enter")` should fall back to "i"'s column rather than
