@@ -390,6 +390,33 @@ def test_wait_guard_ignores_other_tools(hook_env, project):
     assert run_hook(ROOT_HOOKS / "pretooluse-wait.sh", payload, hook_env, project).returncode == 0
 
 
+@pytest.mark.parametrize("cmd", [
+    "cd /tmp && cactus ask 'pick' --agent x",
+    "true || cactus run 'make' --agent x",
+    "echo a; cactus ask 'pick' --agent x",
+    "echo start\ncactus ask 'pick' --agent x",
+    "echo \"$(cactus ask 'pick' --agent x)\"",
+    "cat <<EOF\nkey: $(cactus ask 'pick' --agent x)\nEOF",
+    "cat <<'EOF'\ntext\nEOF\ncactus ask 'pick' --agent x",
+    "# don't wait here\ncactus ask 'pick' --agent x",
+])
+def test_wait_guard_blocks_at_command_position(cmd, hook_env, project):
+    assert _wait_guard(cmd, hook_env, project).returncode == 2, cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    # The SKILL-edit script that tripped the old guard: a quoted heredoc body.
+    "python3 - <<'EOF'\nnew = '''\n    cactus run \"pnpm exec playwright install\" --agent \"$AGENT\"\n'''\nEOF",
+    "cat <<-EOF\n\tcactus ask 'pick' --agent x\n\tEOF",
+    "echo 'cactus ask pick --agent x'",
+    "echo 'one\ncactus ask pick --agent x\n'",
+    "git commit -m \"$(cat <<'EOF'\nsubject\n\ncactus run is documented\nEOF\n)\"",
+])
+def test_wait_guard_ignores_heredoc_and_quoted_text(cmd, hook_env, project):
+    r = _wait_guard(cmd, hook_env, project)
+    assert r.returncode == 0, (cmd, r.stderr)
+
+
 def test_wait_guard_is_registered_on_bash():
     cfg = json.loads((ROOT_HOOKS / "hooks.json").read_text())
     entry = cfg["hooks"]["PreToolUse"][0]
