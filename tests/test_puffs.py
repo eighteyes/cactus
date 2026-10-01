@@ -39,6 +39,10 @@ STYLES = tuple(_PUFF_STYLES)
 
 
 def _puffs(style: str = "drift", seed: int = 3, cols: int = 100, rows: int = 14, **kw) -> PuffSky:
+    # These tests were written against a modest population; the shipped
+    # default (bloom at 8) is an overcast by their measures, so pin 2.2
+    # unless a test asks for a count.
+    kw.setdefault("cloud_count", 2.2)
     cfg = SkyConfig(sky_engine="puffs", cloud_style=style, **kw)
     sky = make_sky(cols, rows, random.Random(seed), MONO_PLUS, cfg)
     assert isinstance(sky, PuffSky)
@@ -412,7 +416,7 @@ def test_band_evolve_zero_freezes_the_texture_and_shows_only_under_bands() -> No
         sky.advance(10.0)
     assert lane.patch_a is patch and lane.phase == phase and lane.blend() == blend
     # retuned live, no re-bake: the same lane starts evolving
-    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_evolve=2.0))
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_evolve=2.0, cloud_count=2.2))
     assert _lanes(sky)[0] is lane
     sky.advance(1.0)
     assert lane.phase != phase

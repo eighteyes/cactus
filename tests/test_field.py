@@ -427,7 +427,7 @@ def _charge_through_two_clouds(world: World, *, bird: bool) -> Clump:
 
 
 def test_landing_with_charge_and_a_bird_explodes_into_bounty_free_clumps() -> None:
-    world = World(cols=10, rows=10, rng=random.Random(4))
+    world = World(cols=10, rows=10, rng=random.Random(4), sky_config=SkyConfig(cloud_count=2.2))
     clump = _charge_through_two_clouds(world, bird=True)
     assert clump.charge == 3 and len(clump.birds_hit) == 1
     prior_drops = world.drops
@@ -450,7 +450,7 @@ def test_landing_with_charge_and_a_bird_explodes_into_bounty_free_clumps() -> No
 
 
 def test_cloud_charge_without_a_bird_never_bursts() -> None:
-    world = World(cols=10, rows=10, rng=random.Random(4))
+    world = World(cols=10, rows=10, rng=random.Random(4), sky_config=SkyConfig(cloud_count=2.2))
     clump = _charge_through_two_clouds(world, bird=False)
     assert clump.charge == 2 and not clump.birds_hit
 
