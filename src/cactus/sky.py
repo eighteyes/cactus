@@ -428,7 +428,7 @@ class SkyConfig:
     # Puffs engine levers (v8): a population of individual clouds, each with
     # its own drift and life, no whole-sky scroll — see `PuffSky`.
     cloud_style: str = field(default="drift", metadata={"choices": ("drift", "bloom", "streaks", "bands")})
-    cloud_count: float = field(default=2.2, metadata={"step": 0.1, "lo": 0.2, "hi": 4.0})
+    cloud_count: float = field(default=2.2, metadata={"step": 0.2, "lo": 0.2, "hi": 12.0})
     cloud_drift: float = field(default=6.0, metadata={"step": 0.25, "lo": 0.0, "hi": 12.0})
     cloud_life: float = field(default=40.0, metadata={"step": 10.0, "lo": 10.0, "hi": 900.0})
     # A falling seed's share of the wind (v8): the world's wind times this,
