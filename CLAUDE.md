@@ -620,6 +620,11 @@ scope.
   (`belt_scale_x`/`belt_octaves`), streaky between the smooth zones.
   All five show on the T page only under puffs/bands, and any change
   re-cuts every lane (`band_evolve` shows there too but re-cuts nothing).
+  Off bands, `cloud_altitude` (0.5 even, lower toward the ground, higher
+  toward the sky) draws each cloud's height as `u ** e`, `e = (1-b)/b`,
+  inside its band and scales each band's count by its share of that
+  distribution (`_altitude_weight`); 0.5 is today's placement exactly and
+  any change re-bakes.
 - Birds are levers on `SkyConfig` (v8), read off `World.sky.config` like
   `seed_wind`: `birds` picks the depth bands a flock may spawn in (`all`,
   `far`, `mid`, `near`, `far+mid`, `mid+near`, `none`; `World.bird_bands`),

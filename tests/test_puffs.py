@@ -541,3 +541,68 @@ def test_tuning_fields_for_is_panel_ordered() -> None:
     for cfg in (SkyConfig(sky_engine="fluid"), SkyConfig(sky_engine="puffs", cloud_style="bands")):
         ranks = [order.index(tuning_panel_of(r)) for r in tuning_fields_for(cfg)]
         assert ranks == sorted(ranks)
+
+
+# ---- cloud_altitude (puffs, not bands) -------------------------------------
+
+
+def _heights(sky: PuffSky) -> list[float]:
+    """Every cloud's centre as a fraction of sky height from the bottom."""
+    return [1.0 - (p.y0 + p.h / 2.0) / sky.height_px for band in sky.puffs.values() for p in band]
+
+
+def _counts(sky: PuffSky) -> dict[str, int]:
+    return {band: len(sky.puffs[band]) for band in GRID_ORDER}
+
+
+def _placement(sky: PuffSky) -> list[tuple]:
+    return [(p.band, p.y0, p.h, p.w, p.x, p.vx, p.age) for band in GRID_ORDER for p in sky.puffs[band]]
+
+
+def test_cloud_altitude_half_matches_the_lever_unset() -> None:
+    plain = _puffs("bloom", cloud_count=4.0, rows=30)
+    even = _puffs("bloom", cloud_count=4.0, rows=30, cloud_altitude=0.5)
+    assert _counts(even) == _counts(plain)
+    assert _placement(even) == _placement(plain)
+
+
+def test_cloud_altitude_high_favours_the_sky() -> None:
+    sky = _puffs("bloom", cloud_count=4.0, rows=30, cloud_altitude=0.9)
+    counts = _counts(sky)
+    assert counts["far"] > counts["near"]
+    heights = _heights(sky)
+    assert sum(heights) / len(heights) > 0.6
+
+
+def test_cloud_altitude_low_favours_the_ground() -> None:
+    sky = _puffs("bloom", cloud_count=4.0, rows=30, cloud_altitude=0.1)
+    counts = _counts(sky)
+    assert counts["near"] > counts["far"]
+    heights = _heights(sky)
+    assert sum(heights) / len(heights) < 0.4
+
+
+@pytest.mark.parametrize("altitude", (0.1, 0.9))
+def test_cloud_altitude_keeps_the_total_count(altitude: float) -> None:
+    even = sum(_counts(_puffs("bloom", cloud_count=4.0, rows=30)).values())
+    tilted = sum(_counts(_puffs("bloom", cloud_count=4.0, rows=30, cloud_altitude=altitude)).values())
+    assert abs(tilted - even) <= 0.15 * even
+
+
+def test_cloud_altitude_shows_only_under_puffs_non_bands() -> None:
+    def shown(cfg: SkyConfig) -> set[str]:
+        return {row.name for row in tuning_fields_for(cfg)}
+
+    for style in ("drift", "bloom", "streaks"):
+        assert "cloud_altitude" in shown(SkyConfig(sky_engine="puffs", cloud_style=style))
+    assert "cloud_altitude" not in shown(SkyConfig(sky_engine="puffs", cloud_style="bands"))
+    assert "cloud_altitude" not in shown(SkyConfig(sky_engine="fluid", cloud_style="bloom"))
+    assert "cloud_altitude" not in shown(SkyConfig(sky_engine="texture", cloud_style="bloom"))
+
+
+def test_cloud_altitude_change_rebakes_the_population() -> None:
+    sky = _puffs("bloom", cloud_count=4.0, rows=30)
+    keep = sky.puffs["mid"][0]
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bloom", cloud_count=4.0, cloud_altitude=0.9))
+    assert sky.puffs["mid"][0] is not keep, "an altitude change re-bakes every cloud"
+    assert _counts(sky) == _counts(_puffs("bloom", cloud_count=4.0, rows=30, cloud_altitude=0.9))

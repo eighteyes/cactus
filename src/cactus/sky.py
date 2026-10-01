@@ -79,7 +79,8 @@ Responsibilities:
   morphs between; its cutoff starts at 1.0 and sinks to the style's resting
   value, so the cloud unfolds from its densest cores outward, holds, then
   recedes the same way and is replaced. `cloud_style` picks a `_PUFF_STYLES`
-  table (`drift`, `bloom`, `streaks`), `cloud_count` scales the population.
+  table (`drift`, `bloom`, `streaks`), `cloud_count` scales the population,
+  `cloud_altitude` tilts it toward the ground (< 0.5) or the sky (> 0.5).
   `camera_x` stays 0: the sky changes more than it travels.
   `band_belts` deals the `bands` style's lanes as alternating zones and
   belts, all zones, or all belts; a lane's texture morphs on into fresh
@@ -339,6 +340,7 @@ _SHARED_COMMENTS = {
     "cloud_count": "puffs engine population scale: 1.0 is one cloud per band per ~40 columns (bands style: lane count, ignored while band_height > 0)",
     "cloud_drift": "puffs engine top drift speed, pixels per second, before a band's own wind_scale; each cloud picks its own direction",
     "cloud_life": "puffs engine seconds a cloud lives, unfold to recede",
+    "cloud_altitude": "puffs (not bands): where clouds gather, 0.5 even, lower toward the ground, higher toward the sky",
     "perspective": "fluid engine: 'on' projects the three decks through horizon/focal/z_far (v7); 'off' draws each deck's bands flat across the sky, the v6 look",
     "birds": "which flocks spawn: 'all', one depth ('far' specks, 'mid' v/^, 'near' wide wingbeats), 'far+mid', 'mid+near', or 'none'",
     "bird_rate": "flock spawns per second while fewer than bird_max are aloft",
@@ -431,6 +433,9 @@ class SkyConfig:
     cloud_count: float = field(default=8.0, metadata={"step": 0.2, "lo": 0.2, "hi": 12.0})
     cloud_drift: float = field(default=6.0, metadata={"step": 0.25, "lo": 0.0, "hi": 12.0})
     cloud_life: float = field(default=40.0, metadata={"step": 10.0, "lo": 10.0, "hi": 900.0})
+    # Where non-lane clouds gather: a height fraction `u ** e`, `e = (1 - b)
+    # / b` — 0.5 is today's even spread (`_altitude_exp`).
+    cloud_altitude: float = field(default=0.5, metadata={"step": 0.05, "lo": 0.05, "hi": 0.95})
     # A falling seed's share of the wind (v8): the world's wind times this,
     # independent of every deck's `wind_scale` — `World.seed_wind()` is the
     # one reader.
@@ -637,7 +642,8 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
     grid groups only under fluid; shear and `perspective` under fluid,
     the projection levers only while `perspective == "on"`; `shear_base`
     alone under texture (its camera drift); the `cloud_*` levers only
-    under puffs. `_TUNE_ALWAYS` shows everywhere."""
+    under puffs (`cloud_altitude` only off bands). `_TUNE_ALWAYS` shows
+    everywhere."""
     engine = cfg.sky_engine
     if row.group != "shared":
         return engine == "fluid"
@@ -645,6 +651,8 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
         return True
     if row.name in ("band_gap", "band_flow", "band_height", "band_edge", "band_belts", "band_evolve"):
         return engine == "puffs" and cfg.cloud_style == "bands"
+    if row.name == "cloud_altitude":
+        return engine == "puffs" and cfg.cloud_style != "bands"
     if row.name in _TUNE_ENGINE.get(engine, frozenset()):
         return True
     return engine == "fluid" and cfg.perspective == "on" and row.name in _TUNE_PERSPECTIVE
@@ -657,7 +665,7 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
 # `tuning_visible` hides them everywhere.
 TUNE_PANELS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("engine", ("sky_engine", "perspective", "fps", "cloud_fade")),
-    ("clouds", ("cloud_style", "cloud_count", "cloud_drift", "cloud_life",
+    ("clouds", ("cloud_style", "cloud_count", "cloud_drift", "cloud_life", "cloud_altitude",
                 "band_gap", "band_flow", "band_height", "band_edge", "band_belts", "band_evolve")),
     ("projection", ("horizon", "focal", "z_far", "ground_lines", "deck_altitude_px")),
     ("wind", ("shear_floor", "shear_base", "shear_span", "seed_wind")),
@@ -1849,6 +1857,44 @@ def _lane_window(rng: random.Random, w: int, h: int, edge: float, lw: int) -> li
     return win
 
 
+def _altitude_exp(altitude: float) -> float:
+    """`cloud_altitude` b as the exponent e of a height fraction `u ** e`
+    (u uniform): 0.5 -> 1 (even), above it -> e < 1 (toward the sky),
+    below it -> e > 1 (toward the ground)."""
+    b = _clamp(altitude, 0.05, 0.95)
+    return (1.0 - b) / b
+
+
+def _altitude_mass(band: str, e: float) -> float:
+    """The probability mass `u ** e` puts in `band`'s `GRID_BAND_REGION`."""
+    lo, hi = GRID_BAND_REGION[band]
+    return hi ** (1.0 / e) - lo ** (1.0 / e)
+
+
+def _altitude_weight(style: dict[str, dict], band: str, altitude: float) -> float:
+    """How much `cloud_altitude` scales `band`'s cloud count under `style`:
+    the band's share of the altitude distribution over the three bands,
+    against its share when even, renormalised by each band's base count
+    (`1 / spacing`) so the total stays about the same. 0.5 is exactly 1."""
+    e = _altitude_exp(altitude)
+    if e == 1.0:
+        return 1.0
+    ratio = {b: _altitude_mass(b, e) / _altitude_mass(b, 1.0) for b in GRID_BAND_REGION}
+    base = {b: 1.0 / style[b]["spacing"] for b in GRID_BAND_REGION}
+    norm = sum(base.values()) / sum(base[b] * ratio[b] for b in GRID_BAND_REGION)
+    return ratio[band] * norm
+
+
+def _altitude_draw(rng: random.Random, lo: float, hi: float, e: float) -> float:
+    """A height fraction from `u ** e` conditioned on [lo, hi] (inverse CDF),
+    so clouds lean toward the favoured edge of their band too. e == 1 is a
+    plain `uniform(lo, hi)`, the same single draw as before the lever."""
+    if e == 1.0:
+        return rng.uniform(lo, hi)
+    a, z = lo ** (1.0 / e), hi ** (1.0 / e)
+    return (a + rng.random() * (z - a)) ** e
+
+
 class _Puff:
     """One cloud: where it is, how it drifts, and how far through its life."""
 
@@ -1856,7 +1902,7 @@ class _Puff:
 
     def __init__(self, band: str, p: dict, width_px: int, height_px: int, rng: random.Random,
                  drift: float, life: float, *, age: float | None = None,
-                 lane: tuple[int, int, int, float] | None = None) -> None:
+                 lane: tuple[int, int, int, float] | None = None, altitude: float = 0.5) -> None:
         self.band = band
         self.p = p
         self.lane = lane
@@ -1873,7 +1919,7 @@ class _Puff:
             self.h = min(rng.randint(*p["h"]), max(height_px, 1))
             lo, hi = GRID_BAND_REGION[band]
             # Band regions count from the bottom; the canvas is top-down.
-            centre = (1.0 - rng.uniform(lo, hi)) * height_px
+            centre = (1.0 - _altitude_draw(rng, lo, hi, _altitude_exp(altitude))) * height_px
             self.y0 = int(_clamp(centre - self.h / 2.0, 0.0, max(height_px - self.h, 0)))
             self.x = rng.uniform(0.0, max(width_px, 1))
             self.vx = rng.choice((-1.0, 1.0)) * rng.uniform(0.3, 1.0) * drift * p["drift"]
@@ -1973,13 +2019,15 @@ class PuffSky:
     def _style(self) -> dict[str, dict]:
         return _PUFF_STYLES.get(self.config.cloud_style, _PUFF_STYLES["drift"])
 
-    def _target_count(self, p: dict) -> int:
-        return max(1, round(self.cols / p["spacing"] * self.config.cloud_count))
+    def _target_count(self, p: dict, band: str) -> int:
+        weight = _altitude_weight(self._style(), band, self.config.cloud_altitude)
+        return max(1, round(self.cols / p["spacing"] * self.config.cloud_count * weight))
 
     def _spawn(self, band: str, *, age: float | None = None, lane: tuple[int, int, int, float] | None = None) -> _Puff:
         p = self._lane_params(band, lane[0]) if lane is not None else self._style()[band]
         return _Puff(band, p, self.width_px, self.height_px, self.rng,
-                     self.config.cloud_drift, self.config.cloud_life, age=age, lane=lane)
+                     self.config.cloud_drift, self.config.cloud_life, age=age, lane=lane,
+                     altitude=self.config.cloud_altitude)
 
     def _is_bands(self) -> bool:
         return "lanes" in self._style()["far"]
@@ -2045,22 +2093,27 @@ class PuffSky:
         self.width_px = max(self.cols * PX_X, 1)
         self.height_px = max(self.sky_rows * PX_Y, 1)
         self._baked_style = self.config.cloud_style
+        self._baked_altitude = self.config.cloud_altitude
         if self._is_bands():
             self._bake_bands()
             return
         self.puffs: dict[str, list[_Puff]] = {}
         for band in GRID_ORDER:
             p = self._style()[band]
-            self.puffs[band] = [self._spawn(band) for _ in range(self._target_count(p))]
+            self.puffs[band] = [self._spawn(band) for _ in range(self._target_count(p, band))]
 
     def apply(self, config: SkyConfig) -> None:
         """Retune live. A style change re-bakes the population — every patch
-        was cut to the old style's shape. A count change grows or trims each
+        was cut to the old style's shape — and so does an altitude change
+        off bands, since counts and heights both lean on it. A count change grows or trims each
         band's list in place so the surviving clouds keep their place; drift
         and life reach only clouds born after the change."""
         old = self.config
         self.config = config
         if config.cloud_style != self._baked_style:
+            self._bake()
+            return
+        if not self._is_bands() and config.cloud_altitude != self._baked_altitude:
             self._bake()
             return
         if self._is_bands() and self._band_key(config) != getattr(self, "_baked_bands", None):
@@ -2072,7 +2125,7 @@ class PuffSky:
                     self._bake_bands()  # lanes are laid out from the count; re-cut them
                 return
             for band in GRID_ORDER:
-                want = self._target_count(self._style()[band])
+                want = self._target_count(self._style()[band], band)
                 have = self.puffs[band]
                 while len(have) < want:
                     have.append(self._spawn(band))
