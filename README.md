@@ -154,10 +154,12 @@ Full reference: `cactus --agent-help`.
 
 ### Skills / MCP / Subagent
 
-An agentic runtime needs durable rows and a next-turn frontier. Agents post a
-row, keep working, and inspect the frontier on their next turn; background
-process completion is not treated as an idle-session wake-up. MCP for Desktop
-wraps the same verbs in `server/cactus-mcp`.
+An agentic runtime needs durable rows and a next-turn frontier. On Claude
+Code a blocking ask runs as one backgrounded command, and its exit wakes the
+agent, even from idle. Rows posted `--no-wait` come back through the frontier
+on the next turn. Codex has no idle wake-up, so it posts `--no-wait` and
+collects on the next turn. MCP for Desktop wraps the same verbs in
+`server/cactus-mcp`.
 
 ### Webhooks
 

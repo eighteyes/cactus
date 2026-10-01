@@ -2200,3 +2200,13 @@ async def test_choice_card_renders_tradeoff_marks_colored(store: Store, project:
     styles = {content.plain[s.start:s.end].strip(): str(s.style) for s in content.spans}
     assert styles["✓ tenant ready"] == "green"
     assert styles["✗ couples us [bold]x[/]"] == "red"
+
+
+def test_decompose_instruction_batches_without_waiting():
+    # Follow-ups are a batch: each posts --no-wait, and one backgrounded
+    # get waits on all of them.
+    from cactus.tui import DECOMPOSE_INSTRUCTION
+
+    text = DECOMPOSE_INSTRUCTION.format(key="q7")
+    assert "-p q7 --no-wait" in text
+    assert "backgrounded `cactus get KEY... --wait`" in text

@@ -9,25 +9,28 @@ Cactus is a durable SQLite inbox. Post a row, continue useful work, and act
 when the user answers. Read `cactus --agent-help` once per session for the
 full CLI reference.
 
-## Identity and monitor
+## Identity and waiting
 
 The bundled hooks use Codex's hook-event `session_id` as the Cactus owner.
 Use the `AGENT` value injected at session start on every `ask`, `edit`, and
 `clear`; do not replace it with a terminal pane id.
 
-Before the first row, start and retain a monitor while your rows are open:
+Codex has no wake-up from idle, and `cactus ask` and `cactus run` wait for
+the human by default, which blocks Codex. Post with `--no-wait`; answers
+reach you on the next turn through the frontier hook. When the very next
+step needs an answer, block in the foreground under Codex's shell limit:
 
-    cactus --monitor --json --agent "$AGENT"
+    cactus get KEY --wait --timeout 300 --json
 
-If the host cannot retain a monitor, use a re-armed `--once` waiter or a
-per-agent webhook. Never assume an answer will reach you without one.
+Do not arm a monitor or a `--once` waiter: one that exits while the session
+is idle wakes nobody.
 
 ## Required workflow
 
-1. Post every later decision as `cactus ask ... --agent "$AGENT"`, with
+1. Post every later decision as `cactus ask ... --no-wait --agent "$AGENT"`, with
    `-f PATH` for each file the question is about.
 2. Prefer `--act steer --chosen` when a safe default lets work continue.
-3. Use `cactus run CMD --agent "$AGENT" --why ...` for a command awaiting
+3. Use `cactus run CMD --no-wait --agent "$AGENT" --why ...` for a command awaiting
    approval; after approval, read the row result before running anything.
 4. On `answered`, `elaborate`, `reopened`, or `cleared`, re-read the row and
    act on the new state.

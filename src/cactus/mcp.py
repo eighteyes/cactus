@@ -214,7 +214,7 @@ TOOLS: list[dict[str, Any]] = [
     ),
     _tool(
         "cactus_get",
-        "Read rows by key. With `wait`, block until the first key leaves open (answered, skipped, cleared) or timeout.",
+        "Read rows by key. With `wait`, block until every key leaves open (answered, skipped, cleared) or timeout.",
         {
             "keys": _KEYS,
             "wait": _prop("boolean", "Block until answered."),

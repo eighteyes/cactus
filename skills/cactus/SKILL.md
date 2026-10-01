@@ -56,14 +56,23 @@ PreToolUse hook: rerun it with `run_in_background: true`.
 
 ## Blocked by a permission prompt
 
-Do not stop and do not ask in chat. Post the command as a backgrounded
-call and keep working; it waits for the human, and its exit wakes you:
+Do not stop and do not ask in chat. In Claude Code auto mode the plugin's
+`PermissionDenied` hook has already posted the denied command as a `cactus run`
+row in thread `denied`. Do not post it again: a second row is a second
+approval, and the second run fails. Find the hook's row and wait on it with
+one backgrounded call; its exit wakes you:
+
+    cactus list -s open -t denied --agent "$AGENT"
+    cactus get KEY --wait --agent "$AGENT" --json
+
+Post the row yourself only when no `denied` row holds the command (a host
+without the hook, or a prompt the hook did not see), also backgrounded:
 
     cactus run "pnpm exec playwright install" --agent "$AGENT" --why "denied in auto mode"
 
 `--why` becomes the row's context. The human approves or denies it from the
-TUI; the backgrounded call exits with the answer, `approve` or `deny`. On
-approve, re-read the row: `cactus get KEY --json | jq '.[0].result'`. A non-null `result`
+TUI; the wait exits with the answer, `approve` or `deny`. On approve, re-read
+the row: `cactus get KEY --json | jq '.[0].result'`. A non-null `result`
 means the TUI already ran it (exit code, a 50-line tail, a log path); act on
 that. A null `result` after `approve` means the human approved from the CLI
 and you run it yourself. Never run it before `approve`.
@@ -106,6 +115,13 @@ when the very next step depends on it; otherwise post it `--no-wait`.
 Post every question you can see now, under one thread, with `--no-wait`. Follow
 up in the same thread with `-p KEY` when an answer opens a new question. A set
 of taps is cheaper for the human than a drip of interrupts across an afternoon.
+
+When work blocks on the batch, wait on all of it with one backgrounded call;
+it exits once every key has left `open`, and that exit is your wake-up:
+
+    cactus get q7 q8 q9 --wait --agent "$AGENT" --json
+
+Otherwise leave the batch to the next-turn frontier.
 
 ## Authoring a row
 
@@ -242,9 +258,10 @@ row before rewriting.
 
 `D` in the TUI asks for decomposition through the same `elaborate` event.
 When its instruction says to decompose, do not edit the original row. Post
-each smaller, independently answerable question as a follow-up (`-p q7`) with
-the same `--agent`; the follow-ups inherit its thread. Once they are posted,
-clear the original row with `cactus clear q7 --agent "$AGENT"`.
+each smaller, independently answerable question as a follow-up (`-p q7
+--no-wait`) with the same `--agent`; the follow-ups inherit its thread. Once
+they are posted, clear the original row with `cactus clear q7 --agent
+"$AGENT"`, then wait on the follow-ups as a batch (see Batching).
 
 ## Read back
 
@@ -252,8 +269,10 @@ clear the original row with `cactus clear q7 --agent "$AGENT"`.
     cactus list -s answered -t auth --json        a thread's verdicts
     cactus feed --json --here                     the whole actionable inbox, one document
 
-An answered row carries `selected[]`, `text`, and `skipped`. `skipped` means the
-human saw it and chose not to decide; act on your stated default.
+The answer lives under `.answer`, not at the top level: `.answer.selected[]`,
+`.answer.text`, `.answer.skipped`, `.answer.created_at`. The top-level `text`
+is the question. `skipped` means the human saw it and chose not to decide;
+act on your stated default.
 
 Keys are `qN` within the project. Across projects (`--all`) use the row's
 `ref`, `LABEL:qN`, which every verb accepts as a key.

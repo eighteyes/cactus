@@ -471,3 +471,9 @@ def test_text_render_shows_tradeoff_marks_on_choice_rows(cli):
     assert "✗ bad" in r.stdout
     raw = json.loads(cli("get", "q1", "--json").stdout)[0]
     assert "+ good" in raw["choices"][0]["description"]
+
+
+def test_agent_help_waits_on_the_denied_hook_row(cli):
+    r = cli("--agent-help")
+    assert "-t denied" in r.stdout
+    assert "cactus get KEY --wait" in r.stdout

@@ -22,7 +22,7 @@ command -v cactus >/dev/null 2>&1 || exit 0
 
 input=$(cat)
 
-enabled=$(cactus project status --json 2>/dev/null \
+enabled=$(cactus project-status --json 2>/dev/null \
   | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
 [ "${enabled:-true}" = "true" ] || exit 0
 

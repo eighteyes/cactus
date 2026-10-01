@@ -133,8 +133,9 @@ RUN_TAIL = 12
 # out without losing the original row's thread and context.
 DECOMPOSE_INSTRUCTION = (
     "Decompose this into several smaller, independently answerable questions. "
-    "Post each replacement as a follow-up (`cactus ask ... -p {key} --agent ID`), "
-    "then clear the original row after the replacements are posted."
+    "Post each replacement as a follow-up (`cactus ask ... -p {key} --no-wait --agent ID`), "
+    "clear the original row once they are posted, then wait on the batch with one "
+    "backgrounded `cactus get KEY... --wait`; its exit is your wake-up."
 )
 
 # `confirm` is built at render time from the row's own choice labels — see

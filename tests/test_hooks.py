@@ -375,3 +375,18 @@ def test_wait_guard_is_registered_on_bash():
     entry = cfg["hooks"]["PreToolUse"][0]
     assert entry["matcher"] == "Bash"
     assert "pretooluse-wait.sh" in entry["hooks"][0]["command"]
+
+
+def test_session_start_waits_on_the_denied_row_instead_of_reposting(hook_env, project):
+    # q21/q22: the PermissionDenied hook posts the run row itself; an agent
+    # told to post its own produced a second approval whose run failed.
+    hook_env = dict(hook_env, CACTUS_AGENT="root-session-1")
+    start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
+    assert "-t denied" in start.stdout
+    assert "get KEY --wait" in start.stdout
+    assert "only when no such row exists" in start.stdout
+
+
+def test_hooks_spell_project_status_one_way():
+    for script in [*ROOT_HOOKS.glob("*.sh"), *CODEX_HOOKS.glob("*.sh")]:
+        assert "cactus project status" not in script.read_text(), script.name

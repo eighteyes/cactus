@@ -6,14 +6,14 @@
 #   - print the workflow every agent follows: ask, wait (backgrounded), work, inspect, clear
 #   - resolve the --agent value through identity.sh and print it
 #   - rehome rows this pane posted under a previous identity (after /clear or --resume)
-#   - teach the escape: cactus run when a permission prompt blocks
+#   - teach the escape: wait on the denied hook's cactus run row, post one only when none exists
 #   - print the open rows for this project so an unanswered thread is not forgotten
 set -u
 command -v cactus >/dev/null 2>&1 || exit 0
 # Read first: identity.sh takes the session id from this payload.
 input=$(cat)
 
-enabled=$(cactus project status --json 2>/dev/null \
+enabled=$(cactus project-status --json 2>/dev/null \
   | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
 if [ "${enabled:-true}" != "true" ]; then
   printf '%s\n' "Cactus is disabled for this project. Run \`cactus project activate\` to reactivate it."
@@ -31,7 +31,7 @@ cactus is installed. Its workflow is required, not optional:
   2b work    do everything the answer does not block while it waits
   3 inspect  on your next turn, the frontier lists answered/elaborated rows. Read every review/plan row with \`cactus get KEY --agent ID\` (that tells the human you heard); after acting on its verdict, respond with \`cactus plan|review|edit KEY --agent ID\`
   4 clear    your own rows, by key, once acted on
-Blocked by a permission prompt? Post the command instead of stopping: \`cactus run CMD --agent ID\`, backgrounded. The human approves it from the TUI.
+Blocked by a permission prompt? Do not stop. In auto mode the PermissionDenied hook already posted the command as a \`cactus run\` row in thread denied: find it with \`cactus list -s open -t denied --agent ID\` and wait on it with one backgrounded \`cactus get KEY --wait --agent ID\`. Post \`cactus run CMD --agent ID\` (backgrounded) yourself only when no such row exists. The human approves it from the TUI.
 Load the cactus skill before the first ask.
 EOF
 if [ -n "$agent" ]; then

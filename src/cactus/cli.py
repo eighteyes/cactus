@@ -82,7 +82,10 @@ WORKFLOW (required)
      edit KEY --agent ID
   4  cactus clear KEY --agent ID      own rows only
 
-  blocked by a permission prompt -> cactus run CMD --agent ID
+  blocked by a permission prompt -> the PermissionDenied hook already posted a
+     run row (cactus list -s open -t denied --agent ID); wait on it backgrounded
+     with cactus get KEY --wait. No hook row -> cactus run CMD --agent ID
+  a batch posted --no-wait -> one backgrounded cactus get KEY... --wait
   elaborate event -> cactus edit KEY --agent ID
 
 SYNOPSIS
