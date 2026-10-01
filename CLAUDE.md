@@ -41,6 +41,8 @@ Four layers, one direction of dependency:
     cli.py       argparse verbs, scope resolution, JSON/text rendering, --wait
                  plus AGENT_HELP, the agent-facing roadmap behind --agent-help
     tui.py       Textual answering surface (human): question rail + detail card
+    fieldproc.py where the TUI's field World runs: InlineField (in process) or
+                 ProcessField (spawn child, changed rows over a Pipe)
     watch.py     Textual read-only feed (human)
     monitor.py   plain-stdout event stream (agent): one line per transition
     poke.py      contentless nudge to a row's owning agent via $CACTUS_POKE
@@ -539,6 +541,35 @@ scope.
   skipped, so an answer's seed still lands and reaches the file. `cactus
   garden` prints the file's path, cell count, and drop count (or "empty");
   `--clear` removes it (`nothing to clear` if it was already gone).
+- The field runs in one of two places (`fieldproc.py`), picked by
+  `CactusApp(field_mode=...)`. `inline` (the default, so every `run_test`
+  test, and `run_tui` under `CACTUS_FIELD=inline`): `InlineField` keeps the
+  World in the TUI process (`app.world`), advanced by `_field_timer` at
+  `1 / fps`, and the app polls sky.toml and garden.json itself
+  (`SkyWatch`/`GardenSync`). `process` (`run_tui`'s default): `ProcessField`
+  spawns a daemon child that owns the World, paces at `1 / fps` on real
+  elapsed time, saves garden.json on landing, polls sky.toml and
+  garden.json every `SKY_RELOAD_SECONDS`, and sends flashes and reloaded
+  configs back. There `app.world` is `None`, no timer runs, and the T
+  overlay reads and mutates the parent's own `SkyConfig` copy
+  (`app.sky_config`), dumped first and then pushed with
+  `apply_config(cfg, mtime=...)` so the child's poll skips that write.
+  Frames are `("frame", seq, n_rows, pile_rows, {y: (plain, spans)})`,
+  changed rows only (every row after a resize or a re-show). The child
+  holds at most `CREDIT` (2) unacked frames and merges changed rows while
+  it waits; the parent reads on `loop.add_reader`, drains everything
+  ready, acks each frame, and paints only the merged newest state.
+  Commands send only on change: drop, resize, pile_only, visible (hidden:
+  the child keeps advancing, so a hidden garden still grows, but renders
+  nothing), fps, config, reseed, stop. `run_tui` calls
+  `resource_tracker.ensure_running()` before `App.run()` — spawn after
+  Textual swaps the std streams fails with `bad value(s) in fds_to_keep`;
+  a spawn failure falls back to inline with a flash. `on_unmount` and
+  `atexit` stop the child. `FieldView` is a Line-API widget: one cached
+  `Strip` per row, `refresh(Region)` for changed rows only, cell-identical
+  to the old `Static.update` path bar Textual's mouse-offset meta.
+  `_rebuild_card` only re-fits the field (`_fit_field`); it never renders
+  a frame.
 - Card first: rows go to the question before the sky. `#card-text` is
   `height: auto` capped at the card (then it scrolls), `#keybar` docks to
   the card's bottom, and `#field` is `1fr` with no minimum, so the field gets

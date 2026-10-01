@@ -26,11 +26,17 @@ Responsibilities:
   the card shows `[..] label - reason`, and `A` accepts it like the digit.
 - The garden (the landed pile) is shared and persisted: it survives a
   restart and stays in sync across every TUI on the same database.
+- The field child (`ProcessField`) streams changed rows, lands a seed,
+  writes the garden itself, and stops with no process left behind; the
+  Line-API `FieldView` matches the old Static output cell for cell and
+  repaints only changed rows; a process-mode app paints the child's frames.
 """
 
 from __future__ import annotations
 
 import asyncio
+import random
+import select
 import time
 from pathlib import Path
 
@@ -40,8 +46,9 @@ from textual.widgets._footer import FooterKey
 
 from cactus import garden
 from cactus.field import World
+from cactus.fieldproc import ProcessField, text_rows
 from cactus.store import Choice, Store
-from cactus.tui import CactusApp, QuestionBlock
+from cactus.tui import CactusApp, FieldView, QuestionBlock
 
 # The projects pane (P / I / A) is a separate change; until it lands these
 # tests skip rather than fail, and start running the moment it does.
@@ -2511,3 +2518,140 @@ async def test_A_on_the_projects_page_still_activates(store: Store, project: str
         await pilot.press("A")
         await pilot.pause()
     assert store.get(q.key, project=project).status == "open"  # not accepted
+
+
+# ---- field process and Line-API field view -------------------------------
+
+
+def _drain_until(field: ProcessField, rows: dict[int, tuple], done, timeout: float) -> bool:
+    """Feed `field`'s frames into `rows` (the parent's merged view) until
+    `done(rows)` holds or `timeout` runs out."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([field.fileno()], [], [], 0.1)
+        if not ready:
+            continue
+        upd = field.drain()
+        assert not upd.closed and upd.error is None
+        if upd.n_rows is not None:
+            for y in [y for y in rows if y >= upd.n_rows]:
+                del rows[y]
+        rows.update(upd.rows)
+        if done(rows):
+            return True
+    return False
+
+
+def test_process_field_streams_rows_lands_a_seed_and_stops_clean(
+    scratch_env: dict[str, str], tmp_path: Path,
+) -> None:
+    """The child owns the World: frames arrive as changed rows, a dropped
+    seed lands (the pile-only rows stop being blank, and the child wrote the
+    landing to garden.json itself), and stop leaves no process behind."""
+    garden_path = tmp_path / "garden.json"
+    field = ProcessField(garden_path=garden_path, sky_path=tmp_path / "sky.toml", cols=20, rows=6, seed=1)
+    field.start()
+    try:
+        rows: dict[int, tuple] = {}
+        assert _drain_until(field, rows, lambda r: len(r) == 6, 20)
+        assert all(len(plain) == 20 for plain, _ in rows.values())
+        field.set_pile_only(True)
+        field.drop(10)
+        # A seed falls for LANDING_SECONDS (12 s) of real time.
+        landed = _drain_until(field, rows, lambda r: any(p.strip() for p, _ in r.values()), 40)
+        assert landed
+        assert field.pile_rows() >= 3
+        deadline = time.monotonic() + 5
+        while not garden_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert garden.read(garden_path)["cells"]
+    finally:
+        field.stop()
+    assert not field.alive()
+    assert field._proc.exitcode == 0
+
+
+async def test_field_view_repaints_only_changed_rows_and_matches_static() -> None:
+    """FieldView draws a World frame cell for cell like the old Static path
+    (char, colour, background — Static only adds mouse-offset meta), and a
+    frame that changes one row refreshes that row alone."""
+    from rich.text import Text as RichText
+    from textual.app import App, ComposeResult
+    from textual.geometry import Region
+
+    width, height = 40, 8
+    world = World(width, height, rng=random.Random(3))
+    for col in range(0, width, 7):
+        world.drop(col)
+    for _ in range(40):
+        world.advance(0.05)
+    text = world.render()
+
+    class Probe(App):
+        CSS = f"#old, #new {{ height: {height}; width: {width}; background: $surface; }}"
+
+        def compose(self) -> ComposeResult:
+            yield Static(id="old", markup=False)
+            yield FieldView(id="new")
+
+    def cells(widget) -> list[tuple]:
+        return [
+            (ch, seg.style.clear_meta_and_links() if seg.style else None)
+            for strip in widget.render_lines(Region(0, 0, width, height))
+            for seg in strip
+            for ch in seg.text
+        ]
+
+    app = Probe()
+    async with app.run_test(size=(width, height * 2)) as pilot:
+        old, new = app.query_one("#old", Static), app.query_one("#new", FieldView)
+        old.update(text)
+        new.show_text(text)
+        await pilot.pause()
+        assert cells(new) == cells(old)
+
+        refreshed: list[Region] = []
+        real_refresh = new.refresh
+        new.refresh = lambda *regions, **kw: (refreshed.extend(regions), real_refresh(*regions, **kw))[1]
+        rows = text_rows(text)
+        new.apply_frame(height, dict(enumerate(rows)))
+        assert refreshed == []  # nothing changed, nothing repainted
+        new.apply_frame(height, {3: ("x" * width, ((0, width, "#ff0000"),))})
+        assert refreshed == [Region(0, 3, width, 1)]
+        await pilot.pause()
+        changed = RichText("\n".join(p for p, _ in rows[:3]) + "\n" + "x" * width + "\n"
+                           + "\n".join(p for p, _ in rows[4:]))
+        assert "".join(c for c, _ in cells(new)) == changed.plain.replace("\n", "")
+
+
+async def test_process_mode_app_paints_child_frames_and_stops_the_child(store: Store, project: str) -> None:
+    """`field_mode="process"`: the app holds no World, the child's frames
+    land in FieldView, a backtick drop and a tuning nudge reach the child
+    without error, and unmounting stops it."""
+    from multiprocessing import resource_tracker
+
+    resource_tracker.ensure_running()  # as run_tui does before App.run()
+    store.ask("pick one", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+    app = CactusApp(store, project=project, field_mode="process")
+    async with app.run_test(size=(100, 40)) as pilot:
+        assert app.world is None
+        assert isinstance(app.field, ProcessField) and app.field.alive()
+        widget = app.query_one("#field", FieldView)
+        deadline = time.monotonic() + 20
+        while not widget._rows and time.monotonic() < deadline:
+            await pilot.pause(0.1)
+        assert len(widget._rows) == widget.size.height
+        assert app.field.cols == widget.size.width
+        await pilot.press("grave_accent")
+        await pilot.pause(0.2)
+        assert app._field_timer is None  # the child paces itself
+        await pilot.press("T")
+        await pilot.pause()
+        before = app.sky_config.fps
+        app.tuning_index = next(i for i, r in enumerate(app.tuning_rows) if r.name == "fps")
+        await pilot.press("l")
+        await pilot.pause(0.3)
+        assert app.sky_config.fps != before  # the overlay's copy moved on the spot
+        assert app.field.alive()
+        child = app.field
+    assert not child.alive()

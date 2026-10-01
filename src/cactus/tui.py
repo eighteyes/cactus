@@ -25,12 +25,17 @@ Responsibilities:
 - Show a `T` tuning overlay listing every `SkyConfig` key, nudge it live
   with h/l/H/L, reset it with r, and keep the on-disk file and the running
   sky in agreement on every nudge.
-- Perf (v6f): the field timer samples at `1 / SkyConfig.fps` rather than a
-  fixed interval, restarted by `_sync_field_interval` whenever `fps` changes
-  (a config reload or a tuning nudge) — `World.advance(dt)` still gets the
-  real elapsed time either way. `_render_field` skips `FieldView.update`
-  outright when the frame's text and spans are unchanged from the last one
-  drawn.
+- Keep the field off the keypress path (fieldproc.py): `run_tui` runs the
+  World in a child process (`ProcessField`) that paces itself at `1 / fps`,
+  owns the sky.toml reload and garden.json, and sends changed rows only;
+  `_on_field_ready` reads them off the event loop's selector and hands them
+  to `FieldView`. Under `run_test` and `CACTUS_FIELD=inline` the World stays
+  here (`InlineField`, `self.world`), advanced by a timer at `1 / fps` that
+  `_sync_field_interval` restarts whenever `fps` changes, and rendered by
+  `_render_field`.
+- `FieldView` draws with the Line API: one cached `Strip` per row and a
+  refresh of only the rows that changed, so a frame costs its changed rows,
+  not a full `Static.update`.
 """
 
 from __future__ import annotations
@@ -46,27 +51,29 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.geometry import Region
+from textual.strip import Strip
+from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
 from . import garden, tradeoffs
 from .field import World
+from .fieldproc import FIELD_MAX_DT, SKY_RELOAD_SECONDS, GardenSync, InlineField, ProcessField, SkyWatch, text_rows
 from .scope import project_label
-from .sky import (SkyConfig, TuneField, config_path as sky_config_path, slots as sky_slots, tuning_fields_for,
+from .sky import (SkyConfig, TuneField, slots as sky_slots, tuning_fields_for,
                   tuning_panel_of, tuning_panel_order)
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
 
 POLL_INTERVAL = 0.5
-# The field's per-frame `dt` cap (v6b): a stalled or suspended terminal must
-# never hand `World.advance` a giant elapsed time and make the sky or a
-# falling seed jump.
-FIELD_MAX_DT = 0.5
 # Card first: the field gets only the rows the card leaves, and hides rather
 # than squashes when fewer than this are left (sky plus the 2 ground rows).
 FIELD_MIN_ROWS = 4
@@ -485,10 +492,72 @@ def _card_lines(
     return out
 
 
-class FieldView(Static):
-    """The pachinko field strip inside the answering card; content is set by
-    CactusApp._render_field, which also keeps the world sized to this
-    widget."""
+class FieldView(Widget):
+    """The pachinko field strip inside the answering card, drawn with
+    Textual's Line API: one cached `Strip` per row, built from `(plain,
+    spans)` rows with a cached `Style.parse` per style string, and only
+    the rows that changed are refreshed. Frames arrive as `{y: row}` from
+    `CactusApp` (a `ProcessField` frame, or the inline World's `Text` via
+    `show_text`); `CactusApp._render_field` keeps the world sized to it."""
+
+    def __init__(self, *, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._rows: list[tuple[str, tuple]] = []
+        self._strips: dict[int, Strip] = {}
+        self._styles: dict[str, Style] = {}
+        self._base: Style | None = None
+
+    def show_text(self, text: Text) -> None:
+        """Draw a whole rendered field `Text`; unchanged rows stay put."""
+        rows = text_rows(text)
+        self.apply_frame(len(rows), dict(enumerate(rows)))
+
+    def apply_frame(self, n_rows: int, rows: dict[int, tuple[str, tuple]]) -> None:
+        """Adopt `n_rows` and the changed `rows`, refreshing only the rows
+        whose content actually moved (or that a shrink blanked)."""
+        width = self.size.width
+        current = self._rows
+        if n_rows < len(current):
+            for y in range(n_rows, len(current)):
+                self._strips.pop(y, None)
+                self.refresh(Region(0, y, width, 1))
+            del current[n_rows:]
+        elif n_rows > len(current):
+            current.extend([("", ())] * (n_rows - len(current)))
+        for y, row in rows.items():
+            if y >= n_rows or current[y] == row:
+                continue
+            current[y] = row
+            self._strips.pop(y, None)
+            self.refresh(Region(0, y, width, 1))
+
+    def _strip(self, plain: str, spans: tuple) -> Strip:
+        styles = self._styles
+        segments: list[Segment] = []
+        pos = 0
+        for start, end, name in spans:
+            if start > pos:
+                segments.append(Segment(plain[pos:start]))
+            style = styles.get(name)
+            if style is None:
+                style = styles[name] = Style.parse(name)
+            segments.append(Segment(plain[start:end], style))
+            pos = end
+        if pos < len(plain):
+            segments.append(Segment(plain[pos:]))
+        return Strip(segments).apply_style(self._base)
+
+    def render_line(self, y: int) -> Strip:
+        base = self.visual_style.rich_style
+        if base != self._base:
+            self._base = base  # theme or CSS change: every cached strip is stale
+            self._strips.clear()
+        strip = self._strips.get(y)
+        if strip is None:
+            if y >= len(self._rows):
+                return Strip.blank(self.size.width, base)
+            strip = self._strips[y] = self._strip(*self._rows[y])
+        return strip
 
     def on_resize(self, event: events.Resize) -> None:
         app = self.app
@@ -812,7 +881,7 @@ class CactusApp(App[int]):
         Binding("9", "select_choice(9)", "9", show=False),
     ]
 
-    def __init__(self, store: Store, project: str | None = None) -> None:
+    def __init__(self, store: Store, project: str | None = None, *, field_mode: str = "inline") -> None:
         super().__init__()
         self.store = store
         # Route a record-write failure to the status line instead of stderr,
@@ -896,10 +965,20 @@ class CactusApp(App[int]):
         self.file_pending_timer = None
         # `o` inline preview of the focused row's files; resets on a row move.
         self.preview_open = False
-        # Field: an in-memory sky/weather/cactus simulation living inside the
-        # card, anchored to the bottom under the key bar. Sized 1x10 until
-        # the first render, when the FieldView's actual size is known.
-        self.world = World(cols=1, rows=10)
+        # Garden persistence: the landed pile is shared across every TUI on
+        # this database, saved beside it (garden.py) and reloaded whenever
+        # another process's write is newer than ours.
+        self._garden_path = garden.garden_path(self.store.path)
+        # Field: a sky/weather/cactus simulation living inside the card,
+        # anchored to the bottom under the key bar. Sized 1x10 until the
+        # first render, when the FieldView's actual size is known. `inline`
+        # (tests, `CACTUS_FIELD=inline`) keeps the World here, advanced by
+        # `_field_timer`; `process` (`run_tui`) runs it in a child that owns
+        # the World, the sky.toml reload and the garden file (fieldproc.py).
+        if field_mode == "process":
+            self.field: InlineField | ProcessField = ProcessField(garden_path=self._garden_path)
+        else:
+            self.field = InlineField(World(cols=1, rows=10))
         self._field_timer = None
         # Continuous time (v6b): `_field_tick` measures real elapsed seconds
         # between calls, clamped to 0.5 s so a stalled terminal never makes
@@ -913,18 +992,26 @@ class CactusApp(App[int]):
         # to the field widget, so an unchanged sky never repaints.
         self._field_last_signature: tuple[str, list] | None = None
         # Sky tuning: reread the config file every SKY_RELOAD_SECONDS of wall
-        # time, only acting on it when its mtime has actually moved.
-        self._sky_config_mtime: float | None = None
+        # time, only acting on it when its mtime has actually moved. Inline
+        # only; the child polls its own in process mode.
+        self._sky_watch = SkyWatch()
         self._sky_reload_last: float | None = None
         # Each key bar glyph's field column (its x from the card's left edge,
         # which `#field` shares), rebuilt on every `_rebuild_keybar` —
         # `_field_column` reads this to drop a seed under the key that answered.
         self._keybar_x: dict[str, int] = {}
-        # Garden persistence: the landed pile is shared across every TUI on
-        # this database, saved beside it (garden.py) and reloaded whenever
-        # another process's write is newer than ours.
-        self._garden_path = garden.garden_path(self.store.path)
-        self._garden_mtime: float | None = None
+        self._garden = GardenSync(self._garden_path)
+
+    @property
+    def world(self) -> World | None:
+        """The in-process World; `None` when a child process owns it."""
+        return self.field.world
+
+    @property
+    def sky_config(self) -> SkyConfig:
+        """The SkyConfig the tuning overlay reads and mutates: the running
+        World's own inline, the parent's copy in process mode."""
+        return self.field.config
 
     @property
     def pending_text(self) -> str:
@@ -957,7 +1044,7 @@ class CactusApp(App[int]):
             with Vertical(id="main"):
                 with Vertical(id="card"):
                     yield Static(id="card-text", markup=False)
-                    yield FieldView(id="field", markup=False)
+                    yield FieldView(id="field")
                     yield KeyBar(id="keybar", markup=False)
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
         yield Static(id="settings-panel", markup=False)
@@ -983,6 +1070,8 @@ class CactusApp(App[int]):
         self.set_interval(POLL_INTERVAL, self._poll)
         self._reload_sky_config(initial=True)
         self._load_garden()
+        if isinstance(self.field, ProcessField):
+            self._start_field_process()
         self._sky_reload_last = time.monotonic()
         self._field_last_time = time.monotonic()
         self._sync_field_interval()
@@ -1026,7 +1115,7 @@ class CactusApp(App[int]):
         pile_only = not self.tui_settings["field"] and self.tui_settings["pile_only"]
         floor = FIELD_MIN_ROWS
         if pile_only:
-            rows = self.world.pile_rows()
+            rows = self.field.pile_rows()
             widget.styles.max_height = rows
             floor = min(rows, FIELD_MIN_ROWS)
         else:
@@ -1035,6 +1124,9 @@ class CactusApp(App[int]):
         show = (self.tui_settings["field"] or self.tui_settings["pile_only"]) and spare >= floor
         if widget.display != show:
             widget.display = show
+        # A field child renders nothing while hidden and resends every row
+        # when shown again, Resize or not.
+        self.field.set_visible(show)
 
     def _rebuild_project_banner(self) -> None:
         banner = self.query_one("#project-banner", Static)
@@ -1294,7 +1386,7 @@ class CactusApp(App[int]):
         self._hide_input()
         self._close_other_panels("tuning")
         self.tuning_open = True
-        self.tuning_rows = tuning_fields_for(self.world.sky.config)
+        self.tuning_rows = tuning_fields_for(self.sky_config)
         if self.tuning_rows:
             self.tuning_index = max(0, min(self.tuning_index, len(self.tuning_rows) - 1))
         else:
@@ -1317,21 +1409,25 @@ class CactusApp(App[int]):
     def _tuning_obj(self, group: str) -> Any:
         """The live object a tuning row's field lives on: a grid's own
         `GridConfig`, or the `SkyConfig` itself for a `shared` row."""
-        cfg = self.world.sky.config
+        cfg = self.sky_config
         return cfg if group == "shared" else getattr(cfg, group)
 
     def _apply_and_dump_tuning(self) -> None:
-        """Push the mutated config into the running grids and to disk in one
-        step, so the overlay, the sky, and the file never disagree — then
-        remember the write's own mtime so the reload timer skips it."""
-        cfg = self.world.sky.config
-        self.world.apply_sky_config(cfg)
-        self._sync_field_interval()
+        """Push the mutated config to disk and into the running grids in one
+        step, so the overlay, the sky, and the file never disagree — with
+        the write's own mtime, so the reload poll (here or in the field
+        child) skips it. Dumped first: the child must get that mtime in the
+        same message as the config it describes."""
+        cfg = self.sky_config
         path = cfg.dump()
         try:
-            self._sky_config_mtime = path.stat().st_mtime
+            mtime: float | None = path.stat().st_mtime
         except OSError:
-            pass
+            mtime = None
+        if mtime is not None:
+            self._sky_watch.mtime = mtime
+        self.field.apply_config(cfg, mtime=mtime)
+        self._sync_field_interval()
 
     def _move_tuning_cursor(self, delta: int) -> None:
         if not self.tuning_rows:
@@ -1448,7 +1544,7 @@ class CactusApp(App[int]):
         saved-skies grid, then only the current panel's rows."""
         if not self.tuning_rows:
             return ["tuning", "", "no tunable keys", "", "esc or T  return to inbox"], 0
-        cfg = self.world.sky.config
+        cfg = self.sky_config
         engine = cfg.sky_engine + (f" / {cfg.cloud_style}" if cfg.sky_engine == "puffs" else "")
         panels = self._tuning_panels()
         current = self._current_tuning_panel()
@@ -1483,7 +1579,7 @@ class CactusApp(App[int]):
         the nearest row above it — a nudge of `sky_engine` or `perspective`
         reshapes the page on the spot."""
         current = self.tuning_rows[self.tuning_index] if 0 <= self.tuning_index < len(self.tuning_rows) else None
-        self.tuning_rows = tuning_fields_for(self.world.sky.config)
+        self.tuning_rows = tuning_fields_for(self.sky_config)
         if current is None or not self.tuning_rows:
             self.tuning_index = 0
             return
@@ -1899,7 +1995,7 @@ class CactusApp(App[int]):
             text.update("inbox empty — waiting for questions")
             self._rebuild_keybar()
             self.refresh_bindings()
-            self.call_after_refresh(self._render_field)
+            self.call_after_refresh(self._fit_field)
             return
         card.border_title = f"answering  {q.key}"
         card.set_class(q.heard_state == "sent", "-sent")
@@ -1928,8 +2024,10 @@ class CactusApp(App[int]):
         self._rebuild_keybar()
         self.refresh_bindings()
         # Card first: once the new text is laid out, re-fit the field to the
-        # rows it left and resize the World to match.
-        self.call_after_refresh(self._render_field)
+        # rows it left. Fit only — a changed field size reaches the World
+        # through FieldView's own Resize; the frame itself is the timer's
+        # (inline) or the child's (process), never a j/k keypress's.
+        self.call_after_refresh(self._fit_field)
 
     def _keybar_items(self, q: Question | None) -> list[tuple[str, str]]:
         """`(key, label)` pairs for the row key bar, in display order —
@@ -2714,7 +2812,7 @@ class CactusApp(App[int]):
                     self.flash = "save cancelled"
                 elif event.key == "enter":
                     name = self.tuning_name_buf.strip() or None
-                    self.world.sky.config.save_slot(n, name=name)
+                    self.sky_config.save_slot(n, name=name)
                     self.flash = f"saved slot {n} as {name}" if name else f"saved slot {n}"
                     self.tuning_name_slot = None
                     self.tuning_name_buf = ""
@@ -2780,7 +2878,7 @@ class CactusApp(App[int]):
                     self.flash = f"slot {n} is empty"
                     self._rebuild_status_bar()
                 else:
-                    self.world.apply_sky_config(cfg)
+                    self.field.apply_config(cfg)
                     self._apply_and_dump_tuning()
                     name = sky_slots().get(n)
                     self.flash = f"recalled slot {n}: {name}" if name else f"recalled slot {n}"
@@ -3535,7 +3633,7 @@ class CactusApp(App[int]):
     def action_drop_seed(self) -> None:
         """Backtick/tilde (q368): drop a seed at a random column, any time
         outside free-text mode — no answer recorded, nothing else changes."""
-        self.world.drop(self.world.rng.randrange(self.world.cols))
+        self.field.drop(self.field.random_column())
         self._render_field()
 
     def action_grave(self) -> None:
@@ -3595,10 +3693,10 @@ class CactusApp(App[int]):
         timer (started in `on_mount`) keeps ticking whether or not one is
         falling.
         """
-        self.world.drop(self._field_column(key))
+        self.field.drop(self._field_column(key))
         self._render_field()
 
-    SKY_RELOAD_SECONDS = 2.0
+    SKY_RELOAD_SECONDS = SKY_RELOAD_SECONDS
 
     def _sync_field_interval(self) -> None:
         """(Re)start `_field_timer` at `1 / fps` (v6f) if `fps` has actually
@@ -3606,8 +3704,12 @@ class CactusApp(App[int]):
         unrelated tuning nudge would otherwise briefly stall the field.
         `advance(dt)` still measures true elapsed wall time, so this only
         changes how often a frame is sampled and drawn, never how fast the
-        sky or a falling seed moves."""
-        interval = 1.0 / max(self.world.sky.config.fps, 1)
+        sky or a falling seed moves. In process mode the child paces
+        itself: this only passes `fps` on, and no timer drives a World."""
+        if not self.field.inline:
+            self.field.set_fps(self.sky_config.fps)
+            return
+        interval = 1.0 / max(self.sky_config.fps, 1)
         if self._field_timer is not None and interval == self._field_interval:
             return
         if self._field_timer is not None:
@@ -3619,7 +3721,10 @@ class CactusApp(App[int]):
         """One frame: `dt` is the real elapsed time since the last call,
         clamped so a stalled terminal (a suspended session, a slow poll)
         never makes the field jump — never exactly `TICK_SECONDS`, which is
-        only this timer's sampling rate, not the physics' own step size."""
+        only this timer's sampling rate, not the physics' own step size.
+        Inline only: a field child paces and advances its own World."""
+        if self.world is None:
+            return
         now = time.monotonic()
         last = self._field_last_time if self._field_last_time is not None else now
         dt = min(max(now - last, 0.0), FIELD_MAX_DT)
@@ -3633,81 +3738,93 @@ class CactusApp(App[int]):
             self._reload_garden_if_changed()
         self._render_field()
 
+    def _flash_field(self, message: str | None) -> None:
+        if message is not None:
+            self.flash = message
+            self._rebuild_status_bar()
+
     def _reload_sky_config(self, *, initial: bool = False) -> None:
         """Best-effort: a missing file is the defaults, a bad file keeps the
-        config already running and flashes why instead of raising."""
-        path = sky_config_path()
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = None
-        if not initial and mtime == self._sky_config_mtime:
+        config already running and flashes why instead of raising. In
+        process mode only the initial load runs here — it seeds the
+        parent's copy the child starts from; the child polls after that."""
+        if not initial and not self.field.inline:
             return
-        self._sky_config_mtime = mtime
-        try:
-            config = SkyConfig.load(path)
-        except ValueError as exc:
-            self.flash = f"sky config: {exc}"
-            self._rebuild_status_bar()
-            return
-        self.world.apply_sky_config(config)
-        self._sync_field_interval()
-        if not initial:
-            self.flash = "sky config reloaded"
-            self._rebuild_status_bar()
+        config, flash = self._sky_watch.poll(initial=initial)
+        if config is not None:
+            if self.field.inline:
+                self.field.apply_config(config)
+            else:
+                self.field.config = config
+                self.field.sky_mtime = self._sky_watch.mtime
+            self._sync_field_interval()
+        self._flash_field(flash)
 
     def _load_garden(self) -> None:
         """The garden (shared landed pile) is a file beside the database, not
         a per-process default — every TUI on this database reads the same
         one. A missing file leaves the world's fresh, empty pile as-is; a
-        malformed one flashes and is otherwise ignored."""
-        try:
-            mtime = self._garden_path.stat().st_mtime
-        except OSError:
-            return
-        data = garden.read(self._garden_path)
-        if data is None:
-            return
-        try:
-            garden.load_into(self.world, data)
-        except ValueError:
-            self.flash = "garden.json unreadable"
-            self._rebuild_status_bar()
-            return
-        self._garden_mtime = mtime
+        malformed one flashes and is otherwise ignored. The field child
+        loads its own in process mode."""
+        if self.world is not None:
+            self._flash_field(self._garden.load(self.world))
 
     def _save_garden(self) -> None:
         """Flush landings since the last save (`World.landed_since_save`) to
         the shared garden file. Fails soft: a write error leaves the counter
-        alone so the next tick retries."""
-        try:
-            self._garden_mtime = garden.save(self.world, self._garden_path)
-        except OSError:
-            return
-        self.world.landed_since_save = 0
+        alone so the next tick retries. Inline only."""
+        if self.world is not None:
+            self._garden.save(self.world)
 
     def _reload_garden_if_changed(self) -> None:
         """Another TUI on this database may have written a newer garden —
         polled at the same `SKY_RELOAD_SECONDS` cadence as the sky config,
-        one clock for both. Fails soft on OSError."""
+        one clock for both. Fails soft on OSError. Inline only."""
+        if self.world is not None:
+            self._flash_field(self._garden.reload_if_changed(self.world))
+
+    def _start_field_process(self) -> None:
+        """Spawn the field child and read its frames off the event loop's own
+        selector, so a frame costs this process only the rows it repaints."""
+        assert isinstance(self.field, ProcessField)
         try:
-            mtime = self._garden_path.stat().st_mtime
-        except OSError:
+            self.field.start()
+        except (OSError, ValueError) as exc:
+            # Spawn can refuse inside some harnesses; fall back to inline.
+            self.field = InlineField(World(cols=1, rows=10))
+            self._reload_sky_config(initial=True)
+            self._load_garden()
+            self._flash_field(f"field process: {exc}; running inline")
             return
-        if mtime == self._garden_mtime:
+        asyncio.get_running_loop().add_reader(self.field.fileno(), self._on_field_ready)
+
+    def _on_field_ready(self) -> None:
+        """Drain every message the child has ready and paint only the newest
+        merged state: changed rows, pile height, flashes, a reloaded config."""
+        field = self.field
+        if not isinstance(field, ProcessField):
             return
-        data = garden.read(self._garden_path)
-        if data is None:
+        upd = field.drain()
+        if upd.closed:
+            asyncio.get_running_loop().remove_reader(field.fileno())
+            self._flash_field(upd.error or "field process stopped")
+            return
+        if upd.error is not None:
+            self._flash_field(f"field: {upd.error}")
+        for message in upd.flashes:
+            self._flash_field(message)
+        if upd.config is not None and self.tuning_open:
+            self._render_tuning()
+        if upd.frames == 0:
             return
         try:
-            garden.load_into(self.world, data)
-        except ValueError:
-            self.flash = "garden.json unreadable"
-            self._rebuild_status_bar()
+            widget = self.query_one("#field", FieldView)
+        except NoMatches:
             return
-        self._garden_mtime = mtime
-        self.flash = "garden updated"
-        self._rebuild_status_bar()
+        if not self.tui_settings["field"] and self.tui_settings["pile_only"]:
+            self._fit_field()  # pile-only height follows the pile
+        if upd.n_rows is not None:
+            widget.apply_frame(upd.n_rows, upd.rows)
 
     def on_resize(self, event: events.Resize) -> None:
         """A terminal resize re-fits the field once the layout settles; a
@@ -3718,6 +3835,12 @@ class CactusApp(App[int]):
         if self._field_timer is not None:
             self._field_timer.stop()
             self._field_timer = None
+        if isinstance(self.field, ProcessField) and self.field.started:
+            try:
+                asyncio.get_running_loop().remove_reader(self.field.fileno())
+            except (RuntimeError, OSError, ValueError):
+                pass
+            self.field.stop()
 
     def _render_field(self) -> None:
         try:
@@ -3731,24 +3854,25 @@ class CactusApp(App[int]):
         # layout change no event reached (a hidden field gets no Resize).
         self._fit_field()
         if not widget.display:
+            self.field.set_visible(False)
             return  # hidden by the setting or by the card — nothing to draw
         if widget.size.height == 0:
             return  # just shown, not laid out yet; its Resize draws it
         pile_only = not self.tui_settings["field"] and self.tui_settings["pile_only"]
-        width = max(widget.size.width, 1)
-        height = max(widget.size.height, 1)
-        if width != self.world.cols or height != self.world.rows:
-            self.world.resize(width, height)
+        self.field.set_visible(True)
+        self.field.set_pile_only(pile_only)
+        self.field.resize(max(widget.size.width, 1), max(widget.size.height, 1))
+        if self.world is None:
+            return  # process mode: the child's frames arrive via _on_field_ready
         text = self.world.render(pile_only=pile_only)
         # Change-only redraw (v6f, perf): a still sky between two samples at
-        # a low `fps` is common, and Textual's own `update` still triggers a
-        # layout/paint even when nothing changed — skip it when this frame's
+        # a low `fps` is common — skip even the row diff when this frame's
         # plain text and spans are identical to the last one drawn.
         signature = (text.plain, text.spans)
         if signature == self._field_last_signature:
             return
         self._field_last_signature = signature
-        widget.update(text)
+        widget.show_text(text)
 
     # ---- undo -----------------------------------------------------------
 
@@ -3844,7 +3968,16 @@ class CactusApp(App[int]):
 
 
 def run_tui(store: Store, project: str | None = None) -> int:
-    """Run the interactive Textual answering app. Returns a process exit code."""
-    app = CactusApp(store, project=project)
+    """Run the interactive Textual answering app. Returns a process exit code.
+
+    The field runs in a child process unless `CACTUS_FIELD=inline`. Spawn
+    needs multiprocessing's resource tracker started while the real std
+    streams are still in place — Textual swaps them inside `run()`."""
+    mode = "inline" if os.environ.get("CACTUS_FIELD", "").strip().lower() == "inline" else "process"
+    if mode == "process":
+        from multiprocessing import resource_tracker
+
+        resource_tracker.ensure_running()
+    app = CactusApp(store, project=project, field_mode=mode)
     result = app.run()
     return int(result) if isinstance(result, int) else 0
