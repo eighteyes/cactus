@@ -7,11 +7,12 @@ shows the outstanding frontier.
 Use the exact `--agent` value it prints. Do not substitute a pane id: it can
 be inherited by a different conversation.
 
-Do not start `cactus --monitor`. Post rows, keep working, and let any
-background work finish. On your next turn, the frontier lists answered or
-elaborated rows; read them with `cactus get KEY --agent "$AGENT"` before
-acting. This deliberately avoids treating a background process as an idle
-session wake-up.
+Do not start `cactus --monitor`. `cactus ask` and `cactus run` wait for the
+human by default. Post each blocking ask as one backgrounded command (Bash
+`run_in_background`), keep working, and treat its exit as the wake-up. A
+PreToolUse hook refuses the foreground form. `--no-wait` posts and returns;
+those rows, and review/plan rows, arrive in the next-turn frontier. Read a
+row with `cactus get KEY --agent "$AGENT"` before acting.
 
 The Claude plugin's `UserPromptSubmit` and `PermissionDenied` hooks surface
 the frontier and turn a denied Bash command into a `cactus run` row. The

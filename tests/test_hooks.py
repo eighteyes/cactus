@@ -10,6 +10,8 @@ Responsibilities:
   enabled path produces the documented output, and a project disabled with
   `cactus project ignore` is not read as enabled by a stray jq `false` value.
 - Check both Stop hooks are on by default and silent with CACTUS_STOP_HOOK=0.
+- Check the PreToolUse wait guard blocks a foreground waiting ask/run and
+  allows run_in_background, --no-wait, non-waiting acts and unrelated commands.
 """
 
 from __future__ import annotations
@@ -123,7 +125,7 @@ def test_root_enabled_project(cli, hook_env, project):
     assert "--monitor" not in start.stdout
     assert "next turn" in start.stdout
 
-    asked = cli("ask", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
+    asked = cli("ask", "--no-wait", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
     assert asked.returncode == 0
     key = asked.stdout.strip()
     assert key
@@ -217,7 +219,7 @@ def test_codex_enabled_project(cli, hook_env, project):
     assert "--monitor" not in start.stdout
     assert "--wait" in start.stdout
 
-    asked = cli("ask", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
+    asked = cli("ask", "--no-wait", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
     assert asked.returncode == 0
     key = asked.stdout.strip()
     assert key
@@ -279,7 +281,7 @@ def test_stop_hooks_do_not_require_monitor(cli, hook_env, project):
     """Open rows are normal between turns; neither Stop hook demands a monitor."""
     cli("project", "activate", cwd=project)
     agent = "stop-optin-1"
-    assert cli("ask", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project).returncode == 0
+    assert cli("ask", "--no-wait", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project).returncode == 0
 
     on = dict(hook_env, CACTUS_AGENT=agent)
     payload = {"session_id": agent, "cwd": project}
@@ -313,3 +315,63 @@ def test_stop_hook_on_by_default_holds_a_turn_without_an_ask(hook_env, project, 
     asked = {"cwd": project, "transcript_path": _transcript(
         tmp_path, {"type": "tool_use", "name": "Bash", "input": {"command": "cactus ask hi --agent a"}})}
     assert run_hook(script, asked, env, project).stdout.strip() == ""
+
+
+# --------------------------------------------------------------------------
+# PreToolUse wait guard: a waiting cactus ask/run must run in the background
+# --------------------------------------------------------------------------
+
+
+def _wait_guard(cmd: str, hook_env, project, **tool_input) -> subprocess.CompletedProcess[str]:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd, **tool_input}, "cwd": project}
+    return run_hook(ROOT_HOOKS / "pretooluse-wait.sh", payload, hook_env, project)
+
+
+@pytest.mark.parametrize("cmd", [
+    "cactus ask 'pick' -c a -c b --agent x",
+    "cactus ask 'sure?' --confirm --agent x --timeout 600",
+    "cactus run 'make deploy' --agent x",
+    "K=$(cactus ask 'pick' --agent x)",
+    "cd /tmp && cactus ask 'pick' --agent x --wait",
+])
+def test_wait_guard_blocks_foreground_wait(cmd, hook_env, project):
+    r = _wait_guard(cmd, hook_env, project)
+    assert r.returncode == 2
+    assert "run_in_background: true" in r.stderr
+
+
+@pytest.mark.parametrize("cmd", [
+    "cactus ask 'pick' -c a -c b --agent x --no-wait",
+    "cactus ask 'pick' --agent x --no-block",
+    "cactus ask 'going' --act steer --chosen a -c a -c b --agent x",
+    "cactus ask 'fyi' --act notify --agent x",
+    "cactus ask 'v' --act review --agent x",
+    "cactus ask 'p' --act plan --agent x",
+    "cactus run 'make deploy' --agent x --no-wait",
+    "cactus get q1 --wait",
+    "cactus list",
+    "ls -la",
+    "git commit -m 'cactus ask is now default-wait'",
+])
+def test_wait_guard_allows_non_waiting_and_unrelated(cmd, hook_env, project):
+    r = _wait_guard(cmd, hook_env, project)
+    assert r.returncode == 0
+    assert r.stderr == "" and r.stdout == ""
+
+
+def test_wait_guard_allows_background_wait(hook_env, project):
+    r = _wait_guard("cactus ask 'pick' --agent x", hook_env, project, run_in_background=True)
+    assert r.returncode == 0
+    assert r.stderr == ""
+
+
+def test_wait_guard_ignores_other_tools(hook_env, project):
+    payload = {"tool_name": "Write", "tool_input": {"command": "cactus ask x"}}
+    assert run_hook(ROOT_HOOKS / "pretooluse-wait.sh", payload, hook_env, project).returncode == 0
+
+
+def test_wait_guard_is_registered_on_bash():
+    cfg = json.loads((ROOT_HOOKS / "hooks.json").read_text())
+    entry = cfg["hooks"]["PreToolUse"][0]
+    assert entry["matcher"] == "Bash"
+    assert "pretooluse-wait.sh" in entry["hooks"][0]["command"]

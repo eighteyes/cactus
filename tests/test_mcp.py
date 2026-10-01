@@ -37,3 +37,10 @@ def test_cactus_plan_files_maps_to_repeated_dash_f() -> None:
     argv = _argv_for("cactus_plan", {"key": "q1", "files": ["p"]})
     fs = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-f"]
     assert fs == ["p"]
+
+
+def test_cactus_ask_and_run_pass_no_wait_unless_wait_is_set() -> None:
+    assert "--no-wait" in _argv_for("cactus_ask", {"text": "q", "agent": "a"})
+    assert "--no-wait" in _argv_for("cactus_run", {"command": "ls", "agent": "a"})
+    waiting = _argv_for("cactus_ask", {"text": "q", "agent": "a", "wait": True, "timeout": 5})
+    assert "--no-wait" not in waiting and "--wait" in waiting

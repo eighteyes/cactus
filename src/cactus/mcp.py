@@ -384,6 +384,8 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         _flag(argv, "--word", a.get("word"))
         _flag(argv, "--title", a.get("title"))
         _flag(argv, "--wait", a.get("wait"))
+        # The CLI waits by default; an MCP call waits only when `wait` is set.
+        _flag(argv, "--no-wait", not a.get("wait"))
         _flag(argv, "--timeout", _clamp_wait(a))
     elif name == "cactus_run":
         argv = ["run", a["command"], "--agent", a.get("agent") or _default_agent()]
@@ -392,6 +394,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         _flag(argv, "-t", a.get("thread"))
         _flag(argv, "--recommend", a.get("recommend"))
         _flag(argv, "--confidence", a.get("confidence"))
+        _flag(argv, "--no-wait", True)
     elif name == "cactus_get":
         argv = ["get", *a["keys"]]
         _flag(argv, "--wait", a.get("wait"))

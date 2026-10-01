@@ -39,26 +39,31 @@ only that project; if it is wrong, `cd` before asking.
 ## Workflow, required
 
     1  ask       post every decision the human makes here, not in chat;
-                 --recommend when you have a pick, -f for every file the
-                 question is about, --agent on every row
-    2  work      do everything the answer does not block; do not run a monitor
-    3  inspect   on your next turn, inspect the frontier and `cactus get` rows
-                 that are answered or elaborated
-    4  clear     your own rows, by key, once acted on
+                 --recommend LABEL --confidence L when you have a pick, -f
+                 for every file the question is about, --agent on every row
+    2  wait      a blocking ask (ask, run) waits for the human by default.
+                 Post it as ONE backgrounded command (Bash run_in_background);
+                 it waits, and its exit is your wake-up. No monitor.
+    3  work      do everything the answer does not block while it waits
+    4  inspect   on wake, `cactus get` the row (the background output holds
+                 the answer); the next-turn frontier lists the rest
+    5  clear     your own rows, by key, once acted on
 
-Background-process completion is not an idle-session wake-up. Durable rows
-and the next-turn frontier are the collection mechanism; use `cactus get` to
-inspect a specific row when work reaches its fork.
+`steer`, `notify`, `review`, `plan` and `data` never wait. `--no-wait` posts a
+blocking row and returns at once; `--no-block` makes the row non-blocking.
+A foreground `cactus ask`/`run` that would wait is refused by the plugin's
+PreToolUse hook: rerun it with `run_in_background: true`.
 
 ## Blocked by a permission prompt
 
-Do not stop and do not ask in chat. Post the command and keep working:
+Do not stop and do not ask in chat. Post the command as a backgrounded
+call and keep working; it waits for the human, and its exit wakes you:
 
     cactus run "pnpm exec playwright install" --agent "$AGENT" --why "denied in auto mode"
 
 `--why` becomes the row's context. The human approves or denies it from the
-TUI; the `answered` event carries `approve` or `deny`. On approve, re-read
-the row: `cactus get KEY --json | jq '.[0].result'`. A non-null `result`
+TUI; the backgrounded call exits with the answer, `approve` or `deny`. On
+approve, re-read the row: `cactus get KEY --json | jq '.[0].result'`. A non-null `result`
 means the TUI already ran it (exit code, a 50-line tail, a log path); act on
 that. A null `result` after `approve` means the human approved from the CLI
 and you run it yourself. Never run it before `approve`.
@@ -93,12 +98,12 @@ moment one direction is the sensible default.
 Parking the human on a question you could have answered yourself is the failure
 mode. It is measured: `cursor.blocked` in `cactus feed` counts open blocking
 rows per agent, for rows posted with `--agent`. Reach for `steer` first, `ask`
-when proceeding under any assumption would waste the work, `--wait` only when
-the very next step depends on it.
+when proceeding under any assumption would waste the work, a waiting ask only
+when the very next step depends on it; otherwise post it `--no-wait`.
 
 ## Batching
 
-Post every question you can see now, under one thread, without `--wait`. Follow
+Post every question you can see now, under one thread, with `--no-wait`. Follow
 up in the same thread with `-p KEY` when an answer opens a new question. A set
 of taps is cheaper for the human than a drip of interrupts across an afternoon.
 
@@ -129,8 +134,9 @@ rest is the summary. The card shows them as green and red marks under the choice
 and what it cost, the numbers, what breaks under each option, what happens if
 nobody answers. Never a restatement of the question, never reassurance.
 
-`--recommend` waits for the human and preselects the pick, so enter alone
-submits it. `--chosen` on a steer does not wait: you proceed with it.
+`--recommend` (with `--confidence`) preselects the pick, so enter alone
+submits it; the row still waits for the human. `--chosen` on a steer does not
+wait: you proceed with it.
 
 `--word SHORT` gives boards a stable label. Set it when a project has many rows
 whose text starts the same way.
@@ -154,19 +160,21 @@ other option redirects you.
 
 ## Block only when blocked
 
-    cactus ask "Safe to drop the legacy column?" --confirm --agent "$AGENT" --wait --timeout 600
+    cactus ask "Safe to drop the legacy column?" --confirm --agent "$AGENT" --timeout 600
 
-Always pair `--wait` with `--timeout`. Exit 2 is the timeout: proceed on the
-default you stated in `--context`, do not treat it as an error. A row the human
+Run it with `run_in_background: true`. It prints the key at once, waits (default
+timeout 3600s, `--timeout` overrides), and prints the answer on exit: that exit
+is your wake-up. Exit 2 is the timeout: proceed on the default you stated in
+`--context`, do not treat it as an error. A row the human
 clears returns exit 0 with status `cleared`, which is a decline: check the
 status, not just the exit code.
 
 ## Approve a command
 
-    K=$(cactus run "alembic upgrade head" --agent "$AGENT" -t ship --why "schema is one revision behind")
-    cactus get "$K" --wait --timeout 900 --json
+    cactus run "alembic upgrade head" --agent "$AGENT" -t ship --why "schema is one revision behind" --timeout 900 --json
 
-`cactus run` posts the command as the row text, `--why` as its context. The
+Run it with `run_in_background: true`; it waits for the verdict and its exit
+wakes you. `cactus run` posts the command as the row text, `--why` as its context. The
 human sees the command and runs it from the TUI with `R` or `y`, which
 records `result` on the row. The verdict labels are `approve` and `deny`.
 Read `result` before doing anything: non-null means it already ran, null
@@ -210,8 +218,9 @@ row.
 
 ## Collect on the next turn
 
-Background commands do not wake an idle session. Keep working after posting a
-row; the next-turn frontier shows answered, elaborated, and open rows. Use
+A backgrounded waiting ask wakes you when it exits, even on an idle session.
+Rows posted `--no-wait`, and review/plan rows, come back through the
+next-turn frontier, which shows answered, elaborated, and open rows. Use
 `cactus get KEY --agent "$AGENT"` before acting on a review or plan verdict.
 
 ## Elaborate or decompose: the human wants the question changed

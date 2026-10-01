@@ -3,7 +3,7 @@
 # Inject the required cactus workflow, the agent's identity, and the project's open rows at session start.
 # Responsibilities:
 #   - stay silent when cactus is not installed
-#   - print the four-step workflow every agent follows: ask, work, inspect, clear
+#   - print the workflow every agent follows: ask, wait (backgrounded), work, inspect, clear
 #   - resolve the --agent value through identity.sh and print it
 #   - rehome rows this pane posted under a previous identity (after /clear or --resume)
 #   - teach the escape: cactus run when a permission prompt blocks
@@ -26,11 +26,12 @@ agent=$(cactus_resolve_agent)
 
 cat <<EOF
 cactus is installed. Its workflow is required, not optional:
-  1 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend when you have a pick, -f for every file the question is about, --agent on every row
-  2 work     do everything the answer does not block; do not arm a monitor
+  1 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend LABEL --confidence L when you have a pick, -f for every file the question is about, --agent on every row
+  2 wait     a blocking ask (ask, run) waits for the human by default. Post it as ONE backgrounded command (Bash run_in_background); its exit is your wake-up. No monitor. --no-wait posts and returns; steer/notify/review/plan/data never wait
+  2b work    do everything the answer does not block while it waits
   3 inspect  on your next turn, the frontier lists answered/elaborated rows. Read every review/plan row with \`cactus get KEY --agent ID\` (that tells the human you heard); after acting on its verdict, respond with \`cactus plan|review|edit KEY --agent ID\`
   4 clear    your own rows, by key, once acted on
-Blocked by a permission prompt? Post the command instead of stopping: \`cactus run CMD --agent ID\`. The human approves it from the TUI.
+Blocked by a permission prompt? Post the command instead of stopping: \`cactus run CMD --agent ID\`, backgrounded. The human approves it from the TUI.
 Load the cactus skill before the first ask.
 EOF
 if [ -n "$agent" ]; then

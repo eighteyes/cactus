@@ -37,5 +37,5 @@ if [ -n "$id" ]; then
   printf '%s\n' "$id" >>"$seen"
 fi
 
-cactus run "$cmd" --agent "$agent" --cwd "$cwd" --why "$why" -t denied >/dev/null 2>&1
+cactus run "$cmd" --no-wait --agent "$agent" --cwd "$cwd" --why "$why" -t denied >/dev/null 2>&1
 exit 0

@@ -305,7 +305,8 @@ scope.
 - `cactus --monitor` requires `--agent ID`; humans use `--tui`/`--watch`
   instead. `--once` returns as soon as it emits the first non-`asked` event
   (or a `gone`) — inside the same tick, not after a further poll — and is
-  the primary wake-up on Claude Code (q339): the agent arms it with Bash
+  a wake-up on Claude Code (q339; superseded as the agent default by the
+  waiting `ask`/`run`, see Collection workflow): the agent arms it with Bash
   `run_in_background`, and its exit re-invokes the agent, mid-turn or hours
   later on an idle session (probed 2026-09-27: a background process lived
   35 min and an idle session woke 2.5 h after its last turn). The Monitor
@@ -402,9 +403,18 @@ scope.
   rows only — data rows never, their bodies may start with `-`. The TUI card
   builds `rich.text.Text` with markup still off (green `✓`, red `✗`); the CLI
   text renderer prints plain `✓`/`✗`. JSON keeps the raw description.
-- Collection workflow: agents do not arm or re-arm `cactus --monitor`. They
-  post durable rows, keep working, and inspect the next-turn frontier after
-  background work expires; process completion is not an idle-session wake-up.
+- Collection workflow: agents do not arm or re-arm `cactus --monitor`.
+  Blocking acts (`ask` with act ask, and `run`) wait by default
+  (`DEFAULT_WAIT_TIMEOUT` 3600s, `--timeout` overrides, exit 2 on timeout);
+  `--no-wait` opts out, `-w/--wait` is a back-compat no-op. steer/notify/
+  review/plan/data and `--no-block` rows never wait. The waiting command
+  prints the key at once (stderr under `--json`), then the answer like
+  `get --wait`. An agent posts each blocking ask as one backgrounded command
+  (Bash `run_in_background`): it waits, its exit is the wake-up, no gap
+  between post and wait. `hooks/pretooluse-wait.sh` refuses the foreground
+  form. `--no-wait` rows and persistent rows come back through the next-turn
+  frontier. The MCP `cactus_ask`/`cactus_run` pass `--no-wait` unless `wait`
+  is set, and the Codex session-start hook tells Codex to post `--no-wait`.
 - `Store.set_steps`, `Store.set_step_done`, and `Store.set_review` all refuse
   a `cleared` row with the same message `Store.answer` uses — pointing at
   `cactus reopen KEY --agent ID` — so a retired plan/review row is frozen for

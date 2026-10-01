@@ -30,6 +30,11 @@ EXIT_ERROR = 1
 EXIT_TIMEOUT = 2
 EXIT_EMPTY = 3
 
+# A blocking row waits this long for its answer unless --timeout says otherwise.
+DEFAULT_WAIT_TIMEOUT = 3600.0
+# Acts that wait for the human by default; the rest never block the agent.
+WAITING_ACTS = ("ask", "run")
+
 QUESTION_WIDTH = 80
 MAX_QUESTION_LINES = 3
 
@@ -68,7 +73,9 @@ NAME
 
 WORKFLOW (required)
   1  cactus ask ... --agent ID        every decision, not chat
-  2  work; let background work finish; do not run a monitor
+  2  a blocking ask (ask, run) waits for the human by default. Run it as ONE
+     backgrounded command (Bash run_in_background); its exit is your wake-up.
+     Do the rest of the work meanwhile. No monitor. --no-wait posts and returns.
   3  on your next turn, inspect cactus list/get for answered or elaborated rows
      review/plan verdict: read it with cactus get KEY --agent ID (that
      tells the human you heard), then respond with cactus plan / review /
@@ -80,7 +87,7 @@ WORKFLOW (required)
 
 SYNOPSIS
   cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [-f PATH]... [options]
-  cactus run CMD --agent ID [--cwd DIR] [--why X] [-t T]
+  cactus run CMD --agent ID [--cwd DIR] [--why X] [-t T] [--no-wait] [--timeout S]
              [--recommend approve|deny --confidence L]
   cactus get KEY... [-w] [--timeout S] [--agent ID]
   cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
@@ -128,7 +135,8 @@ ASK OPTIONS
   --word SHORT               board key; 16 chars max
   --title TEXT               button label; 60 chars max
   --by NAME                  default $CACTUS_AGENT
-  --wait --timeout S
+  --no-wait                  post and return; ask and run otherwise wait
+  --timeout S                wait limit, default 3600
 
 FORMATTING
   Write questions for an 80-column terminal. Keep a question within three
@@ -146,7 +154,7 @@ EVENTS
   elaborate  edited  withdrawn  gone
 
 EXIT STATUS
-  0 ok   1 error   2 --wait timeout   3 no match
+  0 ok   1 error   2 wait timeout   3 no match
 
 FILES
   .ai/cactus/qN-SLUG.md   decision record, rewritten on each answer, undo,
@@ -303,14 +311,21 @@ def _emit_one(q: Question, *, as_json: bool) -> None:
 # ---- verbs ----------------------------------------------------------------
 
 
+def _add_wait_flags(p: argparse.ArgumentParser) -> None:
+    """--wait / --no-wait / --timeout for the verbs that post a blocking row."""
+    w = p.add_mutually_exclusive_group()
+    w.add_argument("-w", "--wait", action="store_true",
+                   help="block until answered (the default for ask and run; kept for back-compat)")
+    w.add_argument("--no-wait", action="store_true",
+                   help="post and return at once instead of waiting")
+    p.add_argument("--timeout", type=float,
+                   help=f"seconds to wait before giving up (default {int(DEFAULT_WAIT_TIMEOUT)})")
+
+
 def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     if args.multi and args.confirm:
         # 3: a row cannot be both a checklist and a yes/no at once.
         print("cactus: --multi and --confirm are mutually exclusive", file=sys.stderr)
-        return EXIT_ERROR
-    if args.timeout is not None and not args.wait:
-        # 9: --timeout only means something alongside --wait.
-        print("cactus: --timeout needs --wait", file=sys.stderr)
         return EXIT_ERROR
     if args.multi and ACT_SHAPES[args.act] == ("choice",):
         # A data row hands over one chunk per copy; --multi has nothing to mean.
@@ -394,6 +409,12 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             file=sys.stderr,
         )
         return EXIT_ERROR
+    # A blocking ask waits by default; --no-wait posts and returns.
+    wait = args.wait or (not args.no_wait and would_block and act in WAITING_ACTS)
+    if args.timeout is not None and not wait:
+        # 9: --timeout only means something on a row that waits.
+        print("cactus: --timeout needs a waiting row; drop --no-wait", file=sys.stderr)
+        return EXIT_ERROR
 
     # Required, not defaulted. A pane id is not an identity: herdr's own
     # resolver treats `session:pane_id` as the last-resort fallback precisely
@@ -465,14 +486,28 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         return EXIT_ERROR
 
     _warn_long_question(q)
-    if not args.wait:
+    if not wait:
         if args.json:
             _emit_one(q, as_json=True)
         else:
             print(q.key)
         return EXIT_OK
+    return _post_then_wait(store, q, project, args)
 
-    answered = store.wait_for_answer(q.key, project=project, timeout=args.timeout)
+
+def _post_then_wait(store: Store, q: Any, project: str, args: argparse.Namespace) -> int:
+    """Print the key at once, then block for the answer and print it like `get --wait`.
+
+    The key goes out first (flushed) so a caller watching the output sees the
+    row exists before the block starts. Under --json it goes to stderr, so
+    stdout stays one parseable document.
+    """
+    if args.json:
+        print(q.key, file=sys.stderr, flush=True)
+    else:
+        print(q.key, flush=True)
+    timeout = args.timeout if args.timeout is not None else DEFAULT_WAIT_TIMEOUT
+    answered = store.wait_for_answer(q.key, project=project, timeout=timeout)
     if answered is None:
         if args.json:
             json.dump({"key": q.key, "status": "timeout"}, sys.stdout, indent=2)
@@ -509,6 +544,10 @@ def cmd_run(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     if not text or not text.strip():
         print("cactus: refusing to run an empty command", file=sys.stderr)
         return EXIT_ERROR
+    wait = not args.no_wait
+    if args.timeout is not None and not wait:
+        print("cactus: --timeout needs a waiting row; drop --no-wait", file=sys.stderr)
+        return EXIT_ERROR
 
     workspace = os.environ.get("HERDR_WORKSPACE_ID") or None
     tab = os.environ.get("HERDR_TAB_ID") or None
@@ -540,6 +579,8 @@ def cmd_run(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
 
+    if wait:
+        return _post_then_wait(store, q, project, args)
     if args.json:
         _emit_one(q, as_json=True)
     else:
@@ -1344,8 +1385,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--by", help="who is asking (default: $CACTUS_AGENT)")
     ask.add_argument("-f", "--file", action="append",
                      help="a file the human may preview or edit; repeat for more")
-    ask.add_argument("-w", "--wait", action="store_true", help="block until answered")
-    ask.add_argument("--timeout", type=float, help="seconds to wait before giving up")
+    _add_wait_flags(ask)
     ask.set_defaults(fn=cmd_ask)
 
     rn = verb("run", help="ask approval to run a command, one step")
@@ -1359,6 +1399,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="an option to recommend")
     rn.add_argument("--confidence", choices=list(CONFIDENCE),
                     help="how sure the recommendation is; required with --recommend")
+    _add_wait_flags(rn)
     rn.set_defaults(fn=cmd_run)
 
     get = verb("get", help="read questions by key")

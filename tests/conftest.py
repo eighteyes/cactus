@@ -6,6 +6,7 @@ Responsibilities:
 - Make the poke transport inert so no test prompts a real agent.
 - Disable decision records unless a test opts in inside a temp git repo.
 - Offer a Store, a project path, and a CLI runner that share that scratch state.
+  The runner times out, so a call that waits forever fails instead of hanging.
 """
 
 from __future__ import annotations
@@ -70,7 +71,8 @@ def store(scratch_env: dict[str, str]) -> Store:
 def cli(scratch_env: dict[str, str], project: str):
     """Run the cactus CLI as a subprocess from `project`, returning CompletedProcess."""
 
-    def run(*argv: str, cwd: str | None = None, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def run(*argv: str, cwd: str | None = None, stdin: str | None = None,
+            timeout: float = 60) -> subprocess.CompletedProcess[str]:
         env = {**os.environ, **scratch_env, "PYTHONPATH": str(SRC)}
         return subprocess.run(
             [sys.executable, "-m", "cactus", *argv],
@@ -80,6 +82,7 @@ def cli(scratch_env: dict[str, str], project: str):
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout,
         )
 
     return run

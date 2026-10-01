@@ -27,7 +27,7 @@ def test_ask_without_agent_needs_agent(cli):
 
 
 def test_ask_json_and_get_json_roundtrip(cli):
-    r = cli("ask", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A, "--json")
+    r = cli("ask", "--no-wait", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A, "--json")
     assert r.returncode == 0
     doc = json.loads(r.stdout)
     assert doc["key"] == "q1"
@@ -40,7 +40,7 @@ def test_ask_json_and_get_json_roundtrip(cli):
 
 
 def test_json_flag_before_and_after_verb(cli):
-    cli("ask", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
 
     r_before = cli("--json", "get", "q1")
     assert r_before.returncode == 0
@@ -57,10 +57,84 @@ def test_ask_notify_with_choices_refused(cli):
     assert "collects text only" in r.stderr
 
 
-def test_ask_wait_without_timeout_is_fine_but_no_timeout_without_wait(cli):
-    r = cli("ask", "x", "--agent", AGENT_A, "--timeout", "1")
+def test_ask_timeout_with_no_wait_refused(cli):
+    r = cli("ask", "x", "--agent", AGENT_A, "--no-wait", "--timeout", "1")
     assert r.returncode == 1
-    assert "--timeout needs --wait" in r.stderr
+    assert "--timeout needs a waiting row" in r.stderr
+
+
+def test_ask_waits_by_default_and_times_out_exit_2(cli):
+    r = cli("ask", "x", "-c", "a", "-c", "b", "--agent", AGENT_A, "--timeout", "0.5")
+    assert r.returncode == 2
+    assert r.stdout.splitlines()[0] == "q1"  # key printed before the block
+    assert "timed out waiting for q1" in r.stderr
+
+
+def test_ask_wait_flag_is_a_noop_still_accepted(cli):
+    r = cli("ask", "x", "--agent", AGENT_A, "--wait", "--timeout", "0.5")
+    assert r.returncode == 2
+
+
+def test_ask_default_wait_returns_when_answered(cli, scratch_env, project):
+    import os, subprocess, sys, time
+    from conftest import SRC
+    env = {**os.environ, **scratch_env, "PYTHONPATH": str(SRC)}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "cactus", "ask", "pick", "-c", "a", "-c", "b",
+         "--agent", AGENT_A, "--timeout", "30", "--json"],
+        cwd=project, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert proc.stderr.readline().strip() == "q1"  # key out before the block
+        assert proc.poll() is None
+        assert cli("answer", "q1", "-s", "a").returncode == 0
+        out, _ = proc.communicate(timeout=20)
+    finally:
+        proc.kill()
+    assert proc.returncode == 0
+    doc = json.loads(out)
+    assert doc["key"] == "q1" and doc["status"] == "answered"
+
+
+def test_ask_no_wait_returns_at_once(cli):
+    r = cli("ask", "x", "--agent", AGENT_A, "--no-wait", timeout=10)
+    assert r.returncode == 0
+    assert r.stdout.strip() == "q1"
+
+
+def test_ask_no_block_never_waits(cli):
+    r = cli("ask", "x", "-c", "a", "-c", "b", "--agent", AGENT_A, "--no-block", timeout=10)
+    assert r.returncode == 0
+    assert r.stdout.strip() == "q1"
+
+
+def test_non_blocking_acts_never_wait(cli):
+    cases = [
+        ("steer", ["--chosen", "a", "-c", "a", "-c", "b"]),
+        ("notify", []),
+        ("review", []),
+        ("plan", []),
+        ("data", ["-c", "one: body"]),
+    ]
+    for act, extra in cases:
+        r = cli("ask", f"{act} row", "--act", act, "--agent", AGENT_A, *extra, timeout=10)
+        assert r.returncode == 0, (act, r.stderr)
+        assert r.stdout.strip().startswith("q")
+
+
+def test_run_waits_by_default_and_times_out_exit_2(cli):
+    r = cli("run", "echo hi", "--agent", AGENT_A, "--timeout", "0.5")
+    assert r.returncode == 2
+    assert r.stdout.splitlines()[0] == "q1"
+
+
+def test_run_accepts_wait_timeout_and_no_wait(cli):
+    assert cli("run", "echo hi", "--agent", AGENT_A, "--wait", "--timeout", "0.5").returncode == 2
+    r = cli("run", "echo hi", "--agent", AGENT_A, "--no-wait", timeout=10)
+    assert r.returncode == 0
+    r = cli("run", "echo hi", "--agent", AGENT_A, "--no-wait", "--timeout", "1")
+    assert r.returncode == 1
+    assert "--timeout needs a waiting row" in r.stderr
 
 
 def test_ask_steer_wait_refused_never_blocks(cli):
@@ -85,7 +159,7 @@ def test_list_empty_project_exits_3_no_match(cli):
 
 
 def test_answer_flow_invalid_label_then_ok_then_already_answered(cli):
-    cli("ask", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
 
     r_bad = cli("answer", "q1", "-s", "zzz")
     assert r_bad.returncode == 1
@@ -99,7 +173,7 @@ def test_answer_flow_invalid_label_then_ok_then_already_answered(cli):
 
 
 def test_clear_ownership_then_reopen_restores_answered(cli):
-    cli("ask", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
     cli("answer", "q1", "-s", "a")
 
     r_wrong_owner = cli("clear", "q1", "--agent", AGENT_B)
@@ -128,11 +202,11 @@ def test_project_disable_blocks_ask_and_run_then_reactivate(cli, project):
     assert r_ignore.returncode == 0
     assert json.loads(r_ignore.stdout)["enabled"] is False
 
-    r_ask = cli("ask", "x", "--agent", AGENT_A)
+    r_ask = cli("ask", "--no-wait", "x", "--agent", AGENT_A)
     assert r_ask.returncode == 1
     assert "cactus project activate" in r_ask.stderr
 
-    r_run = cli("run", "echo hi", "--agent", AGENT_A)
+    r_run = cli("run", "--no-wait", "echo hi", "--agent", AGENT_A)
     assert r_run.returncode == 1
     assert "cactus project activate" in r_run.stderr
 
@@ -140,7 +214,7 @@ def test_project_disable_blocks_ask_and_run_then_reactivate(cli, project):
     assert r_activate.returncode == 0
     assert json.loads(r_activate.stdout)["enabled"] is True
 
-    r_ask_ok = cli("ask", "x", "--agent", AGENT_A)
+    r_ask_ok = cli("ask", "--no-wait", "x", "--agent", AGENT_A)
     assert r_ask_ok.returncode == 0
 
     r_status_other = cli("project", "status", "--json", "--cwd", project)
@@ -161,7 +235,7 @@ def test_tui_and_watch_together_refused(cli):
 
 
 def test_feed_always_json_even_without_flag(cli):
-    cli("ask", "x", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "x", "--agent", AGENT_A)
     r = cli("feed")
     assert r.returncode == 0
     doc = json.loads(r.stdout)
@@ -174,20 +248,20 @@ def test_ask_file_resolves_relative_path_to_absolute(cli, project):
     rel = "notes.txt"
     (open(os.path.join(project, rel), "w")).close()
 
-    r = cli("ask", "look at this", "--agent", AGENT_A, "-f", rel, "--json")
+    r = cli("ask", "--no-wait", "look at this", "--agent", AGENT_A, "-f", rel, "--json")
     assert r.returncode == 0
     doc = json.loads(r.stdout)
     assert doc["files"] == [os.path.join(project, rel)]
 
 
 def test_ask_file_missing_exits_1(cli):
-    r = cli("ask", "x", "--agent", AGENT_A, "-f", "nope.txt")
+    r = cli("ask", "--no-wait", "x", "--agent", AGENT_A, "-f", "nope.txt")
     assert r.returncode == 1
     assert "no such file: nope.txt" in r.stderr
 
 
 def test_ask_file_directory_exits_1(cli, project):
-    r = cli("ask", "x", "--agent", AGENT_A, "-f", ".")
+    r = cli("ask", "--no-wait", "x", "--agent", AGENT_A, "-f", ".")
     assert r.returncode == 1
     assert "not a file: ." in r.stderr
 
@@ -197,7 +271,7 @@ def test_ask_file_duplicate_exits_1(cli, project):
 
     (open(os.path.join(project, "a.txt"), "w")).close()
 
-    r = cli("ask", "x", "--agent", AGENT_A, "-f", "a.txt", "-f", "./a.txt")
+    r = cli("ask", "--no-wait", "x", "--agent", AGENT_A, "-f", "a.txt", "-f", "./a.txt")
     assert r.returncode == 1
     assert "duplicate file:" in r.stderr
 
@@ -208,7 +282,7 @@ def test_edit_file_replaces_whole_list(cli, project):
     (open(os.path.join(project, "a.txt"), "w")).close()
     (open(os.path.join(project, "b.txt"), "w")).close()
 
-    cli("ask", "x", "--agent", AGENT_A, "-f", "a.txt")
+    cli("ask", "--no-wait", "x", "--agent", AGENT_A, "-f", "a.txt")
     r = cli("edit", "q1", "--agent", AGENT_A, "-f", "b.txt", "--json")
     assert r.returncode == 0
     doc = json.loads(r.stdout)
@@ -219,7 +293,7 @@ def test_get_text_shows_file_line(cli, project):
     import os
 
     (open(os.path.join(project, "a.txt"), "w")).close()
-    cli("ask", "look here", "--agent", AGENT_A, "-f", "a.txt")
+    cli("ask", "--no-wait", "look here", "--agent", AGENT_A, "-f", "a.txt")
 
     r = cli("get", "q1")
     assert r.returncode == 0
@@ -356,7 +430,7 @@ def test_get_non_owner_and_bare_get_do_not_mark_heard(cli, store, project):
 
 
 def test_get_agent_ignores_non_review_plan_rows(cli, store, project):
-    cli("ask", "pick", "--agent", AGENT_A, "-c", "a", "-c", "b")
+    cli("ask", "--no-wait", "pick", "--agent", AGENT_A, "-c", "a", "-c", "b")
     cli("answer", "q1", "-s", "a")
     assert cli("get", "q1", "--agent", AGENT_A).returncode == 0
     assert store.get("q1", project=project).heard_at is None
@@ -390,7 +464,7 @@ def test_plan_review_without_matching_agent_do_not_mark_responded(cli, store, pr
 
 
 def test_text_render_shows_tradeoff_marks_on_choice_rows(cli):
-    cli("ask", "which?", "-c", "a: sum\n+ good\n- bad", "-c", "b", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "which?", "-c", "a: sum\n+ good\n- bad", "-c", "b", "--agent", AGENT_A)
     r = cli("get", "q1")
     assert "1) a" in r.stdout
     assert "✓ good" in r.stdout

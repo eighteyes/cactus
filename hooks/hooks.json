@@ -1,5 +1,5 @@
 {
-  "description": "SessionStart hook that tells the agent cactus is available and lists this project's open rows; UserPromptSubmit hook that injects the agent's own frontier (answered backlog, open rows, counts) on every prompt; PermissionDenied hook that posts a denied Bash command as a `cactus run` row; Stop hook that blocks a turn which ended without posting a fork.",
+  "description": "SessionStart hook that tells the agent cactus is available and lists this project's open rows; UserPromptSubmit hook that injects the agent's own frontier (answered backlog, open rows, counts) on every prompt; PermissionDenied hook that posts a denied Bash command as a `cactus run` row; Stop hook that blocks a turn which ended without posting a fork; PreToolUse hook that refuses a foreground `cactus ask|run` that would wait.",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -8,6 +8,18 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/frontier.sh\"",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-wait.sh\"",
+            "timeout": 5
           }
         ]
       }
