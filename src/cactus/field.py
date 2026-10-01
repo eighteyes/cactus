@@ -13,7 +13,9 @@ Responsibilities:
   under gravity and wind until they anchor. Every rate is per second, scaled
   by `dt` at the call site — nothing steps once per tick or once per second.
 - Drop a seed into a column; anchor it to the floor or beside the structure,
-  including the two "reverse pawn" diagonals below it. Count every drop, so
+  including the two "reverse pawn" diagonals below it (under dots, anywhere
+  within `dot_latch` sub-cells at or below it, then snapped onto the pile by
+  `_snap`). Count every drop, so
   the structure can carry age in decisions rather than in time. Under
   `pile_settle == "drop"` a shelf perched on a diagonal settles at most one
   row, and only onto support (`_settle`). A seed feels world wind x
@@ -196,6 +198,12 @@ SEED_SPLAT_FLOOR = 0.02
 # tumble, so a single sigma for both axes) and smaller than a falling seed's.
 PILE_SPLAT_SIGMA = 1.2
 PILE_SPLAT_RADIUS_PX = 3
+
+# The cells a landing member may rest against: directly below, either side,
+# and the two "reverse pawn" diagonals below. Blocks style lands on exactly
+# these; dots style also lands within `SkyConfig.dot_latch` and then snaps
+# until one of these holds (`World._snap`).
+SUPPORT_OFFSETS = ((0, -1), (-1, 0), (1, 0), (-1, -1), (1, -1))
 
 # Charge (hidden rule): a clump gains +1 charge (and `accrete_count` members,
 # cloud mass) on each clear-sky-to-cloud entry, and +1 charge per distinct bird it shares
@@ -811,8 +819,15 @@ class World:
         (an already-taken cell just re-stamps its age). A landing with
         charge that touched at least one bird (`birds_hit`) appends `charge`
         exploded clumps (see `_explode`) to `exploded`; cloud charge alone
-        never bursts."""
+        never bursts.
+
+        Under `pile_style == "dots"` a member also lands when any structure
+        cell at its height or below lies within `dot_latch` sub-cells
+        (Euclidean, x wrapped) — a dot looks bigger than its sub-cell — and
+        the clump is then snapped onto the pile (`_snap`) before `_settle`."""
         offsets = [self._member_offset(clump, m) for m in clump.members]
+        dots = self.sky.config.pile_style == "dots"
+        reach = self._latch_offsets() if dots else ()
         lands = False
         for dx, dy in offsets:
             cx, cy = int(clump.x + dx) % self.width, int(clump.y + dy)
@@ -820,8 +835,11 @@ class World:
                 lands = True
                 break
             w = self.width
-            neighbours = ((cx, cy - 1), ((cx - 1) % w, cy), ((cx + 1) % w, cy), ((cx - 1) % w, cy - 1), ((cx + 1) % w, cy - 1))
+            neighbours = [((cx + nx) % w, cy + ny) for nx, ny in SUPPORT_OFFSETS]
             if any(n in self.structure for n in neighbours):
+                lands = True
+                break
+            if any(((cx + ox) % w, cy + oy) in self.structure for ox, oy in reach):
                 lands = True
                 break
         if not lands:
@@ -829,6 +847,8 @@ class World:
         # Wrap x like every other horizontal read: a clump straddling the
         # seam must not land a cell at cx -1 or cx >= width.
         cells = [(int(clump.x + dx) % self.width, max(int(clump.y + dy), 0)) for dx, dy in offsets]
+        if dots:
+            cells = self._snap(cells, reach)
         if self.sky.config.pile_settle == "drop":
             cells = self._settle(cells)
         for cell in cells:
@@ -837,6 +857,55 @@ class World:
         if clump.bounty and clump.charge and clump.birds_hit:
             exploded.extend(self._explode(clump))
         return True
+
+    def _latch_offsets(self) -> list[tuple[int, int]]:
+        """Every integer `(ox, oy)` within `dot_latch` sub-cells of a member,
+        at its height or below (`oy <= 0`) — the box of radius
+        `ceil(dot_latch)` filtered to the disc, nearest first."""
+        r = self.sky.config.dot_latch
+        n = math.ceil(r)
+        box = [(ox, oy) for ox in range(-n, n + 1) for oy in range(-n, 1) if ox * ox + oy * oy <= r * r]
+        return sorted(box, key=lambda o: o[0] * o[0] + o[1] * o[1])
+
+    def _snap(self, cells: list[tuple[int, int]], reach: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Join a dots-style landing to the pile: a clump that latched from
+        a distance keeps its shape and shifts by the shortest integer vector
+        (Manhattan) that puts one of its cells on the ground or beside/atop
+        the structure by the same `SUPPORT_OFFSETS` rule blocks land on —
+        never up, never into a taken cell. Ties prefer down, then sideways
+        toward the nearest supporting cell. A clump already joined lands
+        as hit; one with no free shift (none found) lands as hit too."""
+        w = self.width
+
+        def joined(shifted: list[tuple[int, int]]) -> bool:
+            return any(
+                cy == 0 or any(((cx + nx) % w, cy + ny) in self.structure for nx, ny in SUPPORT_OFFSETS)
+                for cx, cy in shifted
+            )
+
+        if joined(cells):
+            return cells
+        # Which way the nearest latched cell lies: `reach` is nearest first.
+        toward, best = 0, None
+        for cx, cy in cells:
+            for ox, oy in reach:
+                if ((cx + ox) % w, cy + oy) in self.structure:
+                    d = ox * ox + oy * oy
+                    if best is None or d < best:
+                        toward, best = (ox > 0) - (ox < 0), d
+                    break
+        n = math.ceil(self.sky.config.dot_latch)
+        shifts = sorted(
+            ((sx, sy) for sx in range(-n, n + 1) for sy in range(-n, 1) if (sx, sy) != (0, 0)),
+            key=lambda s: (abs(s[0]) + abs(s[1]), s[1], s[0] * toward < 0, abs(s[0]), s[0]),
+        )
+        for sx, sy in shifts:
+            shifted = [((cx + sx) % w, cy + sy) for cx, cy in cells]
+            if any(c[1] < 0 or c in self.structure for c in shifted):
+                continue
+            if joined(shifted):
+                return shifted
+        return cells
 
     def _fade_sky(self, grid: list[list[tuple[str, str | None]]]) -> list[list[tuple[str, str | None]]]:
         """Smooth the sky between frames (v8, `cloud_fade`): every cell keeps

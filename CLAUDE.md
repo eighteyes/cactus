@@ -598,7 +598,11 @@ scope.
   puts a shelf cell directly on the ground or a block and no target cell
   is taken — otherwise it lands as hit, so an overhang never slides down a
   pile's side; a lone block keeps its perch; `keep`: lands as it hit).
-  Both always show on the T page.
+  Both always show on the T page. Under `pile_style = "dots"` a seed latches
+  within `dot_latch` sub-cells (default 2.5, a dot's visible reach) of a
+  pile cell at its height or below, then `World._snap` shifts the clump by
+  the shortest integer vector (down first, then toward the pile) onto a
+  `SUPPORT_OFFSETS` neighbour or the ground; blocks keep the 1-sub-cell rule.
 - Seed wind: `SkyConfig.seed_wind` is in columns (0-30, default 3), the
   mean drift over a full fall at typical wind; gusts carry ~3x further.
   `World.seed_wind()` is world wind x `seed_wind / SEED_WIND_COLS_PER_UNIT`

@@ -932,6 +932,53 @@ def test_repeated_drops_at_one_column_build_upward() -> None:
     assert max(cy for _, cy in world.structure) > 3
 
 
+def test_repeated_drops_at_one_column_build_upward_under_dots() -> None:
+    """The wider dots latch still stacks a pile rather than smearing it."""
+    from cactus.sky import SkyConfig
+
+    cfg = SkyConfig(sky_engine="texture", birds="none", gust_speed=0.0, pile_style="dots")
+    world = World(cols=100, rows=30, rng=random.Random(5), sky_config=cfg)
+    _landing_cols(world, 50, 30, keep_pile=True)
+    assert max(cy for _, cy in world.structure) > 3
+
+
+def _dots_world(dot_latch: float, pile_style: str = "dots") -> World:
+    cfg = SkyConfig(sky_engine="texture", pile_style=pile_style, dot_latch=dot_latch, pile_settle="keep")
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    world.structure |= {(5, 0): 0, (5, 1): 0, (5, 2): 0, (5, 3): 0}
+    return world
+
+
+def test_dots_seed_latches_from_dot_latch_away_and_snaps_onto_the_pile() -> None:
+    """Dots: a seed two sub-cells beside a pile cell at its height latches
+    at `dot_latch` 2.5 and lands 8-adjacent to the pile; at 1.0 it does not."""
+    world = _dots_world(2.5)
+    assert world._anchor(Clump(x=7.0, y=3.0, vx=0.0, vy=0.0), [])
+    landed = set(world.structure) - {(5, 0), (5, 1), (5, 2), (5, 3)}
+    assert landed == {(6, 3)}
+    assert any(
+        (6 + nx, 3 + ny) in world.structure
+        for nx in (-1, 0, 1) for ny in (-1, 0, 1) if (nx, ny) != (0, 0)
+    )
+
+    assert not _dots_world(1.0)._anchor(Clump(x=7.0, y=3.0, vx=0.0, vy=0.0), [])
+
+
+def test_dots_seed_never_latches_onto_a_cell_above_it() -> None:
+    cfg = SkyConfig(sky_engine="texture", pile_style="dots", dot_latch=2.5)
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    world.structure |= {(7, 5): 0, (6, 4): 0, (8, 4): 0, (9, 5): 0}
+    assert not world._anchor(Clump(x=7.0, y=3.0, vx=0.0, vy=0.0), [])
+
+
+def test_blocks_style_ignores_dot_latch() -> None:
+    """Blocks keep the one-sub-cell rule whatever `dot_latch` says."""
+    world = _dots_world(4.0, pile_style="blocks")
+    assert not world._anchor(Clump(x=7.0, y=3.0, vx=0.0, vy=0.0), [])
+    assert world._anchor(Clump(x=6.0, y=3.0, vx=0.0, vy=0.0), [])
+    assert (6, 3) in world.structure
+
+
 def test_birds_lever_picks_which_depths_spawn_and_none_grounds_them() -> None:
     """v8: `SkyConfig.birds` chooses the depth bands a flock may spawn in,
     `bird_rate`/`bird_max` how often and how many; `none` spawns nothing."""

@@ -344,6 +344,7 @@ _SHARED_COMMENTS = {
     "accrete_count": "blocks one cloud entry adds, grown per `accrete_shape` (accrete only; charge is still +1)",
     "accrete_shape": "'branch': new blocks go on any side or diagonal, outer cells and the tip favoured; 'rod': a straight rod off the tip",
     "pile_settle": "'drop': a landed shelf of 2+ blocks resting only on a diagonal drops a row to close the gap; 'keep': lands as it hit",
+    "dot_latch": "dots pile: how far, in sub-cells, a falling seed latches onto the pile; blocks always latch at 1",
     "cloud_fade": "seconds a sky cell takes to fade in when it lights and fade out when it clears (0 = pop)",
     "seed_wind": "columns a falling seed drifts over a full fall at typical wind, on average (gusts carry it ~3x further; 0 = straight down)",
     "gust_speed": "top speed, columns/second, of a falling seed's own random sideways knocks, each a fresh random strength and direction (0 = off)",
@@ -438,6 +439,12 @@ class SkyConfig:
     accrete_count: int = field(default=1, metadata={"step": 1, "lo": 1, "hi": 6})
     accrete_shape: str = field(default="branch", metadata={"choices": ("branch", "rod")})
     pile_settle: str = field(default="drop", metadata={"choices": ("drop", "keep")})
+    # Latch reach under `pile_style == "dots"`, in sub-cells: a landed dot's
+    # splat (field.py `PILE_SPLAT_SIGMA` 1.2 px) stays above the lowest
+    # Bayer threshold (1/16) out to ~2.8 px, so its outermost lit pixel sits
+    # 2 px from centre and its far edge 2.5 px out — 2.5 sub-cells, since a
+    # sub-cell is one pixel wide. A seed latches where the dot looks to end.
+    dot_latch: float = field(default=2.5, metadata={"step": 0.25, "lo": 1.0, "hi": 4.0})
     # Planetary bands (v8, `cloud_style == "bands"`): how much of each lane
     # stays empty, and whether neighbouring lanes flow opposite ways.
     # `band_height` fixes each lane's height in rows (0 = lane count from
@@ -598,7 +605,7 @@ def tuning_fields() -> list[TuneField]:
 # (braille only, v8); the keys stay so an older sky.toml still loads.
 _TUNE_ALWAYS = frozenset((
     "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind", "gust_speed", "gust_period",
-    "birds", "bird_rate", "bird_max", "seed_mass", "accrete_spin", "accrete_count", "accrete_shape", "pile_settle", "cloud_fade",
+    "birds", "bird_rate", "bird_max", "seed_mass", "accrete_spin", "accrete_count", "accrete_shape", "pile_settle", "dot_latch", "cloud_fade",
     "tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
     "blank_mean", "core_mean", "semi_core_mean",
 ))
@@ -642,7 +649,7 @@ TUNE_PANELS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("birds", ("birds", "bird_rate", "bird_max")),
     ("seeds", ("seed_mass", "accrete_spin", "accrete_count", "accrete_shape", "stick_distance",
                "gust_speed", "gust_period")),
-    ("pile", ("pile_style", "pile_settle")),
+    ("pile", ("pile_style", "pile_settle", "dot_latch")),
     ("tone", ("tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
               "blank_mean", "core_mean", "semi_core_mean")),
 )
