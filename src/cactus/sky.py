@@ -49,7 +49,7 @@ Responsibilities:
 - Downsample the composited canvas, `PX_X` by `PX_Y` pixels per terminal
   cell, to one toned glyph: blank, a fringe speck, an ordered-dither braille
   pattern, a flat cirrus stroke, a tapering edge stroke, or a solid core —
-  coloured by a 16-step tone ramp between the owning grid's own dark/light
+  coloured by a 64-step tone ramp between the owning grid's own dark/light
   pair, then shifted toward `palette.haze` by that grid's fixed depth and
   the cell's own height (`atmospheric_colour`, shared with a bird's colour
   at its own row).
@@ -82,7 +82,8 @@ Responsibilities:
   table (`drift`, `bloom`, `streaks`), `cloud_count` scales the population.
   `camera_x` stays 0: the sky changes more than it travels.
   `band_belts` deals the `bands` style's lanes as alternating zones and
-  belts, all zones, or all belts.
+  belts, all zones, or all belts; a lane's texture morphs on into fresh
+  noise forever (`band_evolve`), and every cloud draws at its fractional x.
 - Scatter: every engine takes `scatter(px, py, radius, strength)`, called by
   `field.py` once per falling member per frame while its clump is inside a
   cloud. `Sky` pushes each grid's density outward from the point
@@ -203,9 +204,14 @@ def _lerp_hex(a: str, b: str, t: float) -> str:
     return f"#{r:02x}{g:02x}{c:02x}"
 
 
-def _ramp16(a: str, b: str, t: float) -> str:
-    """`a` to `b` in 16 quantised steps, so runs of equal tone merge."""
-    step = round(_clamp(t, 0.0, 1.0) * 15) / 15
+# Tone ramp resolution: fine enough that a slowly thickening cell shifts
+# colour frame by frame at 30 fps while its glyph holds, not in visible jumps.
+TONE_STEPS = 64
+
+
+def _ramp(a: str, b: str, t: float) -> str:
+    """`a` to `b` in `TONE_STEPS` quantised steps, so runs of equal tone merge."""
+    step = round(_clamp(t, 0.0, 1.0) * (TONE_STEPS - 1)) / (TONE_STEPS - 1)
     return _lerp_hex(a, b, step)
 
 
@@ -308,7 +314,7 @@ _SHARED_COMMENTS = {
     "shear_floor": "minimum drift speed per row, pixels/second, so drift never stalls",
     "shear_base": "row shear's base fraction of a grid's own wind, per second",
     "shear_span": "row shear's extra fraction at the bottom of the sky, per second",
-    "tone_exp": "block-mean lift before the 16-step tone ramp",
+    "tone_exp": "block-mean lift before the 64-step tone ramp",
     "haze_depth_weight": "how much a grid's fixed depth mixes toward haze",
     "haze_row_weight": "how much a cell's height mixes toward haze",
     "haze_clamp": "ceiling on the haze mix, however deep or high",
@@ -342,6 +348,7 @@ _SHARED_COMMENTS = {
     "band_height": "bands style: each lane's height in terminal rows, laid top to bottom (0 = lane count from cloud_count)",
     "band_edge": "bands style: the share of a band's height that is a noisy fringe at top and bottom, wandering along the band",
     "band_belts": "bands style: 'alternate' (dense zones and streaky belts by turns), 'dense' (every lane a zone), or 'belts' (every lane a belt)",
+    "band_evolve": "bands style: how fast each lane's texture evolves into fresh noise (1 = one leg per half morph cycle, 0 freezes it)",
     "seed_mass": "'accrete': a falling seed gains a block per cloud it enters; 'single': it stays one block (charge still counts)",
     "accrete_spin": "rad/s kick a cloud accretion gives the whole clump; 0 keeps it upright",
     "accrete_count": "blocks one cloud entry adds, grown per `accrete_shape` (accrete only; charge is still +1)",
@@ -459,6 +466,9 @@ class SkyConfig:
     band_height: int = field(default=0, metadata={"step": 1, "lo": 0, "hi": 20})
     band_edge: float = field(default=0.35, metadata={"step": 0.05, "lo": 0.0, "hi": 0.9})
     band_belts: str = field(default="alternate", metadata={"choices": ("alternate", "dense", "belts")})
+    # `band_evolve` scales how fast a lane's texture morphs on into fresh
+    # noise, read live each `advance` (no re-bake): 0 freezes it.
+    band_evolve: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.0, "hi": 5.0})
     # Birds (v8): which depth bands may spawn a flock, how often, how many.
     # `field.py` reads these off `World.sky.config`, the same way `seed_wind`
     # reaches it; the glyph sets per depth stay in `field.DEPTH_GLYPHS`.
@@ -633,7 +643,7 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
         return engine == "fluid"
     if row.name in _TUNE_ALWAYS:
         return True
-    if row.name in ("band_gap", "band_flow", "band_height", "band_edge", "band_belts"):
+    if row.name in ("band_gap", "band_flow", "band_height", "band_edge", "band_belts", "band_evolve"):
         return engine == "puffs" and cfg.cloud_style == "bands"
     if row.name in _TUNE_ENGINE.get(engine, frozenset()):
         return True
@@ -648,7 +658,7 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
 TUNE_PANELS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("engine", ("sky_engine", "perspective", "fps", "cloud_fade")),
     ("clouds", ("cloud_style", "cloud_count", "cloud_drift", "cloud_life",
-                "band_gap", "band_flow", "band_height", "band_edge", "band_belts")),
+                "band_gap", "band_flow", "band_height", "band_edge", "band_belts", "band_evolve")),
     ("projection", ("horizon", "focal", "z_far", "ground_lines", "deck_altitude_px")),
     ("wind", ("shear_floor", "shear_base", "shear_span", "seed_wind")),
     ("birds", ("birds", "bird_rate", "bird_max")),
@@ -1086,7 +1096,7 @@ def _cell_colour(
     `row / (sky_rows - 1)`."""
     name = owner or "near"
     tone = m ** cfg.tone_exp
-    base = _ramp16(getattr(palette, f"cloud_{name}_dark"), getattr(palette, f"cloud_{name}_light"), tone)
+    base = _ramp(getattr(palette, f"cloud_{name}_dark"), getattr(palette, f"cloud_{name}_light"), tone)
     if z is not None and z_far:
         t = cfg.haze_depth_weight * GRID_DEPTH[name] + cfg.haze_row_weight * _clamp(z / z_far, 0.0, 1.0)
         return _lerp_hex(base, palette.haze, _clamp(t, 0.0, cfg.haze_clamp))
@@ -1842,7 +1852,7 @@ def _lane_window(rng: random.Random, w: int, h: int, edge: float, lw: int) -> li
 class _Puff:
     """One cloud: where it is, how it drifts, and how far through its life."""
 
-    __slots__ = ("x", "y0", "w", "h", "vx", "age", "life", "patch_a", "patch_b", "window", "p", "band", "lane")
+    __slots__ = ("x", "y0", "w", "h", "vx", "age", "life", "patch_a", "patch_b", "window", "p", "band", "lane", "phase")
 
     def __init__(self, band: str, p: dict, width_px: int, height_px: int, rng: random.Random,
                  drift: float, life: float, *, age: float | None = None,
@@ -1872,6 +1882,9 @@ class _Puff:
         periodic = lane is not None
         self.patch_a, self.window = _puff_patch(rng, self.w, self.h, p, periodic=periodic)
         self.patch_b, _ = _puff_patch(rng, self.w, self.h, p, periodic=periodic)
+        # A lane's progress along its current a -> b leg, [0, 1); each lane
+        # starts at its own point so legs never turn over together.
+        self.phase = rng.random() if periodic else 0.0
 
     def cutoff(self) -> float:
         """1.0 unborn, sinking to the style's resting cutoff as the cloud
@@ -1890,6 +1903,11 @@ class _Puff:
         return base + (1.0 - base) * (1.0 - reveal)
 
     def blend(self) -> float:
+        """How far from `patch_a` toward `patch_b`. A cloud swings a -> b
+        -> a over `morph` seconds of its life; a lane walks one eased leg
+        of an endless chain a -> b -> c ... (`PuffSky._next_leg`)."""
+        if self.lane is not None:
+            return 0.5 - 0.5 * math.cos(math.pi * self.phase)
         return 0.5 - 0.5 * math.cos(2.0 * math.pi * self.age / self.p["morph"])
 
 
@@ -2070,18 +2088,33 @@ class PuffSky:
     def advance(self, dt: float, wind: float = 0.0) -> None:
         """Every cloud ages and drifts by its own `vx`; one past its life is
         replaced by a newborn at a fresh spot. `wind` is accepted for
-        interface parity and ignored: no whole-sky motion here."""
+        interface parity and ignored: no whole-sky motion here. A lane's
+        texture walks its legs at `band_evolve` times one leg per half
+        `morph`, read live, so 0 freezes it."""
         w = self.width_px
+        evolve = max(self.config.band_evolve, 0.0)
         for band, puffs in self.puffs.items():
             for i, puff in enumerate(puffs):
                 puff.age += dt
+                if puff.lane is not None:
+                    puff.phase += dt * evolve * 2.0 / puff.p["morph"]
+                    while puff.phase >= 1.0:
+                        self._next_leg(puff)
                 if puff.age >= puff.life:
                     if puff.lane is not None:
-                        puff.age -= puff.life  # a lane lives on; only its morph phase wraps
+                        puff.age -= puff.life  # a lane lives on; only its age wraps
                     else:
                         puffs[i] = self._spawn(band, age=0.0)
                         continue
                 puff.x = (puff.x + puff.vx * dt) % w
+
+    def _next_leg(self, puff: _Puff) -> None:
+        """A lane reached its far patch: that patch becomes the near one and
+        a freshly baked patch the next target, so the texture never returns
+        to a pattern it has shown. The fringe window stays."""
+        puff.patch_a = puff.patch_b
+        puff.patch_b, _ = _puff_patch(self.rng, puff.w, puff.h, puff.p, periodic=True)
+        puff.phase -= 1.0
 
     def tick(self, wind: float = 0.0) -> None:
         """Thin wrapper for tests: one frame of `_DEFAULT_DT` wall time."""
@@ -2115,7 +2148,10 @@ class PuffSky:
         """Top-down `density`/`owner` canvases plus a per-pixel-row empty
         flag. Bands stamp far to near, so a nearer cloud overwrites where
         it clears `DENSITY_FLOOR` — the same nearest-first ownership rule
-        `_composite` and `_texture_composite` use."""
+        `_composite` and `_texture_composite` use. A cloud sits at its
+        fractional `x`: each screen pixel mixes the two patch columns either
+        side of it by `frac(x)`, so a slow drift glides instead of stepping
+        a whole pixel at a time."""
         W, H = self.width_px, self.height_px
         density = [[0.0] * W for _ in range(H)]
         owner = [[""] * W for _ in range(H)]
@@ -2128,6 +2164,13 @@ class PuffSky:
                 gain = puff.p["gain"]
                 blend = puff.blend()
                 x0 = int(puff.x)
+                f = puff.x - x0
+                g = 1.0 - f
+                pw = puff.w
+                # A lane wraps: pixel x0 reads between its last and first
+                # columns. A cloud gains one trailing column, its rim fading
+                # out against nothing.
+                span = pw if puff.lane is not None else pw + 1
                 pa, pb, win = puff.patch_a, puff.patch_b, puff.window
                 for r in range(puff.h):
                     y = puff.y0 + r
@@ -2135,14 +2178,20 @@ class PuffSky:
                         break
                     drow, orow = density[y], owner[y]
                     ra, rb, wr = pa[r], pb[r], win[r]
-                    touched = False
-                    for c in range(puff.w):
+                    dl = [0.0] * pw
+                    for c in range(pw):
                         a = ra[c]
                         raw = a + (rb[c] - a) * blend
                         d = (raw - cut) * gain
                         if d <= 0.0:
                             continue
-                        d = (1.0 if d > 1.0 else d ** 0.7) * wr[c]
+                        dl[c] = (1.0 if d > 1.0 else d ** 0.7) * wr[c]
+                    touched = False
+                    prev = dl[-1] if span == pw else 0.0
+                    for c in range(span):
+                        cur = dl[c] if c < pw else 0.0
+                        d = cur * g + prev * f
+                        prev = cur
                         if d <= DENSITY_FLOOR:
                             continue
                         x = (x0 + c) % W

@@ -81,7 +81,7 @@ Responsibilities:
 - Cloud fade (v8, `SkyConfig.cloud_fade`): `_fade_sky` gives each sky cell a
   presence that climbs while lit and sinks once cleared, blending its colour
   from `Palette.fade_from` toward its tone and holding the last glyph while
-  it fades out; blank rows pass through, blends are cached in 16 steps.
+  it fades out; blank rows pass through, blends are cached in 64 steps.
 
 Pure Python: no persistence, no store, no Textual import.
 """
@@ -937,8 +937,9 @@ class World:
         passes through as the source row itself, cells untouched; inside a
         row, state is three flat lists and the output row is copied from the
         source only once a cell differs from it. The blend is quantised to
-        16 steps (`round(a * 16)`) and cached per (`fade_from`, tone, step)
-        in `_fade_tint`, so `_lerp_hex` runs at most 17 times per tone."""
+        64 steps (`round(a * 64)`, one step per frame or finer at 30 fps)
+        and cached per (`fade_from`, tone, step) in `_fade_tint`, so
+        `_lerp_hex` runs at most 65 times per tone."""
         fade = self.sky.config.cloud_fade
         dt, self._frame_dt = self._frame_dt, 0.0
         if fade <= 0.0:
@@ -952,7 +953,7 @@ class World:
         step = dt / fade
         start = self.palette.fade_from
         tint = self._fade_tint
-        if len(tint) > 4096:
+        if len(tint) > 16384:
             tint.clear()
         blank = (" ", None)
         out: list[list[tuple[str, str | None]]] = []
@@ -999,11 +1000,11 @@ class World:
                             row = list(src)
                         row[c] = blank
                     continue
-                q = round(a * 16)
+                q = round(a * 64)
                 key = (start, colour, q)
                 shade = tint.get(key)
                 if shade is None:
-                    shade = tint[key] = _lerp_hex(start, colour, q / 16)
+                    shade = tint[key] = _lerp_hex(start, colour, q / 64)
                 if row is None:
                     row = list(src)
                 row[c] = (glyph, shade)

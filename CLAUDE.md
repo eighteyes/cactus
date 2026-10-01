@@ -607,7 +607,11 @@ scope.
   change re-cuts every lane.
   Lanes colour by thirds: top far, middle mid, bottom near. A lane never
   unfolds, recedes, or dies: its cutoff sits at rest (even lanes dense
-  zones, odd lanes sparse belts) and only its morph phase wraps.
+  zones, odd lanes sparse belts) and only its age wraps.
+  Its texture never repeats: it walks a chain of freshly baked patches a ->
+  b -> c ... (`PuffSky._next_leg`), one cosine-eased leg per half `morph`
+  scaled live by `band_evolve` (0 freezes, no re-bake), and every cloud
+  draws at its fractional `x`, mixing neighbour columns so drift glides.
   `band_gap` is the empty share of each lane (0 = touching), `band_flow`
   deals directions (`alternate`, `same`, `random`). `band_height` > 0 fixes
   each lane at that many rows, laid top to bottom with leftover rows empty
@@ -618,7 +622,7 @@ scope.
   zones), `belts` (all belts); a belt also takes finer noise
   (`belt_scale_x`/`belt_octaves`), streaky between the smooth zones.
   All five show on the T page only under puffs/bands, and any change
-  re-cuts every lane.
+  re-cuts every lane (`band_evolve` shows there too but re-cuts nothing).
 - Birds are levers on `SkyConfig` (v8), read off `World.sky.config` like
   `seed_wind`: `birds` picks the depth bands a flock may spawn in (`all`,
   `far`, `mid`, `near`, `far+mid`, `mid+near`, `none`; `World.bird_bands`),
@@ -687,8 +691,10 @@ scope.
   cached, so `cloud_at` still reads the engine's own cells. Each cell's
   presence climbs while lit and sinks once cleared; its colour blends from
   `Palette.fade_from` toward the tone, and a cleared cell holds its last
-  glyph until presence hits 0. Blends quantise to 16 steps, cached per
-  (`fade_from`, tone, step) in `_fade_tint`. A row with no presence and an
+  glyph until presence hits 0. Blends quantise to 64 steps, cached per
+  (`fade_from`, tone, step) in `_fade_tint`; the tone ramp itself is 64
+  steps (`sky.TONE_STEPS`), so a cell's colour shifts frame by frame with
+  its mean while its glyph holds. A row with no presence and an
   all-blank source passes through untouched. Time is `_frame_dt`:
   accumulated by every `advance`, zeroed by each `_fade_sky`, so the fade
   runs on wall time whatever `fps` is. Default `fps` is 8 — 10 broke the

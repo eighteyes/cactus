@@ -13,6 +13,8 @@ Responsibilities:
 - `apply` re-bakes on a `cloud_style` change, resizes the population on a
   `cloud_count` change in place, and leaves the population alone otherwise.
 - Every style renders something in a plausible frame budget.
+- A bands lane's texture chains fresh patches (`band_evolve`, 0 freezes),
+  drift draws at fractional x, and cell colour follows a rising mean.
 """
 
 from __future__ import annotations
@@ -366,6 +368,104 @@ def test_band_height_and_edge_show_only_under_puffs_bands() -> None:
     assert not levers & shown(SkyConfig(sky_engine="puffs", cloud_style="drift"))
     assert not levers & shown(SkyConfig(sky_engine="fluid", cloud_style="bands"))
     assert not levers & shown(SkyConfig(sky_engine="texture", cloud_style="bands"))
+
+
+# ---- bands evolve (texture never repeats, drift glides, colour flows) ------
+
+
+def _mean_diff(p: list[list[float]], q: list[list[float]]) -> float:
+    vals = [abs(a - b) for ra, rb in zip(p, q) for a, b in zip(ra, rb)]
+    return sum(vals) / len(vals)
+
+
+def test_band_texture_chains_fresh_patches_and_never_repeats() -> None:
+    """A lane morphs along a chain a -> b -> c ..., one eased leg per half
+    `morph` at `band_evolve` 1: after two full legs its patch is neither
+    its first nor its second, and the blended texture never jumps."""
+    sky = _puffs("bands", cols=60, rows=20)
+    lane = _lanes(sky)[0]
+    first = [row[:] for row in lane.patch_a]
+    second = [row[:] for row in lane.patch_b]
+    lane.phase = 0.0
+    leg = lane.p["morph"] / 2.0
+    r = lane.h // 2
+
+    def texture() -> list[float]:
+        b = lane.blend()
+        return [a + (c - a) * b for a, c in zip(lane.patch_a[r], lane.patch_b[r])]
+
+    prev = texture()
+    for _ in range(int(2 * leg) + 2):
+        sky.advance(1.0)
+        cur = texture()
+        assert max(abs(a - b) for a, b in zip(cur, prev)) < 0.05, "a leg turnover never pops"
+        prev = cur
+    assert _mean_diff(lane.patch_a, first) > 0.05
+    assert _mean_diff(lane.patch_a, second) > 0.05
+
+
+def test_band_evolve_zero_freezes_the_texture_and_shows_only_under_bands() -> None:
+    sky = _puffs("bands", cols=60, rows=20, band_evolve=0.0)
+    lane = _lanes(sky)[0]
+    patch, phase, blend = lane.patch_a, lane.phase, lane.blend()
+    for _ in range(100):
+        sky.advance(10.0)
+    assert lane.patch_a is patch and lane.phase == phase and lane.blend() == blend
+    # retuned live, no re-bake: the same lane starts evolving
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_evolve=2.0))
+    assert _lanes(sky)[0] is lane
+    sky.advance(1.0)
+    assert lane.phase != phase
+
+    def shown(cfg: SkyConfig) -> set[str]:
+        return {row.name for row in tuning_fields_for(cfg)}
+
+    assert "band_evolve" in shown(SkyConfig(sky_engine="puffs", cloud_style="bands"))
+    assert "band_evolve" not in shown(SkyConfig(sky_engine="puffs", cloud_style="drift"))
+    assert "band_evolve" not in shown(SkyConfig(sky_engine="fluid", cloud_style="bands"))
+
+
+def test_half_pixel_drift_moves_the_composite_smoothly() -> None:
+    """A cloud draws at its fractional `x`: half a pixel of drift moves each
+    pixel only part of the way toward its neighbour's value, never the
+    whole one-pixel step."""
+    sky = _puffs("bands", cols=60, rows=20)
+    lane = _lanes(sky)[0]
+    lane.vx = 0.0
+    r = lane.y0 + lane.h // 2
+    rows = []
+    for x in (10.0, 10.5, 11.0):
+        lane.x = x
+        rows.append(sky.composite()[0][r])
+    d0, d_half, d1 = rows
+    steps = [abs(b - a) for a, b in zip(d0, d1)]
+    assert max(steps) > 0.1, "the probe row has texture to move"
+    for a, h, b, step in zip(d0, d_half, d1, steps):
+        if step > 0.1:
+            assert abs(h - a) < step and abs(h - b) < step
+
+
+def test_cell_colour_follows_a_rising_mean_while_the_glyph_holds() -> None:
+    """The tone ramp is fine enough (64 steps) that a cell thickening in
+    small steps shifts colour more than 16 times, monotonically, while its
+    dither glyph stays the same."""
+    from cactus.sky import _BAYER_THRESHOLD, downsample
+
+    cfg = SkyConfig()
+    lit = [[t < 0.5 for t in row] for row in _BAYER_THRESHOLD]
+    glyphs, colours = set(), []
+    for i in range(200):
+        s = i / 199
+        block = [[0.45 + 0.55 * s if lit[y][x] else 0.55 * s for x in range(2)] for y in range(PX_Y)]
+        owner = [["mid", "mid"] for _ in range(PX_Y)]
+        (cell,), = downsample({}, MONO_PLUS, 1, 1, cfg, density=block, owner=owner)
+        glyphs.add(cell[0])
+        colours.append(cell[1])
+    assert len(glyphs) == 1
+    assert len(set(colours)) > 16
+    for k in (1, 3, 5):
+        channel = [int(c[k:k + 2], 16) for c in colours]
+        assert channel == sorted(channel) or channel == sorted(channel, reverse=True)
 
 
 # ---- scatter (a falling seed pushes the cloud aside) -----------------------
