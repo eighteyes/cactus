@@ -22,6 +22,8 @@ Responsibilities:
 - Card first: the card's content gets every row it needs in both
   orientations; the field (pile-only too) takes the leftover and hides below
   4 rows. The key bar is centred and a seed drops under the key pressed.
+- The auto worker proposes (never answers) on gated rows and holds the rest;
+  the card shows `[..] label - reason`, and `A` accepts it like the digit.
 - The garden (the landed pile) is shared and persisted: it survives a
   restart and stays in sync across every TUI on the same database.
 """
@@ -2322,3 +2324,124 @@ def test_decompose_instruction_batches_without_waiting():
     text = DECOMPOSE_INSTRUCTION.format(key="q7")
     assert "-p q7 --no-wait" in text
     assert "backgrounded `cactus get KEY... --wait`" in text
+
+
+# ---- auto-decider -------------------------------------------------------
+
+
+async def settle_auto(app: CactusApp, pilot) -> None:
+    """Let the auto worker chain drain: each stamp triggers a reload and the next job."""
+    for _ in range(4):
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.7)  # past POLL_INTERVAL so the stamp reloads
+
+
+def auto_row(store: Store, project: str, text: str = "pick one"):
+    return store.ask(
+        text, project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+
+async def test_auto_worker_stamps_gated_row_with_proposal(
+    store: Store, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CACTUS_RANK", "reversible,low")
+    monkeypatch.setenv("CACTUS_DECIDE", "b:0.93")
+    q = auto_row(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await settle_auto(app, pilot)
+        got = store.get(q.key, project=project)
+        assert (got.auto_pick, got.auto_confidence) == ("b", 0.93)
+        assert got.auto_reason == "reversible · low"
+        assert got.status == "open"  # proposes, never answers
+        text = str(app.query_one("#card-text", Static).content)
+        assert "[..] b - reversible · low" in text
+
+
+async def test_auto_worker_holds_a_non_gated_row_and_card_shows_nothing(
+    store: Store, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CACTUS_RANK", "costly,high")
+    monkeypatch.setenv("CACTUS_DECIDE", "b:0.93")
+    q = auto_row(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await settle_auto(app, pilot)
+        got = store.get(q.key, project=project)
+        assert got.auto_pick is None and got.auto_at is not None
+        assert got.auto_reason == "costly · high"
+        assert "[..]" not in str(app.query_one("#card-text", Static).content)
+        assert "A" not in keybar_keys(app)
+
+
+async def test_auto_worker_never_runs_when_overrides_are_off(
+    store: Store, project: str
+) -> None:
+    q = auto_row(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await settle_auto(app, pilot)
+    assert store.get(q.key, project=project).auto_at is None
+
+
+async def test_auto_worker_skips_multi_and_persistent_rows(
+    store: Store, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CACTUS_RANK", "reversible,low")
+    monkeypatch.setenv("CACTUS_DECIDE", "b:0.93")
+    multi = store.ask("m", project=project, cwd=project, agent=AGENT, kind="multi",
+                      act="ask", choices=[Choice("a"), Choice("b")])
+    review = store.ask("r", project=project, cwd=project, agent=AGENT, kind="confirm",
+                       act="review", choices=[Choice("pass"), Choice("fail")])
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await settle_auto(app, pilot)
+    assert store.get(multi.key, project=project).auto_at is None
+    assert store.get(review.key, project=project).auto_at is None
+
+
+async def test_A_accepts_the_proposal_like_its_digit(store: Store, project: str) -> None:
+    q = auto_row(store, project)
+    store.set_auto(q.key, "b", 0.9, "reversible · low", project=project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert keybar_keys(app).get("A") == "auto"
+        await pilot.press("A")
+        await pilot.pause()
+        assert app.undo_stack  # same undo entry a digit pushes
+    fresh = store.get(q.key, project=project)
+    assert fresh.status == "answered"
+    assert fresh.answer.selected == ["b"]
+
+
+async def test_A_without_a_proposal_flashes_and_keybar_omits_it(
+    store: Store, project: str
+) -> None:
+    q = auto_row(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "A" not in keybar_keys(app)
+        assert app.check_action("activate_project", ()) is False
+        await pilot.press("A")
+        await pilot.pause()
+        assert "no proposal" in app.flash
+    assert store.get(q.key, project=project).status == "open"
+
+
+async def test_A_on_the_projects_page_still_activates(store: Store, project: str) -> None:
+    q = auto_row(store, project)
+    store.set_auto(q.key, "b", 0.9, "reversible · low", project=project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("P")
+        await pilot.pause()
+        assert app.check_action("activate_project", ()) is True
+        await pilot.press("A")
+        await pilot.pause()
+    assert store.get(q.key, project=project).status == "open"  # not accepted

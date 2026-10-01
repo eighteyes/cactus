@@ -718,3 +718,18 @@ scope.
   status line; `x` (`close_row`, bound by `check_action` only on a review/plan
   row) is `c`'s store call and undo entry; a finished plan or a review with a
   verdict prompts `finished? x closes it (or the agent will)`.
+- The auto-decider only proposes, never answers. `rank.classify` gates a row
+  (`Rank.gated`: reversible and low complexity); only a gated row gets a
+  `decide.propose` pick, a held one is stamped with `rank.reason()` and no
+  pick. `auto_*` columns stay out of `monitor._signature`, so a proposal never
+  wakes the agent. `auto_at` is stamped once, held rows included, so a row is
+  ranked once; `edit` clears `auto_*`. The TUI worker (`_kick_auto`) is one
+  thread job at a time over plain open `ask` choice/confirm rows with 2+
+  choices, writes back via `call_from_thread`, never runs when `CACTUS_RANK`
+  or `CACTUS_DECIDE` is `off` (conftest sets both), and keeps no-classifier
+  and decider-down rows in memory only (decider re-probed every 60s). The card
+  shows `[..] label - reason` after the choices (none on a held row). `A`
+  dispatches on context: `activate_project` on the projects page, else it
+  accepts the proposal through the same `_submit_answer`/`_confirm` path as
+  the digit; `check_action` admits it only on an open row with `auto_pick`,
+  `on_key` flashes otherwise, and the key bar lists `A auto`.

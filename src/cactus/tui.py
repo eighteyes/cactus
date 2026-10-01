@@ -133,6 +133,8 @@ def _figlet_project_name(label: str) -> str:
 
 # How many lines of command output the card shows; the rest spills to a file.
 RUN_TAIL = 12
+# How often a down decider is probed again (seconds).
+AUTO_PROBE_SECONDS = 60.0
 
 # `D` uses the existing elaborate state rather than a second kind of pending
 # row: the owner already receives elaborate events and knows it must act before
@@ -287,6 +289,11 @@ def _finished_prompt(q: Question) -> bool:
     return q.act == "review" and q.answer is not None
 
 
+def _auto_line(q: Question) -> str:
+    """The robot's proposal, one line: `[..]` marks it, the reason follows."""
+    return f"  [..] {q.auto_pick} - {q.auto_reason}"
+
+
 def _card_lines(
     q: Question,
     *,
@@ -401,6 +408,8 @@ def _card_lines(
                 )
         if q.recommend_why:
             lines.append(f"  recommend: {', '.join(q.recommend)} — {q.recommend_why}")
+        if q.auto_pick:
+            lines.append(_auto_line(q))
     elif q.kind == "confirm":
         labels = [c.label for c in q.choices] or ["yes", "no"]
         keys = ["y", "n"]
@@ -411,6 +420,8 @@ def _card_lines(
             lines.append(f"  {i})  {label}{rec}{accel}")
         if q.recommend_why:
             lines.append(f"  recommend: {', '.join(q.recommend)} — {q.recommend_why}")
+        if q.auto_pick:
+            lines.append(_auto_line(q))
 
     if pending:
         lines.append("")
@@ -758,7 +769,7 @@ class CactusApp(App[int]):
         Binding("P", "open_projects", "Projects"),
         Binding("a", "open_answers", "Answers"),
         Binding("I", "ignore_project", "Ignore"),
-        Binding("A", "activate_project", "Activate"),
+        Binding("A", "activate_project", "Activate/auto"),
         Binding("u", "undo", "Undo", show=False),
         Binding("e", "elaborate", "Elaborate", show=False),
         Binding("D", "decompose", "Decompose", show=False),
@@ -854,6 +865,13 @@ class CactusApp(App[int]):
         # `_reload_pending` and returns; the holder loops once more.
         self._reload_lock = asyncio.Lock()
         self._reload_pending = False
+        # Auto worker (proposals only): one job at a time; `_auto_skip` holds
+        # rows with no classifier this session, `_auto_wait` gated rows whose
+        # decider was down, retried when `decide.available()` turns true.
+        self._auto_busy = False
+        self._auto_skip: set[int] = set()
+        self._auto_wait: set[int] = set()
+        self._auto_probe_at = 0.0
         # Row moves (j/k/arrows) requested while a rebuild is in flight,
         # applied by the rebuild once it has restored focus.
         self._rebuild_move = 0
@@ -1526,8 +1544,24 @@ class CactusApp(App[int]):
             await self._set_selected_project_enabled(False)
 
     async def action_activate_project(self) -> None:
+        """`A`: activate the selected project on the projects page, else accept
+        the focused row's proposal — the same path its digit takes."""
         if self.projects_open:
             await self._set_selected_project_enabled(True)
+            return
+        q = self._current_question()
+        if q is None or q.status != "open" or not q.auto_pick:
+            return
+        labels = [c.label for c in q.choices]
+        if q.auto_pick not in labels:
+            return
+        n = labels.index(q.auto_pick) + 1
+        if q.kind == "confirm":
+            await self._confirm(n - 1, key=str(n))
+        else:
+            await self._submit_answer(
+                q, selected=[q.auto_pick], text=self.pending_text or None, key=str(n)
+            )
 
     def _close_settings(self) -> None:
         self.settings_open = False
@@ -1637,6 +1671,7 @@ class CactusApp(App[int]):
         await self._rebuild_rail_locked()
         self._rebuild_card()
         self._rebuild_status_bar()
+        self._kick_auto()
 
     async def _poll(self) -> None:
         if self._reload_lock.locked():
@@ -1646,6 +1681,108 @@ class CactusApp(App[int]):
 
     async def action_refresh_view(self) -> None:
         await self._reload(force=True)
+
+    # ---- auto-decider worker ---------------------------------------------
+
+    @staticmethod
+    def _auto_enabled() -> bool:
+        return "off" not in (os.environ.get("CACTUS_RANK"), os.environ.get("CACTUS_DECIDE"))
+
+    @staticmethod
+    def _auto_eligible(q: Question) -> bool:
+        """A plain choice/confirm ask with a menu and no ranking yet.
+
+        `run` is left out: approving it runs a command, and the robot only
+        proposes on rows where acting is a pick, not an execution.
+        """
+        return (
+            q.status == "open" and q.auto_at is None and q.act == "ask"
+            and q.kind in ("choice", "confirm") and len(q.choices) >= 2
+        )
+
+    def _kick_auto(self) -> None:
+        """Start the next auto job, if none is running (one row at a time).
+
+        The focused row goes first, then the rail's own order (current
+        project first). Never runs when CACTUS_RANK or CACTUS_DECIDE is off.
+        """
+        if self._auto_busy or not self._auto_enabled():
+            return
+        if self._auto_wait and time.monotonic() - self._auto_probe_at >= AUTO_PROBE_SECONDS:
+            self._auto_probe_at = time.monotonic()
+            self._auto_busy = True
+            self._auto_work(None)
+            return
+        skip = self._auto_skip | self._auto_wait
+        rows = [q for q in self.questions if q.key == self.focused_key] + [
+            q for q in self.questions if q.key != self.focused_key
+        ]
+        for q in rows:
+            if q.id not in skip and self._auto_eligible(q):
+                self._auto_busy = True
+                self._auto_work(q)
+                return
+
+    @work(thread=True, exclusive=True, group="auto")
+    def _auto_work(self, q: Question | None) -> None:
+        """Rank one row, then propose on it if gated; or probe the decider (q None).
+
+        Runs off the UI thread and touches no Store: the outcome goes back
+        through `call_from_thread`, which writes on the UI thread's connection.
+        """
+        from . import decide, rank
+
+        outcome: tuple = ("skip",)
+        try:
+            if q is None:
+                outcome = ("up",) if decide.available() else ("down",)
+            else:
+                choices = [(c.label, c.description or "") for c in q.choices]
+                ranked = rank.classify(q.text, q.context, choices)
+                if ranked is None:
+                    outcome = ("skip",)
+                elif not ranked.gated:
+                    outcome = ("held", ranked.reason())
+                else:
+                    prop = decide.propose(q.text, q.context, choices)
+                    outcome = (
+                        ("wait",) if prop is None
+                        else ("pick", prop.label, prop.confidence, ranked.reason())
+                    )
+        except Exception:
+            outcome = ("skip",)
+        try:
+            self.call_from_thread(self._auto_done, q, outcome)
+        except Exception:
+            pass  # app is gone; nothing left to write to
+
+    def _auto_done(self, q: Question | None, outcome: tuple) -> None:
+        self._auto_busy = False
+        kind = outcome[0]
+        if q is None:
+            if kind == "up":
+                self._auto_wait.clear()
+        elif kind == "skip":
+            self._auto_skip.add(q.id)
+        elif kind == "wait":
+            self._auto_wait.add(q.id)
+        else:
+            self._auto_stamp(q, outcome)
+        self._kick_auto()
+
+    def _auto_stamp(self, q: Question, outcome: tuple) -> None:
+        """Write a held or proposed outcome, unless the row moved on meanwhile."""
+        try:
+            now = self.store.get(q.key, project=q.project)
+            if now is None or not self._auto_eligible(now) or now.text != q.text:
+                return
+            if outcome[0] == "held":
+                self.store.set_auto(q.id, None, None, outcome[1])
+            else:
+                _, label, confidence, reason = outcome
+                self.store.set_auto(q.id, label, confidence, reason)
+        except (KeyError, ValueError):
+            self._auto_skip.add(q.id)
 
     def _flash_plan_done(self) -> None:
         """Flash once when a tick — from this TUI or a CLI writer — finishes a plan.
@@ -1835,6 +1972,8 @@ class CactusApp(App[int]):
             if q.allow_free:
                 items.append(("i", "type"))
 
+        if self.check_action("activate_project", ()):
+            items.append(("A", "auto"))
         if self.check_action("run_command", ()):
             items.append(("R", "run"))
         if self.check_action("copy_command", ()):
@@ -1987,6 +2126,10 @@ class CactusApp(App[int]):
                 "focus_next", "focus_prev", "prev_project", "next_project",
                 "clear_focused", "undo", "poke", "visit", "refresh_view", "quit_app",
             )
+
+        if action == "activate_project":
+            # Inbox `A` accepts the robot's proposal; only a proposed open row.
+            return q.status == "open" and bool(q.auto_pick)
 
         if action == "close_row":
             # A finished review or plan closes with `x` (q404); every other
@@ -2700,6 +2843,13 @@ class CactusApp(App[int]):
                 self._rebuild_status_bar()
                 event.stop()
             return
+        if event.key == "A":
+            # inbox `A` accepts a proposal; it only binds on a proposed row.
+            q = self._current_question()
+            if q is not None:
+                self.flash = f"{q.key} has no proposal to accept"
+                self._rebuild_status_bar()
+                event.stop()
         if event.key == "p":
             # poke only binds on a row with an owner and herdr stamps
             # (check_action); a row posted outside herdr otherwise ate the key.
