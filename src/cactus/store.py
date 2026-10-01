@@ -126,6 +126,13 @@ CREATE TABLE IF NOT EXISTS questions (
     -- verdict's time; never part of the monitor signature.
     heard_at     TEXT,
     responded_at TEXT,
+    -- The auto-decider's proposal (advisory, never an answer): the label it
+    -- picked, its confidence, a reason, and when. Never part of the monitor
+    -- signature. Cleared by `edit` when the text or choices change.
+    auto_pick       TEXT,
+    auto_confidence REAL,
+    auto_reason     TEXT,
+    auto_at         TEXT,
     -- Keys number per project (q166). A fresh database starts here; an older
     -- one reaches it through `cactus migrate --yes`.
     UNIQUE(project, key)
@@ -341,6 +348,10 @@ class Question:
     files: list[str] = field(default_factory=list)
     heard_at: str | None = None
     responded_at: str | None = None
+    auto_pick: str | None = None
+    auto_confidence: float | None = None
+    auto_reason: str | None = None
+    auto_at: str | None = None
 
     @property
     def heard_state(self) -> str | None:
@@ -410,6 +421,13 @@ class Question:
                 if self.run_exit is not None else None
             ),
             "files": self.files,
+            "auto": (
+                {
+                    "pick": self.auto_pick, "confidence": self.auto_confidence,
+                    "reason": self.auto_reason, "at": self.auto_at,
+                }
+                if self.auto_pick is not None else None
+            ),
         }
 
 
@@ -536,6 +554,13 @@ class Store:
             self.conn.execute("ALTER TABLE questions ADD COLUMN heard_at TEXT")
         if "responded_at" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN responded_at TEXT")
+        # The auto-decider's proposal: additive like `heard_at`.
+        for col, typ in (
+            ("auto_pick", "TEXT"), ("auto_confidence", "REAL"),
+            ("auto_reason", "TEXT"), ("auto_at", "TEXT"),
+        ):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE questions ADD COLUMN {col} {typ}")
         # `seen` renamed to `notify`: a data fixup, not a schema change, so it
         # runs unconditionally on every open like the checks above — idempotent,
         # since a second pass finds no `seen` rows left to touch.
@@ -665,6 +690,10 @@ class Store:
                     files        TEXT,
                     heard_at     TEXT,
                     responded_at TEXT,
+                    auto_pick       TEXT,
+                    auto_confidence REAL,
+                    auto_reason     TEXT,
+                    auto_at         TEXT,
                     UNIQUE(project, key)
                 )""",
                 """INSERT INTO questions_new
@@ -674,7 +703,8 @@ class Store:
                           confidence, recommend_why, context, asked_by, status,
                           created_at, updated_at, run_exit, run_tail, run_log,
                           elaborate, elaborate_at, last_change, files,
-                          heard_at, responded_at
+                          heard_at, responded_at,
+                          auto_pick, auto_confidence, auto_reason, auto_at
                    FROM questions""",
                 "DROP TABLE questions",
                 "ALTER TABLE questions_new RENAME TO questions",
@@ -1253,6 +1283,64 @@ class Store:
             raise KeyError(f"{key} has no step {idx}")
         return self._touch(q.id)
 
+    def set_auto(
+        self,
+        key_or_id: str | int,
+        pick: str | None,
+        confidence: float | None,
+        reason: str | None,
+        *,
+        project: str | None = None,
+    ) -> Question:
+        """Record the auto-decider's proposal on an open row.
+
+        `pick=None` records a HELD row: ranked and not proposed on, `reason`
+        says why. `auto_at` is stamped either way, so the row is classified
+        once and never re-ranked until an edit clears `auto_*`.
+
+        Advisory only: it never answers, and it stays out of the monitor
+        signature so the asking agent is not woken by it. `updated_at` is
+        bumped so the TUI poll sees the new proposal.
+        """
+        q = self._resolve_auto(key_or_id, project)
+        if q.status != "open":
+            raise ValueError(f"{q.key} is {q.status}; a proposal needs an open row")
+        labels = [c.label for c in q.choices]
+        if pick is not None and pick not in labels:
+            raise ValueError(f"{pick!r} is not one of {q.key}'s choices: {labels}")
+        now = _now()
+        self.conn.execute(
+            "UPDATE questions SET auto_pick = ?, auto_confidence = ?, "
+            "auto_reason = ?, auto_at = ?, updated_at = ? WHERE id = ?",
+            (pick, None if pick is None else confidence, reason, now, now, q.id),
+        )
+        result = self._get_by_id(q.id)
+        assert result is not None
+        return result
+
+    def clear_auto(
+        self, key_or_id: str | int, *, project: str | None = None
+    ) -> Question:
+        """Drop a row's proposal (all four `auto_*` fields)."""
+        q = self._resolve_auto(key_or_id, project)
+        self.conn.execute(
+            "UPDATE questions SET auto_pick = NULL, auto_confidence = NULL, "
+            "auto_reason = NULL, auto_at = NULL, updated_at = ? WHERE id = ?",
+            (_now(), q.id),
+        )
+        result = self._get_by_id(q.id)
+        assert result is not None
+        return result
+
+    def _resolve_auto(self, key_or_id: str | int, project: str | None) -> Question:
+        q = (
+            self._get_by_id(key_or_id) if isinstance(key_or_id, int)
+            else self.get(key_or_id, project=project)
+        )
+        if q is None:
+            raise KeyError(f"no such question: {key_or_id}")
+        return q
+
     def mark_heard(self, qid: int) -> Question | None:
         """Stamp `heard_at` when the owner reads a review/plan row (q406).
 
@@ -1413,6 +1501,13 @@ class Store:
         # context/recommend diff, not by this column.
         new_last_change = "edited" if was_elaborate else q.last_change
 
+        # A proposal was made against the old wording; once the text or the
+        # choices move it is stale, so it goes.
+        stale_auto = (
+            new_text != q.text
+            or [c.as_dict() for c in new_choices] != [c.as_dict() for c in q.choices]
+        )
+
         now = _now()
         self.conn.execute(
             """
@@ -1432,6 +1527,12 @@ class Store:
                 q.id,
             ),
         )
+        if stale_auto:
+            self.conn.execute(
+                "UPDATE questions SET auto_pick = NULL, auto_confidence = NULL, "
+                "auto_reason = NULL, auto_at = NULL WHERE id = ?",
+                (q.id,),
+            )
         result = self._get_by_id(q.id)
         assert result is not None
         self._record_if_exists(
@@ -2021,4 +2122,8 @@ class Store:
             files=json.loads(row["files"]) if row["files"] else [],
             heard_at=row["heard_at"],
             responded_at=row["responded_at"],
+            auto_pick=row["auto_pick"],
+            auto_confidence=row["auto_confidence"],
+            auto_reason=row["auto_reason"],
+            auto_at=row["auto_at"],
         )

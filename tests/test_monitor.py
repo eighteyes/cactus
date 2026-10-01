@@ -281,3 +281,16 @@ def test_heard_and_responded_stamps_wake_nobody(scratch_env, project, store):
         events = stop_and_read(proc)
 
     assert not any(e.get("key") == q.key for e in events)
+
+
+def test_auto_proposal_does_not_change_signature(scratch_env, project, store):
+    """A proposal must never wake the asking agent."""
+    from cactus.monitor import _signature
+
+    q = store.ask("pick", project=project, cwd=project, agent="a1", kind="choice",
+                  choices=[Choice("a"), Choice("b")])
+    sig = _signature(store.get(q.key, project=project))
+    store.set_auto(q.key, "a", 0.9, "r", project=project)
+    assert _signature(store.get(q.key, project=project)) == sig
+    store.clear_auto(q.key, project=project)
+    assert _signature(store.get(q.key, project=project)) == sig

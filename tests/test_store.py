@@ -396,3 +396,72 @@ def test_heard_columns_survive_key_rebuild(store: Store, project: str) -> None:
     if store.needs_key_rebuild():
         store._drop_key_uniqueness()
     assert store.get(q.key, project=project).heard_at == stamp
+
+
+def _auto_row(store: Store, project: str):
+    return store.ask("pick one", project=project, cwd=project, agent=AGENT,
+                     kind="choice", choices=[Choice("a"), Choice("b")])
+
+
+def test_set_auto_writes_fields_and_bumps_cursor(store: Store, project: str) -> None:
+    q = _auto_row(store, project)
+    assert q.as_dict()["auto"] is None
+    before = store.cursor()
+    got = store.set_auto(q.key, "a", 0.9, "because", project=project)
+    assert (got.auto_pick, got.auto_confidence, got.auto_reason) == ("a", 0.9, "because")
+    assert got.auto_at is not None
+    assert got.as_dict()["auto"] == {
+        "pick": "a", "confidence": 0.9, "reason": "because", "at": got.auto_at,
+    }
+    assert store.cursor() != before
+    assert store.set_auto(q.id, "b", 0.5, None).auto_pick == "b"
+
+
+def test_set_auto_refuses_bad_pick_and_non_open(store: Store, project: str) -> None:
+    q = _auto_row(store, project)
+    with pytest.raises(ValueError):
+        store.set_auto(q.key, "zzz", 0.9, None, project=project)
+    store.answer(q.key, project=project, selected=["a"])
+    with pytest.raises(ValueError):
+        store.set_auto(q.key, "a", 0.9, None, project=project)
+
+
+def test_set_auto_held_row_stamps_without_a_pick(store: Store, project: str) -> None:
+    q = _auto_row(store, project)
+    got = store.set_auto(q.key, None, 0.9, "costly · low", project=project)
+    assert (got.auto_pick, got.auto_confidence) == (None, None)
+    assert got.auto_reason == "costly · low"
+    assert got.auto_at is not None
+    assert got.as_dict()["auto"] is None
+    assert store.clear_auto(q.key, project=project).auto_at is None
+
+
+def test_clear_auto_nulls_all_four(store: Store, project: str) -> None:
+    q = _auto_row(store, project)
+    store.set_auto(q.key, "a", 0.9, "r", project=project)
+    got = store.clear_auto(q.key, project=project)
+    assert (got.auto_pick, got.auto_confidence, got.auto_reason, got.auto_at) == (
+        None, None, None, None,
+    )
+    assert got.as_dict()["auto"] is None
+
+
+def test_edit_clears_auto_only_when_text_or_choices_change(store: Store, project: str) -> None:
+    q = _auto_row(store, project)
+    store.set_auto(q.key, "a", 0.9, "r", project=project)
+    same = store.edit(q.key, agent=AGENT, project=project, context="more")
+    assert same.auto_pick == "a"
+    text = store.edit(q.key, agent=AGENT, project=project, text="pick again")
+    assert text.auto_pick is None
+    store.set_auto(q.key, "a", 0.9, "r", project=project)
+    chg = store.edit(q.key, agent=AGENT, project=project, choices=[Choice("a"), Choice("c")])
+    assert chg.auto_pick is None and chg.auto_at is None
+
+
+def test_auto_columns_survive_key_rebuild(store: Store, project: str) -> None:
+    q = _auto_row(store, project)
+    store.set_auto(q.key, "b", 0.7, "r", project=project)
+    if store.needs_key_rebuild():
+        store._drop_key_uniqueness()
+    got = store.get(q.key, project=project)
+    assert (got.auto_pick, got.auto_confidence, got.auto_reason) == ("b", 0.7, "r")

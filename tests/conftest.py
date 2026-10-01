@@ -4,6 +4,8 @@ conftest.py — shared fixtures for the cactus test suite.
 Responsibilities:
 - Point every test at a scratch database, never the live inbox.
 - Make the poke transport inert so no test prompts a real agent.
+- Turn the ranker off so no test calls a real model.
+- Turn the auto-decider off so no test reaches a real decision server.
 - Disable decision records unless a test opts in inside a temp git repo.
 - Offer a Store, a project path, and a CLI runner that share that scratch state.
   The runner times out, so a call that waits forever fails instead of hanging.
@@ -46,6 +48,8 @@ def scratch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, st
         "CACTUS_EDITOR": "true {path}",
         "CACTUS_RECORDS": "0",
         "CACTUS_SKY": str(tmp_path / "sky.toml"),
+        "CACTUS_RANK": "off",
+        "CACTUS_DECIDE": "off",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
