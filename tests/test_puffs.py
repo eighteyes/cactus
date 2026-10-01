@@ -382,7 +382,7 @@ def test_band_texture_chains_fresh_patches_and_never_repeats() -> None:
     """A lane morphs along a chain a -> b -> c ..., one eased leg per half
     `morph` at `band_evolve` 1: after two full legs its patch is neither
     its first nor its second, and the blended texture never jumps."""
-    sky = _puffs("bands", cols=60, rows=20)
+    sky = _puffs("bands", cols=60, rows=20, band_evolve=1.0)
     lane = _lanes(sky)[0]
     first = [row[:] for row in lane.patch_a]
     second = [row[:] for row in lane.patch_b]

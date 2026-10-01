@@ -468,7 +468,7 @@ class SkyConfig:
     band_belts: str = field(default="alternate", metadata={"choices": ("alternate", "dense", "belts")})
     # `band_evolve` scales how fast a lane's texture morphs on into fresh
     # noise, read live each `advance` (no re-bake): 0 freezes it.
-    band_evolve: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.0, "hi": 5.0})
+    band_evolve: float = field(default=3.0, metadata={"step": 0.25, "lo": 0.0, "hi": 10.0})
     # Birds (v8): which depth bands may spawn a flock, how often, how many.
     # `field.py` reads these off `World.sky.config`, the same way `seed_wind`
     # reaches it; the glyph sets per depth stay in `field.DEPTH_GLYPHS`.
