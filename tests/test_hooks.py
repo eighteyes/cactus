@@ -9,7 +9,7 @@ Responsibilities:
 - Check the disabled-project path is silent (or says so) for every hook, the
   enabled path produces the documented output, and a project disabled with
   `cactus project ignore` is not read as enabled by a stray jq `false` value.
-- Check both Stop hooks stay silent unless CACTUS_STOP_HOOK=1.
+- Check both Stop hooks are on by default and silent with CACTUS_STOP_HOOK=0.
 """
 
 from __future__ import annotations
@@ -59,8 +59,8 @@ def hook_env(tmp_path: Path, scratch_env: dict[str, str]) -> dict[str, str]:
     # $XDG_STATE_HOME; scope it to this test so a run never dedupes against
     # (or pollutes) the developer's real ~/.local/state/cactus.
     env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
-    # The Stop hooks are opt-in; the suite exercises them switched on.
-    env["CACTUS_STOP_HOOK"] = "1"
+    # The Stop hooks are on by default (q411); the suite runs them that way.
+    env.pop("CACTUS_STOP_HOOK", None)
     return env
 
 
@@ -120,7 +120,8 @@ def test_root_enabled_project(cli, hook_env, project):
     hook_env = dict(hook_env, CACTUS_AGENT=agent)
 
     start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
-    assert "--monitor" in start.stdout
+    assert "--monitor" not in start.stdout
+    assert "next turn" in start.stdout
 
     asked = cli("ask", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
     assert asked.returncode == 0
@@ -131,7 +132,7 @@ def test_root_enabled_project(cli, hook_env, project):
     assert key in frontier.stdout
 
     stop = run_hook(ROOT_HOOKS / "stop-fork.sh", {}, hook_env, project)
-    assert "block" in stop.stdout
+    assert stop.stdout.strip() == ""
 
     before = list_all(cli, project)
     payload = {
@@ -274,22 +275,41 @@ def test_codex_ignore_not_fooled_by_false(cli, hook_env, project):
     assert list_all(cli, project) == []
 
 
-def test_stop_hooks_are_opt_in(cli, hook_env, project):
-    """Open rows, no monitor: a turn both Stop hooks would hold, if switched on."""
+def test_stop_hooks_do_not_require_monitor(cli, hook_env, project):
+    """Open rows are normal between turns; neither Stop hook demands a monitor."""
     cli("project", "activate", cwd=project)
     agent = "stop-optin-1"
     assert cli("ask", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project).returncode == 0
 
-    off = {k: v for k, v in hook_env.items() if k != "CACTUS_STOP_HOOK"}
-    off["CACTUS_AGENT"] = agent
+    on = dict(hook_env, CACTUS_AGENT=agent)
     payload = {"session_id": agent, "cwd": project}
     script = ROOT_HOOKS / "stop-fork.sh"
-    assert run_hook(script, payload, off, project).stdout.strip() == ""
-    on = run_hook(script, payload, dict(off, CACTUS_STOP_HOOK="1"), project)
-    assert "block" in on.stdout
-    # The Codex Stop hook never blocks (q342): Codex has no wake-up from idle,
-    # so there is no monitor to demand and a block would repeat on every stop.
+    assert run_hook(script, payload, on, project).stdout.strip() == ""
+    # The Codex Stop hook never blocks for open rows: collection happens on the
+    # next turn, so a block would repeat on every stop.
     script = CODEX_HOOKS / "stop.sh"
-    assert run_hook(script, payload, off, project).stdout.strip() == ""
-    assert run_hook(script, payload, dict(off, CACTUS_STOP_HOOK="1"), project).stdout.strip() == ""
+    assert run_hook(script, payload, on, project).stdout.strip() == ""
 
+
+def _transcript(tmp_path: Path, *assistant_content: dict) -> str:
+    """One human prompt followed by one assistant message, as JSONL."""
+    path = tmp_path / "transcript.jsonl"
+    rows = [
+        {"type": "user", "message": {"content": "do the thing"}},
+        {"type": "assistant", "message": {"content": list(assistant_content)}},
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return str(path)
+
+
+def test_stop_hook_on_by_default_holds_a_turn_without_an_ask(hook_env, project, tmp_path):
+    env = dict(hook_env)
+    script = ROOT_HOOKS / "stop-fork.sh"
+    bare = {"cwd": project, "transcript_path": _transcript(tmp_path, {"type": "text", "text": "done"})}
+    held = run_hook(script, bare, env, project)
+    assert json.loads(held.stdout)["decision"] == "block"
+    assert run_hook(script, bare, dict(env, CACTUS_STOP_HOOK="0"), project).stdout.strip() == ""
+
+    asked = {"cwd": project, "transcript_path": _transcript(
+        tmp_path, {"type": "tool_use", "name": "Bash", "input": {"command": "cactus ask hi --agent a"}})}
+    assert run_hook(script, asked, env, project).stdout.strip() == ""

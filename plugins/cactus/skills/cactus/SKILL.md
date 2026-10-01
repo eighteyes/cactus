@@ -56,8 +56,7 @@ with `o` (a diff vs git HEAD when changed). Repeat for more;
 `edit -f` replaces the list. A row about a file with no `-f` is a row the
 human answers blind.
 
-The `UserPromptSubmit` hook injects your outstanding frontier. The opt-in `Stop`
-hook (`CACTUS_STOP_HOOK=1`) continues the turn when rows are open without a
-monitor. The `PermissionRequest`
+The `UserPromptSubmit` hook injects your outstanding frontier. The `Stop` hook
+never blocks. The `PermissionRequest`
 hook converts an approval-needed Bash command into a Cactus run row and denies
 the transient request so the durable inbox remains the approval surface.

@@ -27,8 +27,8 @@ session. Use native `cactus ask` for durable, async, or richer Cactus work.
 Never run `cactus --monitor` without `--once` here: it is a stream that
 returns only when killed.
 
-Codex hooks provide the frontier at `UserPromptSubmit` and, with
-`CACTUS_STOP_HOOK=1`, check open rows at `Stop`. A `PermissionRequest` hook can post a durable `cactus run` approval
+Codex hooks provide the frontier at `UserPromptSubmit`; the `Stop` hook never
+blocks. A `PermissionRequest` hook can post a durable `cactus run` approval
 row before it declines the transient Codex approval request. After an
 approved row wakes you, re-read its result before running anything.
 

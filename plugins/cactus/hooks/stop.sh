@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -u
 
-# Opt-in: off unless CACTUS_STOP_HOOK=1.
-[ "${CACTUS_STOP_HOOK:-}" = "1" ] || exit 0
+# On by default (q411); CACTUS_STOP_HOOK=0 opts out.
+[ "${CACTUS_STOP_HOOK:-1}" = "0" ] && exit 0
 input=$(cat)
 command -v cactus >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0

@@ -7,20 +7,17 @@ description: Ask the human without stopping work. Use cactus instead of AskUserQ
 
 ## Choose your runtime instructions
 
-This file is the shared Cactus workflow. Before starting a monitor or relying
-on an automatic wake-up, read the instructions for the host running you:
+This file is the shared Cactus workflow. Read the instructions for the host
+running you:
 
-- [Claude Code](CLAUDE.md) — Claude plugin hooks, Herdr identity, and courier.
+- [Claude Code](CLAUDE.md) — Claude plugin hooks and Herdr identity.
 - [Codex](CODEX.md) — Codex plugin hooks and the Codex session identity.
-- [Grok](GROK.md) — webhook wake-up rather than a persistent local monitor.
+- [Grok](GROK.md) — webhook wake-up.
 - [Claude Desktop and other MCP hosts](DESKTOP.md) — the verbs are
-  `cactus_*` tools, there is no monitor, and answers are read at the fork.
+  `cactus_*` tools, and answers are read at the fork.
 
 The host-specific file changes only identity and wake-up mechanics. The row
-semantics, authoring rules, and ownership rules below apply everywhere. A
-host that cannot run a background command and has no webhook must never run
-`cactus --monitor` at all: without `--once` it is a stream that returns only
-when killed, and in the foreground it blocks the session.
+semantics, authoring rules, and ownership rules below apply everywhere.
 
 cactus is a SQLite inbox. You post a row, get a key back, and keep working. The
 human answers in `cactus --tui` on their own schedule, from any project, and you
@@ -41,25 +38,17 @@ only that project; if it is wrong, `cd` before asking.
 
 ## Workflow, required
 
-    1  arm       run `cactus --monitor --json --agent ID --once` as a background
-                 command before the first ask; it exits on the first event for
-                 your rows and that exit wakes you; re-arm it first on every wake
-    2  ask       post every decision the human makes here, not in chat;
+    1  ask       post every decision the human makes here, not in chat;
                  --recommend when you have a pick, -f for every file the
                  question is about, --agent on every row
-    3  work      do everything the answer does not block
-    4  act       on each event as it lands: answered, elaborate, reopened, cleared
-    5  clear     your own rows, by key, once acted on
+    2  work      do everything the answer does not block; do not run a monitor
+    3  inspect   on your next turn, inspect the frontier and `cactus get` rows
+                 that are answered or elaborated
+    4  clear     your own rows, by key, once acted on
 
-`--agent` is required: an unfiltered monitor is refused. Every event is one
-JSON line, already filtered to your rows, and your own `asked` and `edited`
-never echo:
-
-    cactus --monitor --json --agent "$AGENT" --once
-
-Arm and re-arm it with the background mechanism in your runtime instructions.
-A host with no background command that survives the turn must use a webhook
-wake-up instead.
+Background-process completion is not an idle-session wake-up. Durable rows
+and the next-turn frontier are the collection mechanism; use `cactus get` to
+inspect a specific row when work reaches its fork.
 
 ## Blocked by a permission prompt
 
@@ -130,6 +119,11 @@ and choice descriptions at 80 columns, with blank lines between paragraphs.
       --context "Staging tenant is provisioned. Local means owning password reset. Default if unanswered: oidc." \
       -f docs/auth-spec.md \
       -t auth --agent "$AGENT" --recommend oidc --confidence high --why "tenant already exists"
+
+A description may span lines. A line starting `+ ` is a pro, `- ` a con; the
+rest is the summary. The card shows them as green and red marks under the choice.
+
+    -c $'oidc: existing IdP\n+ tenant already provisioned\n- couples us to IdP uptime'
 
 `--context` carries what the human cannot see from the labels: what you tried
 and what it cost, the numbers, what breaks under each option, what happens if
@@ -214,26 +208,16 @@ In the TUI, a digit copies that chunk to the clipboard; each copy appends a
 verdict naming the chunk's label, readable with `cactus get`. `d` retires the
 row.
 
-## Collect without blocking the session
+## Collect on the next turn
 
-The monitor you started first is the wake-up. When a thread needs its own
-watcher, or the harness has no `Monitor`, two more ways:
-
-    Agent(subagent_type: "cactus-courier", prompt: "agent $AGENT, thread auth, deadline 1800")
-
-The courier parks on the stream and its task notification carries the answers.
-Launch it right after posting the batch and keep working. Or run the stream
-yourself with Bash `run_in_background`:
-
-    cactus --monitor --json --agent "$AGENT" | jq -c --unbuffered 'select(.thread == "auth" and .event == "answered")' | head -1
-
-Listen for `reopened` and `gone` too: `reopened` means a verdict you already
-read is stale; `gone` means the row was purged.
+Background commands do not wake an idle session. Keep working after posting a
+row; the next-turn frontier shows answered, elaborated, and open rows. Use
+`cactus get KEY --agent "$AGENT"` before acting on a review or plan verdict.
 
 ## Elaborate or decompose: the human wants the question changed
 
-`e` on a row moves it to status `elaborate` and the monitor emits an
-`elaborate` event carrying `hint` (what the human typed, or null) and
+`e` on a row moves it to status `elaborate`. The next-turn frontier and
+`cactus get` show its `hint` (what the human typed, or null) and
 `instruction` (the hint, else: rewrite plainly, no jargon, add what you
 tried, the numbers, what each option costs, what happens if nobody
 answers). Rewrite the row in place; the key stays:
@@ -294,8 +278,8 @@ for nothing.
 
 ## Webhook owners
 
-Agents that cannot keep a local monitor attached to their conversation must
-use a per-agent webhook wake-up. Read [GROK.md](GROK.md) for the external-agent
-recipe and [WEBHOOK_SETUP.md](WEBHOOK_SETUP.md) for the map, smoke test, and
+Agents that use external webhook delivery need a per-agent webhook wake-up.
+Read [GROK.md](GROK.md) for the external-agent recipe and
+[WEBHOOK_SETUP.md](WEBHOOK_SETUP.md) for the map, smoke test, and
 transport details. Do not set global `CACTUS_POKE` in a normal shell profile:
 it overrides Herdr delivery for every agent.

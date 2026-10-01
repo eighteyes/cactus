@@ -3,8 +3,7 @@
 # Inject the required cactus workflow, the agent's identity, and the project's open rows at session start.
 # Responsibilities:
 #   - stay silent when cactus is not installed
-#   - open with a ready-to-run once-loop command when no monitor runs for this agent
-#   - print the five-step workflow every agent follows: monitor, ask, work, act, clear
+#   - print the four-step workflow every agent follows: ask, work, inspect, clear
 #   - resolve the --agent value through identity.sh and print it
 #   - rehome rows this pane posted under a previous identity (after /clear or --resume)
 #   - teach the escape: cactus run when a permission prompt blocks
@@ -25,28 +24,12 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
 agent=$(cactus_resolve_agent)
 
-# Setup comes first: an agent with no monitor never hears its answers (q252).
-if [ -n "$agent" ]; then
-  watching=$(ps -ax -o command= | grep -F -- "--monitor" \
-    | awk -v id="$agent" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
-  if [ "$watching" = "0" ]; then
-    echo "FIRST, before anything else: arm your cactus once-loop with the Bash tool in the background:"
-    echo "  Bash(command=\"cactus --monitor --json --agent $agent --once\", run_in_background=true)"
-    echo "It exits on the first event for your rows and wakes you, even hours later on an idle session. Re-arm it first thing on every wake, before acting. Not the Monitor tool: that dies at 30 minutes."
-  else
-    echo "Your cactus once-loop is armed (--agent $agent)."
-  fi
-else
-  echo "FIRST: choose one stable --agent value for this session and arm \`cactus --monitor --json --agent <that value> --once\` with the Bash tool in the background."
-fi
-
 cat <<EOF
 cactus is installed. Its workflow is required, not optional:
-  1 monitor  arm \`cactus --monitor --json --agent ID --once\` with the Bash tool, run_in_background, before your first ask; --agent is required. It exits on the first event for your rows and wakes you; re-arm it first thing on every wake, then act. Never the Monitor tool: its 30-minute cap leaves the inbox deaf
-  2 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend when you have a pick, -f for every file the question is about, --agent on every row
-  3 work     do everything the answer does not block
-  4 act      on each event as it lands: answered, elaborate (rewrite the row with \`cactus edit KEY --agent ID --context ...\`), reopened, cleared. Read every review/plan row with \`cactus get KEY --agent ID\` (that tells the human you heard); after acting on its verdict, respond with \`cactus plan|review|edit KEY --agent ID\`
-  5 clear    your own rows, by key, once acted on
+  1 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend when you have a pick, -f for every file the question is about, --agent on every row
+  2 work     do everything the answer does not block; do not arm a monitor
+  3 inspect  on your next turn, the frontier lists answered/elaborated rows. Read every review/plan row with \`cactus get KEY --agent ID\` (that tells the human you heard); after acting on its verdict, respond with \`cactus plan|review|edit KEY --agent ID\`
+  4 clear    your own rows, by key, once acted on
 Blocked by a permission prompt? Post the command instead of stopping: \`cactus run CMD --agent ID\`. The human approves it from the TUI.
 Load the cactus skill before the first ask.
 EOF

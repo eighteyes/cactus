@@ -15,12 +15,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
-import subprocess
 import sys
 import textwrap
 from typing import Any, Sequence
 
+from . import tradeoffs
 from .scope import project_display, resolve_project
 from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
                     DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
@@ -33,52 +32,6 @@ EXIT_EMPTY = 3
 
 QUESTION_WIDTH = 80
 MAX_QUESTION_LINES = 3
-
-
-def _monitor_running(agent: str) -> bool:
-    """Whether an exact ``--monitor --agent`` process is already alive.
-
-    This is deliberately advisory. A process listing can be unavailable in a
-    sandbox, and a monitor can disappear immediately after this check; either
-    case should remind the agent, never make an otherwise valid cactus command
-    fail.
-    """
-    try:
-        result = subprocess.run(
-            ["ps", "-ax", "-o", "command="],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return False
-    if result.returncode != 0:
-        return False
-
-    for line in result.stdout.splitlines():
-        try:
-            words = shlex.split(line)
-        except ValueError:
-            words = line.split()
-        for index, word in enumerate(words[:-1]):
-            if word == "--agent" and words[index + 1] == agent and "--monitor" in words:
-                return True
-    return False
-
-
-def _remind_about_monitor(args: argparse.Namespace) -> None:
-    """Gently surface the required answer-delivery loop to an agent caller."""
-    agent = getattr(args, "agent", None)
-    if args.monitor or not isinstance(agent, str) or not agent.strip():
-        return
-    if _monitor_running(agent):
-        return
-    print(
-        f"cactus: no monitor is running for --agent {agent}; "
-        f"arm `cactus --monitor --json --agent {agent} --once` in the background "
-        f"so answers reach you.",
-        file=sys.stderr,
-    )
 
 
 def _wrapped_line_count(text: str, *, width: int = QUESTION_WIDTH) -> int:
@@ -114,21 +67,14 @@ NAME
   cactus — durable question inbox between agents and a human
 
 WORKFLOW (required)
-  1  cactus --monitor --agent ID --once
-                                     background (Bash run_in_background),
-                                     before the first ask; exits on the
-                                     first event and wakes you; re-arm on
-                                     every wake. Never echoes your own
-                                     asked or edited
-  2  cactus ask ... --agent ID        every decision, not chat
-  3  work; act on each event
+  1  cactus ask ... --agent ID        every decision, not chat
+  2  work; let background work finish; do not run a monitor
+  3  on your next turn, inspect cactus list/get for answered or elaborated rows
      review/plan verdict: read it with cactus get KEY --agent ID (that
      tells the human you heard), then respond with cactus plan / review /
      edit KEY --agent ID
   4  cactus clear KEY --agent ID      own rows only
 
-  --monitor --agent ID               unbounded stream, for a host that can
-                                     hold one open without a time cap
   blocked by a permission prompt -> cactus run CMD --agent ID
   elaborate event -> cactus edit KEY --agent ID
 
@@ -148,8 +94,6 @@ SYNOPSIS
   cactus poke KEY | --agent ID
   cactus rehome --agent NEW [--json]
   cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
-  cactus --monitor --agent ID [SCOPE] [--all] [--json] [--replay]
-                   [--interval N] [--once]
   cactus where | projects | threads
 
   KEY  qN in this project, or LABEL:qN / /abs/path:qN for another one
@@ -167,7 +111,7 @@ ACTS
   data     no       choice    chunks via -c 'label: body'; copy appends verdict; persistent
 
 ASK OPTIONS
-  -c LABEL[: DESC]           one choice, verbatim; repeat
+  -c LABEL[: DESC]           one choice, verbatim; repeat. DESC lines '+ pro' / '- con' show as marks
   -f PATH                    a file to preview/edit from the TUI; repeat
   --multi | --confirm        shape; text when no -c
   --kind choice|multi|text|confirm   override the inferred shape
@@ -260,6 +204,13 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
                 print(f"\t\t{indent}  {i}) {c.label}")
                 for body_line in (c.description or "").splitlines():
                     print(f"\t\t{indent}     {body_line}")
+        elif q.kind in ("choice", "multi"):
+            for i, c in enumerate(q.choices, start=1):
+                marks = tradeoffs.split(c.description)[1]
+                if marks:
+                    print(f"\t\t{indent}  {i}) {c.label}")
+                    for is_pro, text in marks:
+                        print(f"\t\t{indent}     {'✓' if is_pro else '✗'} {text}")
         if q.status == "elaborate":
             print(f"\t\t{indent}  wants: {q.elaborate or '(no hint given)'}")
         if q.recommend:
@@ -703,7 +654,7 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     except ValueError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
-    # Webhook-mapped owners need a wake; herdr agents rely on --monitor.
+    # Webhook-mapped owners need a wake; other agents collect on their next turn.
     try:
         from .poke import poke_webhook_if_mapped, PokeError
 
@@ -1665,7 +1616,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command is None:
             parser.print_help()
             return EXIT_OK
-        _remind_about_monitor(args)
         return int(args.fn(args, store, project, cwd))
     except KeyboardInterrupt:
         return 130

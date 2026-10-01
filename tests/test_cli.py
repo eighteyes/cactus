@@ -227,10 +227,12 @@ def test_get_text_shows_file_line(cli, project):
     assert "file" in r.stdout
 
 
-def test_agent_help_mentions_file_flag(cli):
+def test_agent_help_uses_next_turn_collection_not_monitor(cli):
     r = cli("--agent-help")
     assert r.returncode == 0
     assert "-f PATH" in r.stdout
+    assert "next turn" in r.stdout
+    assert "--monitor" not in r.stdout
 
 
 def test_review_file_replaces_and_keeps(cli, project):
@@ -385,3 +387,13 @@ def test_plan_review_without_matching_agent_do_not_mark_responded(cli, store, pr
     assert _heard_state(store, project) == "sent"
     assert cli("review", "q1", "--agent", "someone-else", "--look-at", "y").returncode == 1
     assert _heard_state(store, project) == "sent"
+
+
+def test_text_render_shows_tradeoff_marks_on_choice_rows(cli):
+    cli("ask", "which?", "-c", "a: sum\n+ good\n- bad", "-c", "b", "--agent", AGENT_A)
+    r = cli("get", "q1")
+    assert "1) a" in r.stdout
+    assert "✓ good" in r.stdout
+    assert "✗ bad" in r.stdout
+    raw = json.loads(cli("get", "q1", "--json").stdout)[0]
+    assert "+ good" in raw["choices"][0]["description"]

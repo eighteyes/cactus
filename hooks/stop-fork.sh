@@ -2,7 +2,7 @@
 # stop-fork.sh
 # Stop hook that blocks a turn from ending without posting its next fork to cactus.
 # Responsibilities:
-#   - stay silent (exit 0) unless CACTUS_STOP_HOOK=1 (opt-in)
+#   - stay silent (exit 0) when CACTUS_STOP_HOOK=0 (on by default, q411)
 #   - stay silent (exit 0) when cactus is not installed or stop_hook_active is true
 #   - find the current turn: everything after the last transcript entry that
 #     opened it (a genuine human prompt, a task-notification, or a
@@ -14,13 +14,10 @@
 #     already contains a Bash `cactus ask`/`cac ask` invocation or an
 #     AskUserQuestion tool_use
 #
-#   - block when the agent has open rows and no monitor process (q252)
-#
-# Read-only: one `cactus list` for the agent's open rows; never writes.
 set -u
 
-# Opt-in: off unless CACTUS_STOP_HOOK=1.
-[ "${CACTUS_STOP_HOOK:-}" = "1" ] || exit 0
+# On by default (q411); CACTUS_STOP_HOOK=0 opts out.
+[ "${CACTUS_STOP_HOOK:-1}" = "0" ] && exit 0
 command -v cactus >/dev/null 2>&1 || exit 0
 
 input=$(cat)
@@ -28,21 +25,6 @@ input=$(cat)
 enabled=$(cactus project status --json 2>/dev/null \
   | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
 [ "${enabled:-true}" = "true" ] || exit 0
-
-# Monitor check (q252): an agent with open rows and no monitor never hears the
-# answers. Read-only: one `cactus list` and a process scan.
-# shellcheck source=identity.sh
-. "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
-CACTUS_ID=$(cactus_resolve_agent 2>/dev/null)
-CACTUS_OPEN=0
-CACTUS_WATCHING=1
-if [ -n "$CACTUS_ID" ] && command -v jq >/dev/null 2>&1; then
-  CACTUS_OPEN=$(cactus list -s any --agent "$CACTUS_ID" --json 2>/dev/null \
-    | jq '[.[] | select(.status == "open" or .status == "live" or .status == "elaborate")] | length' 2>/dev/null)
-  CACTUS_WATCHING=$(ps -ax -o command= | grep -F -- "--monitor" \
-    | awk -v id="$CACTUS_ID" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
-fi
-export CACTUS_ID CACTUS_OPEN="${CACTUS_OPEN:-0}" CACTUS_WATCHING
 
 python3 - "$input" <<'PYEOF'
 import json
@@ -55,19 +37,6 @@ except Exception:
     sys.exit(0)
 
 if hook_input.get("stop_hook_active"):
-    sys.exit(0)
-
-# Checked before the fork rule and on every turn, background ones included:
-# a --once waiter that has fired leaves the agent with no monitor at all.
-import os
-open_rows = int(os.environ.get("CACTUS_OPEN") or 0)
-if open_rows > 0 and os.environ.get("CACTUS_WATCHING") == "0":
-    agent = os.environ.get("CACTUS_ID", "ID")
-    print(json.dumps({"decision": "block", "reason": (
-        f"you have {open_rows} open cactus row(s) and no once-loop armed; run "
-        f"Bash(command=\"cactus --monitor --json --agent {agent} --once\", "
-        "run_in_background=true) now, then stop"
-    )}))
     sys.exit(0)
 
 transcript_path = hook_input.get("transcript_path")
@@ -198,8 +167,7 @@ reason = (
     "the turn ended without a fork; post the next directions as one "
     "`cactus ask` with 2-3 `-c` options (or `--act steer --chosen` when one "
     "is the default), `--agent` required, `--recommend` + `--confidence` "
-    "when there is a pick; keep `cactus --monitor --json --agent ID` running so "
-    "the answer reaches you; then stop"
+    "when there is a pick; inspect the frontier on your next turn; then stop"
 )
 print(json.dumps({"decision": "block", "reason": reason}))
 sys.exit(0)

@@ -327,9 +327,9 @@ scope.
   owner. Every root hook reads stdin into `input` before sourcing
   identity.sh; nothing else may consume stdin first.
 - Both Stop hooks (`hooks/stop-fork.sh`, `plugins/cactus/hooks/stop.sh`) are
-  opt-in: they exit 0 before reading stdin unless `CACTUS_STOP_HOOK=1`. They
-  stay registered in hooks.json so opting in needs no settings edit.
-  `tests/test_hooks.py`'s `hook_env` sets it on.
+  on by default (q411): they exit 0 before reading stdin only when
+  `CACTUS_STOP_HOOK=0`. The Claude hook holds a turn opened by a human prompt
+  that posted no `cactus ask`/AskUserQuestion; the Codex hook never blocks.
 - `cactus rehome --agent NEW` (q208) is gated to rows stamped with the
   caller's own `HERDR_PANE_ID`/`HERDR_SESSION` — missing either refuses (exit
   1) rather than guessing which rows are "mine". Scoped to the current
@@ -397,6 +397,14 @@ scope.
   `{key} is act={q.act!r}, not 'plan'` message `--step` already gives,
   checked before any step-range error. `Store.set_steps` refuses
   empty/whitespace-only step text, `ValueError`.
+- Tradeoff marks (q410): a choice description's `+ ` / `- ` lines are pros and
+  cons, parsed by `tradeoffs.split` (pure side leaf, no store) for choice/multi
+  rows only — data rows never, their bodies may start with `-`. The TUI card
+  builds `rich.text.Text` with markup still off (green `✓`, red `✗`); the CLI
+  text renderer prints plain `✓`/`✗`. JSON keeps the raw description.
+- Collection workflow: agents do not arm or re-arm `cactus --monitor`. They
+  post durable rows, keep working, and inspect the next-turn frontier after
+  background work expires; process completion is not an idle-session wake-up.
 - `Store.set_steps`, `Store.set_step_done`, and `Store.set_review` all refuse
   a `cleared` row with the same message `Store.answer` uses — pointing at
   `cactus reopen KEY --agent ID` — so a retired plan/review row is frozen for

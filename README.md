@@ -110,16 +110,16 @@ Or register the server by absolute path in `claude_desktop_config.json`:
 
 ```
 hook               host          does
-SessionStart       Claude Code   resolve identity; rehome rows after /clear; arm-the-once-loop line; open rows
+SessionStart       Claude Code   resolve identity; rehome rows after /clear; open rows
                    Codex         session id as identity; no wake-up from idle, answers surface next turn
-UserPromptSubmit   both          inject open and answered-but-unacted rows; Claude Code: name the once-loop if none is armed
-Stop (opt-in)      Claude Code   hold a turn with open rows and no once-loop; hold a turn that posted no ask
-                   Codex         no-op: there is no monitor to demand
+UserPromptSubmit   both          inject open and answered-but-unacted rows
+Stop               Claude Code   hold a turn that posted no ask
+                   Codex         no-op
 PermissionDenied   Claude Code   post the denied command as a `cactus run` row
 PermissionRequest  Codex         post the requested command as a `cactus run` row, decline the transient prompt
 ```
 
-Stop is opt-in: set `CACTUS_STOP_HOOK=1`. Without it both Stop hooks exit silently.
+Stop is on by default; `CACTUS_STOP_HOOK=0` silences both Stop hooks.
 
 ### CLI
 
@@ -134,7 +134,6 @@ cactus --www          # localhost web surface
 Agents:
 
 ```sh
-cactus --monitor --json --agent ID --once              # background, before the first ask; exits on the first event, re-arm on wake
 cactus ask "Which auth backend?" --agent ID \
   -c "oidc: existing IdP" -c "local: bcrypt table" \
   --recommend oidc --confidence med --context "Staging tenant exists."
@@ -155,11 +154,16 @@ Full reference: `cactus --agent-help`.
 
 ### Skills / MCP / Subagent
 
-An agentic runtime needs two things from its host: bash calls and a background command that re-invokes the agent when it exits. The skill teaches the workflow over bash; `cactus --monitor --once` is that background command, re-armed on every wake. MCP is for Desktop, which has neither: `server/cactus-mcp` wraps the same verbs, and a client polls with `cactus_get`. The `cactus-courier` subagent parks on a thread in the background and reports when the human answers.
+An agentic runtime needs durable rows and a next-turn frontier. Agents post a
+row, keep working, and inspect the frontier on their next turn; background
+process completion is not treated as an idle-session wake-up. MCP for Desktop
+wraps the same verbs in `server/cactus-mcp`.
 
 ### Webhooks
 
-For that weirdo Grok, and any agent that cannot hold a local monitor: map the agent id to a URL in `~/.config/cactus/poke-webhooks.json`; answering a row POSTs a wake. Schema and smoke test: [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md)
+For agents using webhook delivery, map the agent id to a URL in
+`~/.config/cactus/poke-webhooks.json`; answering a row POSTs a wake. Schema
+and smoke test: [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md)
 
 ## Contributions
 Are welcome, I'm interested in seeing if this is useful! I've been thinking about out-of-band agentic communication for a while, and this is the approach that finally stuck.
