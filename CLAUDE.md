@@ -553,6 +553,9 @@ scope.
   each glyph's field column, alignment pad and bar gutter included, so a
   seed drops under the key pressed. A bar that fills its width has no
   slack and stays left-flush under every alignment.
+  The `keybar_order` TUI setting (settings `6`, default `choices_first`)
+  moves the numbered keys to the end under `choices_last`; `_keybar_x`
+  follows them, every other key keeps its order.
   The `seed_release` TUI setting (`tui.json`, settings `4`, default
   `left`) mirrors that column to `width - 1 - col` under `right`, so seeds
   land on the right while the bar stays where it is.

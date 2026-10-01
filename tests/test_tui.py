@@ -723,6 +723,72 @@ async def test_keybar_align_settings_cycle_persists(store: Store, project: str) 
         assert second.tui_settings["keybar_align"] == "left"
 
 
+@pytest.mark.parametrize("release", ["left", "right"])
+@pytest.mark.parametrize("align", ["left", "center", "right"])
+async def test_keybar_order_choices_last_moves_digits_and_the_seed(
+    store: Store, project: str, align: str, release: str,
+) -> None:
+    """`keybar_order = "choices_last"` puts the numbered keys after every
+    other key; "1"'s recorded column is still its glyph's screen column, so
+    a seed from "1" drops under it (or at the mirror under `right`)."""
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice(c) for c in "abcde"],
+    )
+
+    app = CactusApp(store, project=project)
+    app.tui_settings["orientation"] = "side"
+    app.tui_settings["keybar_align"] = align
+    app.tui_settings["seed_release"] = release
+    app.tui_settings["keybar_order"] = "choices_last"
+    async with app.run_test(size=(200, 40)) as pilot:
+        await _settle(pilot)
+        keys = [k for k, _ in app._keybar_items(app._current_question())]
+        assert keys[-5:] == ["1", "2", "3", "4", "5"]
+        bar = app.query_one("#keybar", Static)
+        field = app.query_one("#field")
+        line = str(bar.content)
+        assert line.index("1 a") > line.index("c clear")
+        assert line.index("1 a") > line.index("` seed")
+        col = app._keybar_x["1"]
+        assert bar.content_region.x + line.index("1 a") == field.region.x + col
+        width = field.size.width
+        dropped: list[int] = []
+        real_drop = app.world.drop
+        app.world.drop = lambda c: (dropped.append(c), real_drop(c))[1]
+        await pilot.press("1")
+        await pilot.pause()
+        assert dropped == [col if release == "left" else width - 1 - col]
+
+
+async def test_keybar_order_settings_toggle_persists(store: Store, project: str) -> None:
+    """Settings `6` flips choices_first -> choices_last, re-lays the bar at
+    once, and a fresh app reads the saved value back."""
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice(c) for c in "abcde"],
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(200, 40)) as pilot:
+        await _settle(pilot)
+        assert app.tui_settings["keybar_order"] == "choices_first"
+        first_col = app._keybar_x["1"]
+        await pilot.press("?")
+        await pilot.pause()
+        await pilot.press("6")
+        await pilot.pause()
+        assert app.tui_settings["keybar_order"] == "choices_last"
+        await pilot.press("escape")
+        await _settle(pilot)
+        assert app._keybar_x["1"] > first_col
+
+    second = CactusApp(store, project=project)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        assert second.tui_settings["keybar_order"] == "choices_last"
+
+
 async def test_field_column_enter_falls_back_to_i(store: Store, project: str) -> None:
     """A plan row's key bar offers "i note" but no "enter" item of its own —
     `_field_column("enter")` should fall back to "i"'s column rather than

@@ -20,7 +20,8 @@ Responsibilities:
   free-text mode. Card first: the field gets only the rows the card's
   content leaves, hidden below `FIELD_MIN_ROWS`; the key bar (left, centre
   or right per `keybar_align`) drops each seed under the key pressed, or
-  at its mirrored column under the `seed_release = "right"` setting.
+  at its mirrored column under the `seed_release = "right"` setting; the
+  `keybar_order` setting puts the numbered choice keys first or last.
 - Show a `T` tuning overlay listing every `SkyConfig` key, nudge it live
   with h/l/H/L, reset it with r, and keep the on-disk file and the running
   sky in agreement on every nudge.
@@ -73,9 +74,10 @@ FIELD_MIN_ROWS = 4
 TUI_SETTINGS_DEFAULTS = {
     "orientation": "side", "figlet_header": False, "projects_pane": True,
     "field": True, "pile_only": False, "seed_release": "left",
-    "keybar_align": "center",
+    "keybar_align": "center", "keybar_order": "choices_first",
 }
 KEYBAR_ALIGNS = ("left", "center", "right")
+KEYBAR_ORDERS = ("choices_first", "choices_last")
 
 
 def _tui_settings_path() -> Path:
@@ -104,6 +106,8 @@ def _load_tui_settings() -> dict[str, Any]:
         settings["seed_release"] = data["seed_release"]
     if isinstance(data, dict) and data.get("keybar_align") in KEYBAR_ALIGNS:
         settings["keybar_align"] = data["keybar_align"]
+    if isinstance(data, dict) and data.get("keybar_order") in KEYBAR_ORDERS:
+        settings["keybar_order"] = data["keybar_order"]
     return settings
 
 
@@ -1050,6 +1054,7 @@ class CactusApp(App[int]):
         pane = "on" if self.tui_settings["projects_pane"] else "off"
         release = self.tui_settings["seed_release"]
         align = self.tui_settings["keybar_align"]
+        order = "first" if self.tui_settings["keybar_order"] == "choices_first" else "last"
         return "\n".join([
             "settings",
             "",
@@ -1058,6 +1063,7 @@ class CactusApp(App[int]):
             f"3  projects pane  due-ranked, left of the rail    {pane}",
             f"4  seed release   drop under the key, or mirror   {release}",
             f"5  key bar        left / center / right           {align}",
+            f"6  choice keys    1-9 before or after the rest    {order}",
             f"f  Figlet project header (cybermedium)            {figlet}",
             "",
             "esc or ?  return to the inbox",
@@ -1598,6 +1604,15 @@ class CactusApp(App[int]):
         self._save_settings()
         self._render_settings()
 
+    def _toggle_keybar_order(self) -> None:
+        """Flip `keybar_order` between `choices_first` and `choices_last`
+        and rebuild the bar, so `_keybar_x` follows the moved digits."""
+        first = self.tui_settings["keybar_order"] == "choices_first"
+        self.tui_settings["keybar_order"] = "choices_last" if first else "choices_first"
+        self._rebuild_keybar()
+        self._save_settings()
+        self._render_settings()
+
     # ---- data loading ---------------------------------------------------
 
     def _live_projects(self) -> list[str]:
@@ -1917,7 +1932,8 @@ class CactusApp(App[int]):
         self.call_after_refresh(self._render_field)
 
     def _keybar_items(self, q: Question | None) -> list[tuple[str, str]]:
-        """`(key, label)` pairs for the row key bar, in display order.
+        """`(key, label)` pairs for the row key bar, in display order —
+        numbered keys first, or last under `keybar_order = "choices_last"`.
 
         Every item here is a key `check_action` would actually let through on
         this row — the bar and the keyboard agree — though not every key
@@ -2003,6 +2019,11 @@ class CactusApp(App[int]):
         if self.check_action("undo", ()):
             items.append(("u", "undo"))
         items.append(("`", "seed"))
+        if self.tui_settings["keybar_order"] == "choices_last":
+            # Numbered keys (choices, chunks, steps, a `1-N` range) move to
+            # the end; every other key keeps its relative order.
+            numbered = [it for it in items if it[0][:1].isdigit()]
+            items = [it for it in items if not it[0][:1].isdigit()] + numbered
         return items
 
     def _rebuild_keybar(self) -> None:
@@ -2792,6 +2813,8 @@ class CactusApp(App[int]):
                 self._toggle_seed_release()
             elif event.key == "5":
                 self._cycle_keybar_align()
+            elif event.key == "6":
+                self._toggle_keybar_order()
             elif event.key == "f":
                 self._toggle_figlet_header()
             else:
