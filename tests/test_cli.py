@@ -490,3 +490,10 @@ def test_answer_never_pokes_an_unmapped_owner(cli, scratch_env, project, tmp_pat
     cli("ask", "--no-wait", "pick", "--agent", AGENT_A, "-c", "x", "-c", "y")
     assert cli("answer", "q1", "-s", "x").returncode == 0
     assert not log.exists()
+
+
+def test_version_flag_prints_package_version(cli):
+    from cactus import __version__
+    r = cli("--version")
+    assert r.returncode == 0
+    assert r.stdout.strip() == f"cactus {__version__}"

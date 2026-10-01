@@ -8,5 +8,5 @@ Responsibilities:
 
 from .store import Answer, Choice, Question, Store, default_db_path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["Answer", "Choice", "Question", "Store", "default_db_path", "__version__"]

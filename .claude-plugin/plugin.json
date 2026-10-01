@@ -1,6 +1,6 @@
 {
   "name": "cactus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ask the human without stopping work. A durable, project-scoped question inbox: agents post asks, steers, run approvals, review blocks and plans; the human answers in a TUI on their own schedule.",
   "author": {
     "name": "eighteyes",

@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Ask the human without stopping work",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "cactus",
       "source": "./",
       "description": "Durable, project-scoped question inbox between coding agents and a human. Skill teaches ask/steer/run/review/plan, an answer wakes the owning agent, a SessionStart hook surfaces open rows.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "communication",
       "tags": ["human-in-the-loop", "questions", "inbox", "steer", "review", "plan", "tui", "hooks"],
       "license": "MIT"

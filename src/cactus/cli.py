@@ -19,7 +19,7 @@ import sys
 import textwrap
 from typing import Any, Sequence
 
-from . import tradeoffs
+from . import __version__, tradeoffs
 from .scope import project_display, resolve_project
 from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
                     DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
@@ -1339,6 +1339,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--here", action="store_true",
                    help="with --tui/--watch/--www, scope to the current project (git toplevel of pwd)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--version", action="version", version=f"cactus {__version__}")
     p.add_argument("--agent-help", action="store_true",
                    help="how an agent should use cactus, end to end")
 
