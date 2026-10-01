@@ -122,16 +122,10 @@ def test_root_enabled_project(cli, hook_env, project):
     hook_env = dict(hook_env, CACTUS_AGENT=agent)
 
     start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
-    # Outside herdr there is no pane to prompt: the once-loop is the wake-up.
-    assert f"cactus --monitor --json --agent {agent} --once" in start.stdout
-    assert "Not the Monitor tool" in start.stdout
-
-    pushed = run_hook(
-        ROOT_HOOKS / "session-start.sh", {"cwd": project},
-        dict(hook_env, HERDR_PANE_ID="w1:p1"), project,
-    )
-    assert "prompt this pane directly" in pushed.stdout
-    assert "--monitor" not in pushed.stdout
+    # q430: the backgrounded wait is the wake; no monitor, no push line.
+    assert "--monitor" not in start.stdout
+    assert "its exit is your wake-up" in start.stdout
+    assert "prompt this pane" not in start.stdout
 
     asked = cli("ask", "--no-wait", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
     assert asked.returncode == 0
@@ -333,8 +327,8 @@ def test_stop_hook_counts_edit_plan_review_as_posting_the_fork(hook_env, project
         assert run_hook(script, payload, hook_env, project).stdout.strip() == "", cmd
     bare = {"cwd": project, "transcript_path": _transcript(tmp_path, {"type": "text", "text": "done"})}
     reason = json.loads(run_hook(script, bare, hook_env, project).stdout)["reason"]
-    assert "wake" in reason
-    assert "next turn" not in reason
+    assert "backgrounded" in reason and "exit wakes you" in reason
+    assert "answer will wake you" not in reason
 
 
 # --------------------------------------------------------------------------

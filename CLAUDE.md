@@ -305,15 +305,12 @@ scope.
 - `cactus --monitor` requires `--agent ID`; humans use `--tui`/`--watch`
   instead. `--once` returns as soon as it emits the first non-`asked` event
   (or a `gone`) — inside the same tick, not after a further poll — and is
-  the fallback wake for an agent with no herdr pane and no webhook (q339,
-  q413): the agent arms it with Bash `run_in_background`, and its exit
-  re-invokes the agent, mid-turn or hours later on an idle session (probed
-  2026-09-27: a background process lived 35 min and an idle session woke
-  2.5 h after its last turn). The Monitor tool is not used: its 30-minute
-  cap dies unattended once the turn ends. The recipe re-arms first thing on
-  every wake; the exit-to-re-arm gap is the one window an event can slip
-  through, so the agent reads the row with `get` rather than trusting the
-  event line alone.
+  an available CLI surface, not the agent recipe (q430: the backgrounded
+  wait is the wake, see Collection workflow). The probe behind that
+  (q339, 2026-09-27): a background process lived 35 min and an idle Claude
+  Code session woke 2.5 h after its last turn when it exited — which is why
+  a backgrounded wait works. The Monitor tool is not used: its 30-minute
+  cap dies unattended once the turn ends.
 - Threads are agent-scoped: a thread name is only unique within one agent's
   rows, not project-wide. The TUI card and `watch` show `agent/thread`
   wherever they show the thread; `list`/`feed -t NAME --agent ID` narrow to
@@ -404,29 +401,24 @@ scope.
   rows only — data rows never, their bodies may start with `-`. The TUI card
   builds `rich.text.Text` with markup still off (green `✓`, red `✗`); the CLI
   text renderer prints plain `✓`/`✗`. JSON keeps the raw description.
-- Collection workflow (q412/q413, 2026-10-01): push plus loop. A human
-  answer wakes the owner; the agent keeps working and acts on each wake
-  without the human typing. Primary is the push, `poke.wake_owner` (see its
-  invariant): the owner's herdr pane is prompted, no agent process needed.
-  Fallback for an agent with no pane and no webhook is the `--once` loop (see
-  the `--monitor` invariant); the session-start hook prints the right one.
-  Blocking acts (`ask` with act ask, and `run`) still wait by default
+- Collection workflow (q430, 2026-10-01): wait-only. The backgrounded wait is
+  the wake; there is no herdr push and no agent-armed monitor. Blocking acts
+  (`ask` with act ask, and `run`) wait by default
   (`DEFAULT_WAIT_TIMEOUT` 3600s, `--timeout` overrides, exit 2 on timeout);
   `--no-wait` opts out, `-w/--wait` is a back-compat no-op. steer/notify/
-  review/plan/data and `--no-block` rows never wait. The waiting command
+  review/plan/data and `--no-block` rows never wait; an agent collects those
+  with one backgrounded `cactus get KEY... --wait`. The waiting command
   prints the key at once (stderr under `--json`), then the answer like
-  `get --wait`; an agent posts it as one backgrounded command (Bash
-  `run_in_background`), and `hooks/pretooluse-wait.sh` refuses the foreground
-  form. The MCP `cactus_ask`/`cactus_run` pass `--no-wait` unless `wait` is
-  set, and the Codex session-start hook tells Codex to post `--no-wait`.
-- `poke.wake_owner` (q412) is the automatic wake. It fires after the store
-  write on: an answer, a human `elaborate` or decompose request, a skip, a
-  review/plan verdict, and a `run` approve/deny. It never fires on a data
-  chunk copy, a clear, or an undo. The target pane is the row's herdr `pane`
-  stamp; a webhook-mapped agent gets its webhook instead; `CACTUS_POKE`
-  overrides both. A row with an owner but no reachable transport is a silent
-  no-op. The TUI runs it off the event loop (a thread), so a slow herdr call
-  never stalls a keypress; it never touches the store.
+  `get --wait`. An agent posts each blocking ask as one backgrounded command
+  (Bash `run_in_background`): it waits, its exit is the wake-up (the q339
+  probe in the `--monitor` invariant is why that works), no gap between post
+  and wait. `hooks/pretooluse-wait.sh` refuses the foreground form. The
+  automatic poke on an answer (`poke_webhook_if_mapped`; `cli.cmd_answer`,
+  `www`, the TUI) reaches webhook-mapped agents only and ignores
+  `CACTUS_POKE`; herdr agents are not auto-poked (`p` still pokes by hand).
+  The MCP `cactus_ask`/`cactus_run` pass `--no-wait` unless `wait` is set,
+  and the Codex session-start hook tells Codex to post `--no-wait`. The
+  courier agent stays deleted (q412); `poke.wake_owner` was removed (q430).
 - `Store.set_steps`, `Store.set_step_done`, and `Store.set_review` all refuse
   a `cleared` row with the same message `Store.answer` uses — pointing at
   `cactus reopen KEY --agent ID` — so a retired plan/review row is frozen for

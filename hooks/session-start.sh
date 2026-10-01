@@ -3,8 +3,6 @@
 # Inject the required cactus workflow, the agent's identity, and the project's open rows at session start.
 # Responsibilities:
 #   - stay silent when cactus is not installed
-#   - inside herdr, say answers prompt this pane directly; elsewhere, restore the once-loop
-#     instruction unless a --monitor process already runs for this agent
 #   - print the workflow every agent follows: ask, wait (backgrounded), work, act on each wake, clear
 #   - resolve the --agent value through identity.sh and print it
 #   - rehome rows this pane posted under a previous identity (after /clear or --resume)
@@ -26,24 +24,10 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
 agent=$(cactus_resolve_agent)
 
-if [ -n "${HERDR_PANE_ID:-}" ]; then
-  echo "Answers to this session's rows prompt this pane directly; no monitor needed."
-elif [ -n "$agent" ]; then
-  watching=$(ps -ax -o command= | grep -F -- "--monitor" \
-    | awk -v id="$agent" '{for(i=1;i<NF;i++) if($i=="--agent" && $(i+1)==id){n++; break}} END{print n+0}')
-  if [ "$watching" = "0" ]; then
-    echo "FIRST, before anything else: arm your cactus once-loop with the Bash tool in the background:"
-    echo "  Bash(command=\"cactus --monitor --json --agent $agent --once\", run_in_background=true)"
-    echo "It exits on the first event for your rows and wakes you, even hours later on an idle session. Re-arm it first thing on every wake, before acting. Not the Monitor tool: that dies at 30 minutes."
-  else
-    echo "Your cactus once-loop is armed (--agent $agent)."
-  fi
-fi
-
 cat <<EOF
 cactus is installed. Its workflow is required, not optional:
   1 ask      post every decision the human makes to \`cactus ask\`, not to chat or AskUserQuestion; one -c per direction, --recommend LABEL --confidence L when you have a pick, -f for every file the question is about, --agent on every row
-  2 wait     a blocking ask (ask, run) waits for the human by default. Post it as ONE backgrounded command (Bash run_in_background); its exit is your wake-up. --no-wait posts and returns; steer/notify/review/plan/data never wait
+  2 wait     a blocking ask (ask, run) waits for the human by default. Post it as ONE backgrounded command (Bash run_in_background); its exit is your wake-up. No monitor. --no-wait posts and returns; steer/notify/review/plan/data never wait; collect those with one backgrounded \`cactus get KEY... --wait\`
   2b work    do everything the answer does not block while it waits
   3 act      on each wake (answered, elaborate, reopened, cleared), read the row with \`cactus get KEY --agent ID\`. Read every review/plan row with \`cactus get KEY --agent ID\` (that tells the human you heard); after acting on its verdict, respond with \`cactus plan|review|edit KEY --agent ID\`
   4 clear    your own rows, by key, once acted on

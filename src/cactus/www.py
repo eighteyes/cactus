@@ -23,7 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .poke import PokeError, poke, wake_owner
+from .poke import PokeError, poke, poke_webhook_if_mapped
 from .store import ACTIONABLE, AlreadyAnswered, Question, Store
 
 POLL_INTERVAL = 0.5
@@ -596,7 +596,7 @@ class _Handler(BaseHTTPRequestHandler):
         poked: str | None = None
         poke_error: str | None = None
         try:
-            poked = wake_owner(q.agent, q.pane, key=q.key, event="answered")
+            poked = poke_webhook_if_mapped(q.agent)
         except PokeError as exc:
             poke_error = _msg(exc)
         result = q.as_dict()

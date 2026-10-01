@@ -1,8 +1,8 @@
 # Cactus on Claude Desktop and other MCP hosts
 
-A chat host is a poor fit for cactus because it has no herdr pane, no
-webhook and no background command: nothing can wake the agent when the human
-answers, so an answer is only ever found by polling. Chat turns also carry few decisions, and the human is already
+A chat host is a poor fit for cactus because it has no backchannel: nothing
+can wake the agent when the human answers, so an answer is only ever found
+by polling. Chat turns also carry few decisions, and the human is already
 present, so most questions belong in the reply, not on the board. Post a
 row only when the decision outlives the conversation: a verify block, a
 plan, a command that needs approval, or a fork another agent or a later
@@ -46,7 +46,7 @@ posted under, or the row's `ref` (`LABEL:qN`) which works from anywhere.
                  {"timeout": true} result means call it again
     4  clear     cactus_clear on your own keys once acted on
 
-Nothing wakes this host. Answers arrive when you read them, so read
+There is no wake-up on this host. Answers arrive when you read them, so read
 at the fork, not before. `cactus_feed` returns the whole actionable inbox in
 one call when you need the board rather than one row.
 
@@ -62,6 +62,6 @@ null after `approve` means run it yourself, if the host gives you a shell.
 
 ## Elaborate
 
-No wake delivers an `elaborate` request here. A row in status
+There is no monitor to deliver an `elaborate` event. A row in status
 `elaborate` shows up in `cactus_get` and `cactus_feed` with the human's hint
 under `elaborate`; rewrite it with `cactus_edit` and it returns to `open`.

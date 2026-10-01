@@ -6,7 +6,7 @@ Responsibilities:
 - Default to herdr's agent prompt verb.
 - If that agent is listed in the webhook map, POST the wake URL instead.
 - CACTUS_POKE still overrides everything (tests / one-shot transports).
-- wake_owner: after a human event on a row, prompt the owner (override, webhook, or herdr pane) with a message naming the row.
+- After an answer, auto-poke only webhook-mapped agents (never herdr).
 - Report a usable failure when a row has no owner or the transport is absent.
 - Visit: focus the herdr pane a row was asked from ($CACTUS_VISIT overrides).
 """
@@ -87,29 +87,28 @@ def webhook_entry(agent: str) -> dict[str, Any] | None:
     return entry
 
 
-def wake_owner(
+def poke_webhook_if_mapped(
     agent: str | None,
-    pane: str | None,
     *,
-    key: str,
-    event: str,
+    message: str | None = None,
     timeout: float = 5.0,
 ) -> str | None:
-    """Wake the agent that owns a row after a human event on it.
+    """Wake a webhook-mapped agent only.
 
-    The push half of the answer loop: an idle agent has no turn to collect
-    from, so the event prompts it. Delivery is `poke`'s own resolution
-    (CACTUS_POKE, then a webhook, then herdr prompting `pane`). An agent with
-    no way to be reached returns None without running anything; its
-    `--monitor --once` loop is the fallback. PokeError propagates.
+    Used after an answer so external owners (Grok Bot, etc.) re-read the feed
+    without requiring a separate `p`. Unmapped agents return None and are not
+    poked — herdr / Claude agents wake on their own backgrounded wait.
+
+    Ignores CACTUS_POKE: that override is for explicit `cactus poke` / tests,
+    not for silently replacing herdr on every answer.
     """
-    if not agent or not reachable(agent, pane):
+    if not agent:
         return None
-    message = (
-        f"cactus: {key} {event} — read it with `cactus get {key} --agent {agent}` "
-        "and act on it."
-    )
-    return poke(agent, pane=pane, message=message, timeout=timeout)
+    entry = webhook_entry(agent)
+    if entry is None:
+        return None
+    body = message or DEFAULT_MESSAGE.format(agent=agent)
+    return _post_webhook(agent, body, entry, timeout)
 
 
 def poke_command() -> list[str]:

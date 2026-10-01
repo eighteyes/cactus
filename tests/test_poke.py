@@ -138,15 +138,10 @@ def test_visit_refuses_without_a_pane() -> None:
     assert "pane" in str(err.value)
 
 
-
-def test_wake_owner_returns_none_when_unreachable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CACTUS_POKE", raising=False)
-    monkeypatch.setenv("CACTUS_POKE_WEBHOOKS", str(tmp_path / "no-webhooks.json"))
-    assert poke_mod.wake_owner("agent-1", None, key="q1", event="answered") is None
-    assert poke_mod.wake_owner(None, "w1:p1", key="q1", event="answered") is None
-
-
-def test_wake_owner_message_names_the_row(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_poke_webhook_if_mapped_ignores_override_and_unmapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("CACTUS_POKE", "echo {target} {message}")
-    ran = poke_mod.wake_owner("agent-1", "w1:p1", key="q7", event="answered")
-    assert "q7 answered" in ran and "cactus get q7 --agent agent-1" in ran
+    monkeypatch.setenv("CACTUS_POKE_WEBHOOKS", str(tmp_path / "no-webhooks.json"))
+    assert poke_mod.poke_webhook_if_mapped("agent-1") is None
+    assert poke_mod.poke_webhook_if_mapped(None) is None

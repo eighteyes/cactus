@@ -5,13 +5,14 @@ hook event's `session_id` as the Cactus owner identity. Pass that exact value
 on every `ask`, `edit`, and `clear`; it is session-scoped and avoids handing
 rows to a later agent in the same terminal.
 
-Under herdr, answering a row prompts your pane: nothing to arm. Act on each
-wake. Outside herdr (no pane, no webhook) the `--once` fallback is weaker on
-Codex: a background command's completion is delivered at your next model
-request, not as a new turn, so a `--once` waiter that exits while the
-session is idle wakes nobody (probed q342, 2026-09-27). The
-`UserPromptSubmit` frontier hook lists every answered-but-unacted row at the
-human's next prompt; act on those first. Inside a turn, when the very next step needs the answer,
+Codex has no wake-up from idle. A background command's completion is
+delivered at your next model request, not as a new turn, so a `--once`
+waiter that exits while the session is idle wakes nobody (probed q342,
+2026-09-27). Do not arm one and claim to be listening.
+
+Answers reach you on the next turn: the `UserPromptSubmit` frontier hook
+lists every answered-but-unacted row when the human next prompts you. Act
+on those first. Inside a turn, when the very next step needs the answer,
 block on the row in the foreground with a timeout under Codex's shell
 limit (about 366 seconds):
 

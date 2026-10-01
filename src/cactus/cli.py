@@ -76,9 +76,8 @@ WORKFLOW (required)
   2  a blocking ask (ask, run) waits for the human by default. Run it as ONE
      backgrounded command (Bash run_in_background); its exit is your wake-up.
      Do the rest of the work meanwhile. --no-wait posts and returns.
-     herdr sessions are woken by the answer itself (it prompts your pane).
-     Outside herdr, arm in the background: cactus --monitor --json --agent ID
-     --once ; it exits on the first event for your rows; re-arm on each wake.
+     Steers and persistent rows (review/plan/data) never wait: collect them
+     with one backgrounded cactus get KEY... --wait.
   3  on each wake, read the row with cactus get KEY (answered, elaborate,
      reopened, cleared)
      review/plan verdict: read it with cactus get KEY --agent ID (that
@@ -108,7 +107,7 @@ SYNOPSIS
   cactus poke KEY | --agent ID
   cactus rehome --agent NEW [--json]
   cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
-  cactus --monitor --json --agent ID --once    exits on the first event for your rows
+  cactus --monitor --json --agent ID [--once]  plain event stream; --once exits on the first event
   cactus where | projects | threads
 
   KEY  qN in this project, or LABEL:qN / /abs/path:qN for another one
@@ -703,15 +702,15 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     except ValueError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
-    # An answer wakes the owner: an idle agent has no turn to collect it on.
+    # Webhook-mapped owners need a wake; other agents wake on their own backgrounded wait.
     try:
-        from .poke import wake_owner, PokeError
+        from .poke import poke_webhook_if_mapped, PokeError
 
-        woke = wake_owner(q.agent, q.pane, key=q.key, event="answered")
+        woke = poke_webhook_if_mapped(q.agent)
         if woke and not args.json:
-            print(f"woke: {woke}", file=sys.stderr)
+            print(f"auto-poke: {woke}", file=sys.stderr)
     except PokeError as exc:
-        print(f"cactus: answer saved; wake failed: {_msg(exc)}", file=sys.stderr)
+        print(f"cactus: answer saved; webhook poke failed: {_msg(exc)}", file=sys.stderr)
     _emit_one(q, as_json=args.json)
     return EXIT_OK
 

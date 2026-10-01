@@ -167,7 +167,7 @@ reason = (
     "the turn ended without a fork; post the next directions as one "
     "`cactus ask` with 2-3 `-c` options (or `--act steer --chosen` when one "
     "is the default), `--agent` required, `--recommend` + `--confidence` "
-    "when there is a pick; the answer will wake you; then stop"
+    "when there is a pick; post it backgrounded, its exit wakes you (steer/notify/plan/review never wait); then stop"
 )
 print(json.dumps({"decision": "block", "reason": reason}))
 sys.exit(0)

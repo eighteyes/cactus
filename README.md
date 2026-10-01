@@ -84,7 +84,7 @@ cactus feed --json --agent grok-bot          # what the wake routine runs
 
 ### Incomplete Implementations
 
-**Claude Desktop**: MCP tools only; no wake, no hooks. Not very dynamic. Setup: [skills/cactus/DESKTOP.md](skills/cactus/DESKTOP.md)
+**Claude Desktop**: MCP tools only; no monitor, no hooks. Not very dynamic. Setup: [skills/cactus/DESKTOP.md](skills/cactus/DESKTOP.md)
 
 ```sh
 scripts/package-plugin.sh          # writes dist/cactus-<version>.plugin
@@ -111,7 +111,7 @@ Or register the server by absolute path in `claude_desktop_config.json`:
 ```
 hook               host          does
 SessionStart       Claude Code   resolve identity; rehome rows after /clear; open rows
-                   Codex         session id as identity
+                   Codex         session id as identity; no wake-up from idle, answers surface next turn
 UserPromptSubmit   both          inject open and answered-but-unacted rows
 Stop               Claude Code   hold a turn that posted no ask, edit, plan or review
                    Codex         no-op
@@ -145,7 +145,7 @@ cactus plan q9 --step "write code" --step "test it" --done 1   # steps are 1-bas
 cactus review q9 --look-at "login form" --run "echo OK" --pass "prints OK" --fail "anything else"
 cactus ask "Fix this file?" -f src/app.py -f README.md --agent ID   # attach files
 cactus clear q7 --agent ID                             # once acted on
-cactus --monitor --json --agent ID --once              # fallback wake: no herdr pane, no webhook
+cactus --monitor --json --agent ID --once              # plain CLI surface: exits on the first event
 ```
 
 `f`/`F` in the TUI preview (pager) / edit (editor) a row's attached file; a
@@ -155,13 +155,12 @@ Full reference: `cactus --agent-help`.
 
 ### Skills / MCP / Subagent
 
-An agentic runtime needs durable rows and a wake. Answering a row pokes the
-owner's herdr pane, so the agent resumes with no process of its own and the
-human types nothing. Webhook-mapped agents get their webhook instead. An
-agent with neither arms `cactus --monitor --json --agent ID --once` as a
-background command (Bash `run_in_background` on Claude Code); its exit wakes
-the agent, even from idle, and the agent re-arms it first. MCP for Desktop
-wraps the same verbs in `server/cactus-mcp`.
+An agentic runtime needs durable rows and a next-turn frontier. On Claude
+Code a blocking ask runs as one backgrounded command, and its exit wakes the
+agent, even from idle. Rows posted `--no-wait` come back through the frontier
+on the next turn. Codex has no idle wake-up, so it posts `--no-wait` and
+collects on the next turn. MCP for Desktop wraps the same verbs in
+`server/cactus-mcp`.
 
 ### Webhooks
 
