@@ -17,7 +17,12 @@ Responsibilities:
   the structure can carry age in decisions rather than in time. Under
   `pile_settle == "drop"` a shelf perched on a diagonal settles at most one
   row, and only onto support (`_settle`). A seed feels world wind x
-  `seed_wind`, never a deck's `wind_scale` (`seed_wind()`).
+  `seed_wind`, never a deck's `wind_scale` (`seed_wind()`). A fall takes
+  `LANDING_SECONDS` (12 s). On top of the wind, each clump carries its own
+  random lateral gust (`_advance_gust`): a target jumping to a fresh random
+  value in +-`gust_speed` columns/s after a random wait of mean
+  `gust_period`, eased toward quickly — pachinko-like knocks, not an
+  oscillation.
 - Merge seeds that touch during the fall into a rigid `Clump` (v6e): every
   frame, after motion, any two clumps with a member pair within
   `stick_distance` (a shared `SkyConfig` lever) combine into one — mass-
@@ -102,19 +107,32 @@ _STRUCT_OFFSETS = tuple(enumerate(((0, 1), (1, 1), (0, 0), (1, 0))))
 # wall-clock time, integrated by `World.advance(dt)` for whatever `dt` the
 # caller passes. `World.terminal_vy` derives the fall speed a seed settles
 # into from `LANDING_SECONDS` plus its own sky height, so the drop still
-# takes about a minute regardless of the field's size or the sampling rate.
+# takes the same time regardless of the field's size or the sampling rate.
+# Sped up 5x (60 s -> 12 s); GRAVITY rose 25x with it (acceleration scales
+# as 1/T^2), so terminal velocity still arrives within the first ~8% of a fall.
 TICK_SECONDS = 0.1
-LANDING_SECONDS = 60.0
-GRAVITY = 0.2  # sub-cells/s^2: reaches terminal velocity within a couple of seconds
-# How much wind nudges a falling seed's vx, per second. Steady drift is
-# wind * WIND_COUPLING / SEED_DRAG_THETA sub-cells/s over a ~60 s fall: at
-# 0.08, a wind of 0.2 carries a seed ~3 columns and a 0.6 gust ~9 (0.003
-# gave a quarter column even at the clamp).
+LANDING_SECONDS = 12.0
+GRAVITY = 5.0  # sub-cells/s^2: reaches terminal velocity within about a second
+# How much wind nudges a falling seed's vx, per second, against
+# SEED_DRAG_THETA's decay. `SEED_WIND_COLS_PER_UNIT` is what a full fall
+# actually drifts per unit of multiplier; recalibrate it if either changes.
 WIND_COUPLING = 0.08
 # Columns of mean drift one unit of raw-wind multiplier gives a falling
-# seed over a full fall (v8, measured at 100-120 columns, 30 rows): turns
-# `SkyConfig.seed_wind`, which is in columns, into a multiplier.
-SEED_WIND_COLS_PER_UNIT = 1.45
+# seed over a full fall (measured at 120 columns, 30 rows, gusts off, after
+# the 12 s fall): turns `SkyConfig.seed_wind`, which is in columns, into a
+# multiplier.
+SEED_WIND_COLS_PER_UNIT = 0.55
+# Random lateral gusts (`SkyConfig.gust_speed`/`gust_period`): each clump's
+# own gust target jumps at random moments; its gust velocity eases toward
+# the target with this time constant, seconds — quick enough to read as a
+# knock, not a hard snap.
+GUST_TAU = 0.15
+GUST_MIN_LEG = 0.2  # seconds: floor on the random time between two gusts
+# `_advance_seeds` sub-steps a frame so no clump moves farther than this,
+# sub-cells, per step (the anchor test only looks one sub-cell around), up
+# to a cap on the sub-step count.
+SEED_MAX_STEP = 1.0
+SEED_MAX_SUBSTEPS = 32
 SEED_DRAG_THETA = -math.log(0.98) / TICK_SECONDS  # per second: seed vx's exponential decay rate
 # Wind's Ornstein-Uhlenbeck process: THETA is the mean-reversion rate and
 # SIGMA the noise scale, chosen so `advance(TICK_SECONDS)` reproduces v6's
@@ -264,6 +282,13 @@ class Clump:
     in_cloud: bool = False
     bounty: bool = True
     birds_hit: set = field(default_factory=set)
+    # Random gust (`World._advance_gust`): `gust_vx` is the share of `vx` the
+    # gust owns, easing toward `gust_target`, which jumps to a fresh random
+    # value when `gust_left` seconds run out — 0 on a new clump, so the
+    # first frame draws its first gust.
+    gust_vx: float = 0.0
+    gust_target: float = 0.0
+    gust_left: float = 0.0
 
 
 @dataclass
@@ -361,10 +386,10 @@ class World:
     def seed_wind(self) -> float:
         """The wind a falling seed feels. `SkyConfig.seed_wind` is in
         columns — the mean drift over a full fall at typical wind — so it
-        converts through `SEED_WIND_COLS_PER_UNIT`, measured: a multiplier
-        of 1 on the raw world wind drifts ~1.45 columns, and drift is
-        linear in it (1.7 / 3.0 / 6.0 / 14.2 / 29.1 columns at 1 / 2 / 5 /
-        10 / 20). No deck's `wind_scale` applies: the puffs engine ignores
+        converts through `SEED_WIND_COLS_PER_UNIT`, measured over the 12 s
+        fall with gusts off: a multiplier of 1 on the raw world wind drifts
+        ~0.55 columns, and drift is linear in it (1.0 / 1.9 / 4.9 / 9.7 /
+        19.5 columns at lever 1 / 2 / 5 / 10 / 20). No deck's `wind_scale` applies: the puffs engine ignores
         wind and texture reads only `shear_base`."""
         return self.wind * self.sky.config.seed_wind / SEED_WIND_COLS_PER_UNIT
 
@@ -467,20 +492,48 @@ class World:
         self._flocks.append(Flock(band=band, leader=leader, followers=followers))
 
     def _advance_seeds(self, dt: float) -> None:
+        """Seed physics for one frame, split into sub-steps short enough
+        that no clump moves more than `SEED_MAX_STEP` sub-cells in one: a
+        12 s fall on a tall field, a gust, or a low fps would otherwise
+        carry a seed past the pile cell it should anchor beside. Charge,
+        merge and landing run every sub-step; the cloud scatter runs on the
+        last only, so it stays once per frame. A landing's burst joins the
+        world once the frame's sub-steps finish, so it first moves next
+        frame, as before sub-steps."""
+        cfg = self.sky.config
+        gust_speed = cfg.gust_speed * SUB_X
+        speed = max([abs(self.terminal_vy)] + [max(abs(c.vx) + gust_speed, abs(c.vy)) for c in self.seeds])
+        steps = max(1, min(SEED_MAX_SUBSTEPS, math.ceil(speed * dt / SEED_MAX_STEP)))
+        h = dt / steps
+        exploded: list[Clump] = []
+        for i in range(steps):
+            exploded.extend(self._step_seeds(h, scatter=i == steps - 1))
+        self.seeds.extend(exploded)
+
+    def _step_seeds(self, dt: float, scatter: bool = True) -> list[Clump]:
+        """One sub-step of `_advance_seeds`: move, charge, merge, land.
+        Returns the bursts of any landing, not yet in `self.seeds`."""
         wind = self.seed_wind()
+        cfg = self.sky.config
+        gust_speed = cfg.gust_speed * SUB_X
         for clump in self.seeds:
             self._maybe_nudge(clump)
             n = len(clump.members)
             clump.vy -= GRAVITY * dt
-            clump.vx += wind * WIND_COUPLING * dt / math.sqrt(n)
-            clump.vx *= math.exp(-SEED_DRAG_THETA * dt)
+            # Wind and drag act on the non-gust share of vx; the gust share
+            # eases on its own, so neither washes the other out.
+            base = clump.vx - clump.gust_vx
+            base += wind * WIND_COUPLING * dt / math.sqrt(n)
+            base *= math.exp(-SEED_DRAG_THETA * dt)
+            self._advance_gust(clump, dt, gust_speed, cfg.gust_period)
+            clump.vx = base + clump.gust_vx
             clump.vy = max(clump.vy, self.terminal_vy)
             if n > 1:
                 clump.spin *= math.exp(-ACCRETE_SPIN_DAMP * dt)
             clump.angle += (clump.spin + wind * SEED_WOBBLE_PER_WIND) * dt
             clump.x = (clump.x + clump.vx * dt) % self.width
             clump.y += clump.vy * dt
-        self._collect_charge()
+        self._collect_charge(scatter)
         self._merge_clumps()
         remaining = []
         exploded: list[Clump] = []
@@ -488,8 +541,26 @@ class World:
             if self._anchor(clump, exploded):
                 continue
             remaining.append(clump)
-        remaining.extend(exploded)
         self.seeds = remaining
+        return exploded
+
+    def _advance_gust(self, clump: Clump, dt: float, gust_speed: float, gust_period: float) -> None:
+        """Random lateral knocks, pachinko-like: when `gust_left` runs out
+        the target jumps to uniform(-1, 1) x `gust_speed` sub-cells/s — no
+        forced sign flip, so a seed may be pushed the same way twice,
+        reversed, or nearly stilled — and the next jump waits an
+        exponential time of mean `gust_period`, at least `GUST_MIN_LEG`.
+        `gust_vx` eases toward the target with `GUST_TAU`. `gust_speed` 0
+        draws nothing and eases any gust left over back to 0."""
+        if gust_speed <= 0.0:
+            clump.gust_target = 0.0
+        else:
+            clump.gust_left -= dt
+            if clump.gust_left <= 0.0:
+                clump.gust_target = self.rng.uniform(-1.0, 1.0) * gust_speed
+                clump.gust_left = max(GUST_MIN_LEG, self.rng.expovariate(1.0 / max(gust_period, 1e-6)))
+        ease = math.exp(-dt / GUST_TAU)
+        clump.gust_vx = clump.gust_target + (clump.gust_vx - clump.gust_target) * ease
 
     # ---- charge (hidden rule) ----------------------------------------------
 
@@ -577,9 +648,10 @@ class World:
             x, y = self.rng.choices(cells, weights=[weights[c] for c in cells])[0]
             clump.members.append(Member(dx=x, dy=y, angle=self.rng.uniform(0.0, 2 * math.pi)))
 
-    def _collect_charge(self) -> None:
+    def _collect_charge(self, scatter: bool = True) -> None:
         """Right after clumps move, before landing checks: cloud-entry and
-        bird-touch charge for every bounty-bearing falling clump."""
+        bird-touch charge for every bounty-bearing falling clump. `scatter`
+        False skips the cloud push (every sub-step but a frame's last)."""
         for clump in self.seeds:
             if not clump.bounty:
                 continue
@@ -595,7 +667,7 @@ class World:
                     self._grow_clump(clump)
                     clump.spin += self.sky.config.accrete_spin * self.rng.choice((-1.0, 1.0))
             clump.in_cloud = entered is not None
-            if clump.in_cloud:
+            if clump.in_cloud and scatter:
                 self._scatter_sky(clump)
 
             for bird in self.birds:
@@ -632,7 +704,8 @@ class World:
         (seeds fall toward y=0), never up. Gravity and drag skid them off
         the pile to land beside it under the ordinary fall code.
         `bounty=False`: an exploded seed never collects charge, so an
-        explosion cannot cascade."""
+        explosion cannot cascade. Each burst seed starts its own fresh gust
+        state (the `Clump` defaults), drawing its first gust next frame."""
         top = max(clump.y + self._member_offset(clump, m)[1] for m in clump.members)
         y = top + EXPLODE_LIFT
         seeds = []
@@ -681,12 +754,16 @@ class World:
         member re-expressed around the new centre with its current absolute
         tumble angle baked in — the shape they touched in is the shape they
         keep: offsets are baked already rotated, and the new clump starts
-        at `angle` 0."""
+        at `angle` 0. The gust state is the larger clump's (`a` on a tie):
+        the mass-weighted part of `vx` is the non-gust share only, and the
+        kept gust's `gust_vx` rides on top of it. Charge adds, birds hit
+        unite, and `bounty` survives only if both had it."""
         na, nb = len(a.members), len(b.members)
         total = na + nb
+        big = a if na >= nb else b
         x = (a.x * na + b.x * nb) / total
         y = (a.y * na + b.y * nb) / total
-        vx = (a.vx * na + b.vx * nb) / total
+        vx = ((a.vx - a.gust_vx) * na + (b.vx - b.gust_vx) * nb) / total + big.gust_vx
         vy = (a.vy * na + b.vy * nb) / total
         spin = (a.spin + b.spin) / 2.0 / total
         members: list[Member] = []
@@ -698,7 +775,16 @@ class World:
                     dy=clump.y + mdy - y,
                     angle=clump.angle + m.angle,
                 ))
-        return Clump(x=x, y=y, vx=vx, vy=vy, nudged=a.nudged or b.nudged, spin=spin, members=members)
+        # Charge state carries through (v8): the charges add, the birds hit
+        # unite, and a merge with a burst seed (`bounty=False`) stays a burst
+        # seed — otherwise two burst seeds merging could charge again and
+        # cascade, the one thing `bounty` exists to block.
+        return Clump(
+            x=x, y=y, vx=vx, vy=vy, nudged=a.nudged or b.nudged, spin=spin, members=members,
+            gust_vx=big.gust_vx, gust_target=big.gust_target, gust_left=big.gust_left,
+            charge=a.charge + b.charge, in_cloud=a.in_cloud or b.in_cloud,
+            bounty=a.bounty and b.bounty, birds_hit=a.birds_hit | b.birds_hit,
+        )
 
     def _merge_clumps(self) -> None:
         """Every frame, after motion: merge any pair of clumps touching at

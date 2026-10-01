@@ -517,6 +517,18 @@ scope.
   skipped, so an answer's seed still lands and reaches the file. `cactus
   garden` prints the file's path, cell count, and drop count (or "empty");
   `--clear` removes it (`nothing to clear` if it was already gone).
+- Card first: rows go to the question before the sky. `#card-text` is
+  `height: auto` capped at the card (then it scrolls), `#keybar` docks to
+  the card's bottom, and `#field` is `1fr` with no minimum, so the field gets
+  only the leftover rows. `_fit_field` hides it when fewer than
+  `FIELD_MIN_ROWS` (4) are left — hidden, never squashed; pile-only caps at
+  `pile_rows()` and needs only `min(pile_rows(), 4)`. It runs from every
+  `_render_field` (the timer is the backstop), after `_rebuild_card` and
+  on App resize. Both orientations: the field lives inside the card in each.
+- The key bar is centred in its width (`_rebuild_keybar`, re-run by
+  `KeyBar.on_resize`); `_keybar_x` records each glyph's field column,
+  centring pad and bar gutter included, so a seed drops under the key
+  pressed. A bar that fills its width has no slack and stays left-flush.
 - A falling clump has hidden `charge` (no UI text): +1 and `accrete_count` members on each
   clear-sky-to-cloud entry (`in_cloud`'s False->True edge, not per frame
   spent inside one), +1 per distinct bird it shares a terminal cell with.
@@ -547,6 +559,12 @@ scope.
   braille only (a single dot on the fringe, the dither inside, the full
   cell at a core), the keys stay so an older sky.toml still loads. `_render_tuning` refilters on every
   redraw and keeps the cursor on the same key when it survives.
+  The visible keys page as panels (`sky.TUNE_PANELS`, then `other` for any
+  shared key listed nowhere, then far/mid/near), one on screen at a time
+  under a strip naming every non-empty one: `tab`/`]` and `shift+tab`/`[`
+  switch, and `j`/`k` walk across panel edges because `tuning_fields_for`
+  returns rows panel-sorted. `#tuning-panel` sits in `#tuning-scroll`
+  (`VerticalScroll`), scrolled after each redraw to keep the cursor in view.
 - `cloud_style = "bands"` (v8, planetary layers) is the puffs engine's
   fourth style: `lanes * cloud_count` equal lanes down the whole sky, one
   full-width `_Puff` per lane (`lane=(index, y0, h)`), its noise lattice
@@ -584,10 +602,25 @@ scope.
 - Seed wind: `SkyConfig.seed_wind` is in columns (0-30, default 3), the
   mean drift over a full fall at typical wind; gusts carry ~3x further.
   `World.seed_wind()` is world wind x `seed_wind / SEED_WIND_COLS_PER_UNIT`
-  (1.45, measured: drift is linear in the multiplier), never a deck's
+  (0.55, measured over the 12 s fall at 120x30 with random gusts off:
+  drift is linear in the multiplier), never a deck's
   `wind_scale` (puffs ignores wind, texture reads only `shear_base`, so
   `near.wind_scale` 0.1 used to still seeds with nothing on screen).
-  `WIND_COUPLING` 0.08 against `SEED_DRAG_THETA`.
+  `WIND_COUPLING` 0.08 against `SEED_DRAG_THETA`. A fall takes
+  `LANDING_SECONDS` 12 s (`GRAVITY` 5.0, terminal velocity in ~1 s). On
+  top of the wind each clump carries its own random gust
+  (`World._advance_gust`): `gust_speed` (columns/s, 0 = off, default 6)
+  and `gust_period` (mean seconds between gusts, default 1.0) — the target
+  jumps to uniform(-1, 1) x `gust_speed` after an exponential wait
+  (floor `GUST_MIN_LEG` 0.2 s), no forced sign flip, and the gust share
+  of `vx` (`gust_vx`) eases toward it with `GUST_TAU` 0.15 s while wind
+  and drag act only on the rest. A merge keeps the larger clump's gust
+  state (non-gust `vx` mass-weighted); a burst seed starts its own.
+  `_advance_seeds` sub-steps each frame so no clump moves more than
+  `SEED_MAX_STEP` (1 sub-cell) per step — charge, merge and landing run
+  every sub-step, the cloud scatter on the last only, and a landing's
+  burst joins the world after the frame — or the 12 s fall tunnels into
+  the pile at `advance(0.5)` or on a tall field.
 - A multi-member clump turns as one rigid body: every place a member
   becomes a position (render splat, `_member_cell`, `_anchor`, `_touching`,
   `_merge`, `_explode`) goes through `World._member_offset`, the offset

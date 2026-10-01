@@ -14,7 +14,12 @@ Responsibilities:
 - Render produces exactly `rows` lines of `cols` cells; resize keeps the
   structure and rebakes the sky.
 - Ground speckle is a deterministic function of cell position.
-- A dropped seed takes roughly a minute (`LANDING_SECONDS`) of ticks to land.
+- A dropped seed takes about `LANDING_SECONDS` (12 s) to land; frames are
+  sub-stepped so a fast fall or a big `dt` never tunnels into the pile.
+- Random gusts (`gust_speed`/`gust_period`): a seed's vx reverses at random,
+  not on a fixed period, and spreads its path several columns; `gust_speed`
+  0 falls straight. A merge keeps the larger clump's gust, a burst seed
+  starts its own.
 - A flock spawns with a plausible bird count and despawns once it has fully
   crossed off-screen; a near-depth bird renders three cells, a far one renders
   one.
@@ -81,7 +86,9 @@ def run_ticks(world: World, n: int) -> None:
 
 
 def run_seed_ticks(world: World, n: int) -> None:
-    """Advance seed physics only, holding wind at 0 for a deterministic fall."""
+    """Advance seed physics only, holding wind at 0 and gusts off for a
+    straight, deterministic fall."""
+    world.sky.config.gust_speed = 0.0
     for _ in range(n):
         world._advance_seeds(TICK_SECONDS)
 
@@ -265,24 +272,25 @@ def test_ground_speckle_is_deterministic() -> None:
     assert first == second
 
 
-def test_seed_takes_about_a_minute_to_land() -> None:
-    world = World(cols=10, rows=10, rng=random.Random(37))
-    world.drop(3)
-    landing_ticks = LANDING_SECONDS / TICK_SECONDS
-    for i in range(int(landing_ticks * 2)):
-        world.tick()
-        if not world.seeds:
-            assert 0.5 * landing_ticks <= i <= 1.5 * landing_ticks
-            break
-    else:
-        raise AssertionError("seed never landed")
+def test_seed_takes_about_twelve_seconds_to_land() -> None:
+    """Top of the sky to the ground on an empty field: `LANDING_SECONDS`
+    (12 s) within 20%, at the TUI's default 6 fps."""
+    assert LANDING_SECONDS == pytest.approx(12.0)
+    world = World(cols=40, rows=30, rng=random.Random(37))
+    world.drop(20)
+    t = 0.0
+    while world.seeds and t < 4 * LANDING_SECONDS:
+        world.advance(1 / 6)
+        t += 1 / 6
+    assert not world.seeds, "seed never landed"
+    assert 0.8 * LANDING_SECONDS <= t <= 1.2 * LANDING_SECONDS
 
 
 # ---- clumps (v6e) --------------------------------------------------------
 
 
 def test_two_close_seeds_merge_and_land_as_one_clump() -> None:
-    world = World(cols=20, rows=10, rng=random.Random(101))
+    world = World(cols=20, rows=10, rng=random.Random(101), sky_config=SkyConfig(gust_speed=0.0))
     world.seeds = [
         Clump(x=5.0, y=float(world.height - 1), vx=0.0, vy=0.0),
         Clump(x=6.0, y=float(world.height - 1), vx=0.0, vy=0.0),
@@ -554,9 +562,10 @@ def test_frame_time_at_100x10_stays_under_budget() -> None:
 def test_two_half_steps_move_a_terminal_velocity_seed_as_one_full_step() -> None:
     """No per-tick or per-second snap: splitting `advance` into two 0.05 s
     calls moves a seed already at terminal velocity exactly as far as one
-    0.1 s call, since nothing here depends on step count, only elapsed time."""
-    world_a = World(cols=10, rows=20, rng=random.Random(61))
-    world_b = World(cols=10, rows=20, rng=random.Random(61))
+    0.1 s call, since nothing here depends on step count, only elapsed time.
+    Gusts are off, like the wind: an easing gust integrates x per step."""
+    world_a = World(cols=10, rows=20, rng=random.Random(61), sky_config=SkyConfig(gust_speed=0.0))
+    world_b = World(cols=10, rows=20, rng=random.Random(61), sky_config=SkyConfig(gust_speed=0.0))
     world_a.wind = world_b.wind = 0.0
     seed_a = Clump(x=5.0, y=30.0, vx=0.0, vy=world_a.terminal_vy, nudged=True)
     seed_b = Clump(x=5.0, y=30.0, vx=0.0, vy=world_b.terminal_vy, nudged=True)
@@ -707,7 +716,8 @@ def test_render_matches_fixture_before_the_v6f_perf_pass() -> None:
     which holds a cleared cell's glyph while it fades out. Re-baked when
     `WIND_COUPLING` rose 0.003 -> 0.08 so wind visibly carries a seed: the
     falling seeds land a little downwind (the old coupling still reproduces
-    the previous fixture exactly). Re-baked again when `seed_wind` became columns (default 3)."""
+    the previous fixture exactly). Re-baked again when `seed_wind` became columns (default 3).
+    Re-baked when the fall sped up 5x (12 s) and each seed gained random gusts. Re-baked when merges began carrying charge and bird hits."""
     with open(FIXTURES / "field_render_v6f.json") as fh:
         expected = json.load(fh)
 
@@ -764,21 +774,25 @@ def test_seed_wind_is_in_columns_and_ignores_the_near_deck() -> None:
 
 
 def test_seed_wind_columns_scale_the_drift_roughly_linearly() -> None:
-    """Mean |drift| over full falls grows with seed_wind: 20 columns drifts
-    several times further than 2 (unwrapped, empty field)."""
+    """`seed_wind` N is ~N columns of mean |drift| over a full 12 s fall
+    (unwrapped, empty 120x30 field, 40 drops at one column after the wind
+    has warmed to its spread, gusts off so the wind is measured alone) —
+    the calibration behind `SEED_WIND_COLS_PER_UNIT`, and linear in N."""
     from cactus.sky import SkyConfig
 
     def mean_drift(cols_lever: float) -> float:
-        cfg = SkyConfig(sky_engine="texture", seed_wind=cols_lever, seed_mass="single")
+        cfg = SkyConfig(sky_engine="texture", seed_wind=cols_lever, seed_mass="single", birds="none", gust_speed=0.0)
         w = World(cols=120, rows=30, rng=random.Random(7), sky_config=cfg)
+        for _ in range(1200):
+            w.advance(1 / 6)
         total = []
-        for _ in range(12):
+        for _ in range(40):
             w.structure.clear()
             w.drop(60)
             c = w.seeds[0]
             px, acc, steps = c.x, 0.0, 0
             while w.seeds and steps < 5000:
-                w.advance(0.2)
+                w.advance(1 / 6)
                 steps += 1
                 if w.seeds:
                     dx = w.seeds[0].x - px
@@ -790,8 +804,83 @@ def test_seed_wind_columns_scale_the_drift_roughly_linearly() -> None:
         return sum(total) / len(total)
 
     small, big = mean_drift(2.0), mean_drift(20.0)
-    assert big > 4 * small
-    assert big > 10.0
+    assert 0.7 * 2.0 <= small <= 1.3 * 2.0
+    assert 0.7 * 20.0 <= big <= 1.3 * 20.0
+    assert big > 7 * small
+
+
+def _gust_fall(world: World, col: int) -> tuple[list[float], list[float], list[tuple[float, float]]]:
+    """One full fall from `col` at 6 fps on an empty field: the seed's
+    unwrapped column and its vx per frame, and every (time, target) its
+    gust jumped to."""
+    world.structure.clear()
+    world.drop(col)
+    c = world.seeds[0]
+    px, acc, t = c.x, 0.0, 0.0
+    xs, vxs, jumps = [0.0], [c.vx], []
+    target = c.gust_target
+    while world.seeds and t < 60.0:
+        world.advance(1 / 6)
+        t += 1 / 6
+        if not world.seeds:
+            break
+        c = world.seeds[0]
+        dx = c.x - px
+        dx -= world.width if dx > world.width / 2 else 0
+        dx += world.width if dx < -world.width / 2 else 0
+        acc += dx
+        px = c.x
+        xs.append(acc / SUB_X)
+        vxs.append(c.vx)
+        if c.gust_target != target:
+            target = c.gust_target
+            jumps.append((t, target))
+    return xs, vxs, jumps
+
+
+def test_gusts_knock_a_seed_at_random_not_on_a_period() -> None:
+    """Wind off, gusts at their defaults: most falls reverse vx at least
+    once, the path spreads more than 3 columns on average, the waits
+    between gusts differ (not periodic), and a gust may push the same way
+    twice running (no forced flip)."""
+    cfg = SkyConfig(sky_engine="texture", seed_wind=0.0, seed_mass="single", birds="none")
+    world = World(cols=120, rows=30, rng=random.Random(3), sky_config=cfg)
+    reversing, spreads, waits, same_way = 0, [], [], 0
+    for _ in range(8):
+        xs, vxs, jumps = _gust_fall(world, 60)
+        if any(a * b < 0 for a, b in zip(vxs, vxs[1:])):
+            reversing += 1
+        spreads.append(max(xs) - min(xs))
+        waits += [b[0] - a[0] for a, b in zip(jumps, jumps[1:])]
+        same_way += sum(1 for a, b in zip(jumps, jumps[1:]) if a[1] * b[1] > 0)
+    assert reversing >= 6
+    assert sum(spreads) / len(spreads) > 3.0
+    assert max(waits) - min(waits) > 1.0
+    assert same_way > 0
+
+
+def test_gust_speed_zero_falls_straight() -> None:
+    """Wind off and `gust_speed` 0: the seed's column spreads under 1."""
+    cfg = SkyConfig(sky_engine="texture", seed_wind=0.0, seed_mass="single", birds="none", gust_speed=0.0)
+    world = World(cols=120, rows=30, rng=random.Random(3), sky_config=cfg)
+    xs, _, jumps = _gust_fall(world, 60)
+    assert max(xs) - min(xs) < 1.0
+    assert not jumps
+
+
+def test_merge_keeps_the_larger_clumps_gust_and_a_burst_starts_its_own() -> None:
+    world = World(cols=20, rows=10, rng=random.Random(8))
+    big = _rod(10.0, 10.0, 0.0)
+    big.vx, big.gust_vx, big.gust_target, big.gust_left = 5.0, 4.0, 6.0, 0.7
+    small = Clump(x=11.0, y=10.0, vx=-3.0, vy=0.0, gust_vx=-3.0, gust_target=-8.0, gust_left=0.1)
+    merged = world._merge(small, big)
+    assert (merged.gust_vx, merged.gust_target, merged.gust_left) == (4.0, 6.0, 0.7)
+    # non-gust shares (1.0 x 3, 0.0 x 1) average by mass, the kept gust rides on top
+    assert merged.vx == pytest.approx((1.0 * 3 + 0.0 * 1) / 4 + 4.0)
+
+    lander = Clump(x=10.0, y=0.4, vx=0.0, vy=-1.0, charge=2, birds_hit={1}, gust_vx=4.0, gust_target=6.0, gust_left=0.7)
+    for burst in world._explode(lander):
+        assert (burst.gust_vx, burst.gust_target, burst.gust_left) == (0.0, 0.0, 0.0)
 
 
 def _landing_cols(world: World, col: int, n: int, keep_pile: bool) -> list[float]:
@@ -816,12 +905,13 @@ def _landing_cols(world: World, col: int, n: int, keep_pile: bool) -> list[float
 
 def test_pinned_wind_carries_a_falling_seed_several_columns() -> None:
     """Wind visibly moves a seed: a pinned +0.6 (the OU clamp) lands the
-    mean seed at least 3 columns downwind of a windless drop."""
+    mean seed at least 3 columns downwind of a windless drop (gusts off,
+    so the wind is measured alone)."""
     from cactus.sky import SkyConfig
 
     means = {}
     for wind in (0.0, 0.6):
-        cfg = SkyConfig(sky_engine="texture", birds="none")
+        cfg = SkyConfig(sky_engine="texture", birds="none", gust_speed=0.0)
         world = World(cols=100, rows=30, rng=random.Random(11), sky_config=cfg)
         world._advance_wind = lambda dt: None  # type: ignore[method-assign]
         world.wind = wind
@@ -832,10 +922,11 @@ def test_pinned_wind_carries_a_falling_seed_several_columns() -> None:
 
 def test_repeated_drops_at_one_column_build_upward() -> None:
     """A seed dropped again and again at one spot stacks into a pile
-    rather than spreading along the ground."""
+    rather than spreading along the ground (gusts off: random knocks
+    scatter the drops, which is the point of them)."""
     from cactus.sky import SkyConfig
 
-    cfg = SkyConfig(sky_engine="texture", birds="none")
+    cfg = SkyConfig(sky_engine="texture", birds="none", gust_speed=0.0)
     world = World(cols=100, rows=30, rng=random.Random(5), sky_config=cfg)
     _landing_cols(world, 50, 30, keep_pile=True)
     assert max(cy for _, cy in world.structure) > 3
@@ -1030,7 +1121,7 @@ def test_spin_damps_on_multi_member_clumps_only() -> None:
     from cactus.field import ACCRETE_SPIN_DAMP
     from cactus.sky import SkyConfig
 
-    cfg = SkyConfig(sky_engine="texture", bird_max=0)
+    cfg = SkyConfig(sky_engine="texture", bird_max=0, gust_speed=0.0)
     world = World(cols=20, rows=20, rng=random.Random(5), sky_config=cfg)
     rod = _rod(10.5, float(world.height - 1), 0.0)
     rod.spin = 2.0
@@ -1087,3 +1178,21 @@ def test_a_clump_straddling_the_seam_lands_inside_the_world() -> None:
     assert world._anchor(clump, [])
     assert all(0 <= cx < world.width for cx, _ in world.structure)
     assert (world.width - 1, 0) in world.structure
+
+
+def test_merge_keeps_charge_birds_and_blocks_a_burst_cascade() -> None:
+    """Merging adds charge, unites the birds hit, and a merge involving a
+    burst seed (`bounty=False`) stays unable to charge again."""
+    from cactus.field import Member
+    from cactus.sky import SkyConfig
+
+    world = World(cols=20, rows=10, rng=random.Random(3), sky_config=SkyConfig(sky_engine="texture"))
+    a = Clump(x=5.0, y=10.0, vx=0.0, vy=0.0, angle=0.0, spin=0.0, charge=2, birds_hit={1})
+    b = Clump(x=6.0, y=10.0, vx=0.0, vy=0.0, angle=0.0, spin=0.0, charge=1, birds_hit={2})
+    a.members, b.members = [Member()], [Member()]
+    m = world._merge(a, b)
+    assert m.charge == 3 and m.birds_hit == {1, 2} and m.bounty
+    c = Clump(x=5.0, y=10.0, vx=0.0, vy=0.0, angle=0.0, spin=0.0, bounty=False)
+    d = Clump(x=6.0, y=10.0, vx=0.0, vy=0.0, angle=0.0, spin=0.0, bounty=False)
+    c.members, d.members = [Member()], [Member()]
+    assert not world._merge(c, d).bounty

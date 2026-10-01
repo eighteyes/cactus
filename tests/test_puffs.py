@@ -366,3 +366,31 @@ def test_scatter_on_a_bands_lane_dents_it_the_same_way() -> None:
     sky.scatter(lane.x + c0, lane.y0 + r0, radius=3.0, strength=0.6)
     assert lane.vx == vx0 and lane.x == x0 and lane.age == age0
     assert lane.patch_a[r0][c0] < 0.5
+
+
+# ---- T overlay panels ---------------------------------------------------------
+
+
+def test_every_shared_key_sits_in_exactly_one_panel() -> None:
+    from cactus.sky import TUNE_OTHER_PANEL, TUNE_PANELS, tuning_fields, tuning_panel_of
+
+    shared = [r for r in tuning_fields() if r.group == "shared"]
+    real = {r.name for r in shared}
+    listed = [name for _, names in TUNE_PANELS for name in names]
+    assert len(listed) == len(set(listed)), "a key is listed in two panels"
+    assert set(listed) <= real, f"panel lists unknown keys: {set(listed) - real}"
+    panel_names = {p for p, _ in TUNE_PANELS}
+    for r in shared:
+        hits = [p for p, names in TUNE_PANELS if r.name in names]
+        assert len(hits) <= 1
+        assert tuning_panel_of(r) == (hits[0] if hits else TUNE_OTHER_PANEL)
+        assert tuning_panel_of(r) in panel_names | {TUNE_OTHER_PANEL}
+
+
+def test_tuning_fields_for_is_panel_ordered() -> None:
+    from cactus.sky import tuning_fields_for, tuning_panel_of, tuning_panel_order
+
+    order = tuning_panel_order()
+    for cfg in (SkyConfig(sky_engine="fluid"), SkyConfig(sky_engine="puffs", cloud_style="bands")):
+        ranks = [order.index(tuning_panel_of(r)) for r in tuning_fields_for(cfg)]
+        assert ranks == sorted(ranks)

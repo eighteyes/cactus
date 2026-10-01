@@ -346,6 +346,8 @@ _SHARED_COMMENTS = {
     "pile_settle": "'drop': a landed shelf of 2+ blocks resting only on a diagonal drops a row to close the gap; 'keep': lands as it hit",
     "cloud_fade": "seconds a sky cell takes to fade in when it lights and fade out when it clears (0 = pop)",
     "seed_wind": "columns a falling seed drifts over a full fall at typical wind, on average (gusts carry it ~3x further; 0 = straight down)",
+    "gust_speed": "top speed, columns/second, of a falling seed's own random sideways knocks, each a fresh random strength and direction (0 = off)",
+    "gust_period": "mean seconds between a falling seed's random gusts; each wait is itself random",
 }
 
 
@@ -452,6 +454,12 @@ class SkyConfig:
     bird_rate: float = field(default=0.02, metadata={"step": 0.01, "lo": 0.0, "hi": 1.0})
     bird_max: int = field(default=3, metadata={"step": 1, "lo": 0, "hi": 12})
     seed_wind: float = field(default=3.0, metadata={"step": 1.0, "lo": 0.0, "hi": 30.0})
+    # Random gusts (pachinko): each falling seed's own sideways knocks, on
+    # top of the world wind's slow bias — `World._advance_gust` is the one
+    # reader. `gust_speed` is columns/second (0 = off), `gust_period` the
+    # mean seconds between random gusts.
+    gust_speed: float = field(default=6.0, metadata={"step": 1.0, "lo": 0.0, "hi": 30.0})
+    gust_period: float = field(default=1.0, metadata={"step": 0.2, "lo": 0.2, "hi": 6.0})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "SkyConfig":
@@ -589,7 +597,7 @@ def tuning_fields() -> list[TuneField]:
 # `flat_*` are listed nowhere: the strokes they governed left the renderer
 # (braille only, v8); the keys stay so an older sky.toml still loads.
 _TUNE_ALWAYS = frozenset((
-    "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind",
+    "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind", "gust_speed", "gust_period",
     "birds", "bird_rate", "bird_max", "seed_mass", "accrete_spin", "accrete_count", "accrete_shape", "pile_settle", "cloud_fade",
     "tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
     "blank_mean", "core_mean", "semi_core_mean",
@@ -620,9 +628,54 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
     return engine == "fluid" and cfg.perspective == "on" and row.name in _TUNE_PERSPECTIVE
 
 
+# The `T` overlay's panels, in page order: shared keys by what they steer,
+# then one panel per fluid grid (a grid group names its own panel). A shared
+# key listed nowhere lands in `other`, after the named ones, so a new lever
+# never vanishes from the overlay; `edge_*`/`flat_*` go there too but
+# `tuning_visible` hides them everywhere.
+TUNE_PANELS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("engine", ("sky_engine", "perspective", "fps", "cloud_fade")),
+    ("clouds", ("cloud_style", "cloud_count", "cloud_drift", "cloud_life",
+                "band_gap", "band_flow", "band_height", "band_edge")),
+    ("projection", ("horizon", "focal", "z_far", "ground_lines", "deck_altitude_px")),
+    ("wind", ("shear_floor", "shear_base", "shear_span", "seed_wind")),
+    ("birds", ("birds", "bird_rate", "bird_max")),
+    ("seeds", ("seed_mass", "accrete_spin", "accrete_count", "accrete_shape", "stick_distance",
+               "gust_speed", "gust_period")),
+    ("pile", ("pile_style", "pile_settle")),
+    ("tone", ("tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
+              "blank_mean", "core_mean", "semi_core_mean")),
+)
+TUNE_OTHER_PANEL = "other"
+TUNE_GRID_PANELS = ("far", "mid", "near")
+_TUNE_PANEL_OF = {name: panel for panel, names in TUNE_PANELS for name in names}
+
+
+def tuning_panel_of(row: TuneField) -> str:
+    """The overlay panel `row` sits in: its grid's own name for a grid row,
+    its `TUNE_PANELS` entry for a shared one, else `other`."""
+    if row.group != "shared":
+        return row.group
+    return _TUNE_PANEL_OF.get(row.name, TUNE_OTHER_PANEL)
+
+
+def tuning_panel_order() -> tuple[str, ...]:
+    """Every panel name in page order, empty or not."""
+    return (*(p for p, _ in TUNE_PANELS), TUNE_OTHER_PANEL, *TUNE_GRID_PANELS)
+
+
 def tuning_fields_for(cfg: SkyConfig) -> list[TuneField]:
-    """`tuning_fields()` filtered by `tuning_visible` for `cfg`."""
-    return [row for row in tuning_fields() if tuning_visible(row, cfg)]
+    """`tuning_fields()` filtered by `tuning_visible` for `cfg`, in panel
+    order (`tuning_panel_order`), each panel in its `TUNE_PANELS` listing
+    order and `other`/the grids in declaration order — so a flat walk of the
+    list is a walk through the panels."""
+    order = {p: i for i, p in enumerate(tuning_panel_order())}
+    listed = {name: i for _, names in TUNE_PANELS for i, name in enumerate(names)}
+    rows = [row for row in tuning_fields() if tuning_visible(row, cfg)]
+    return sorted(
+        rows,
+        key=lambda r: (order[tuning_panel_of(r)], listed.get(r.name, 0) if r.group == "shared" else 0),
+    )
 
 
 def _set_typed(obj, key: str, value, label: str) -> None:

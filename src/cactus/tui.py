@@ -17,7 +17,9 @@ Responsibilities:
   (`u`) before the agent addresses it.
 - Grow a small sky/weather/cactus simulation under the card, dropping a seed
   on every answer, or manually via backtick/tilde at any time outside
-  free-text mode.
+  free-text mode. Card first: the field gets only the rows the card's
+  content leaves, hidden below `FIELD_MIN_ROWS`; the centred key bar drops
+  each seed under the key pressed.
 - Show a `T` tuning overlay listing every `SkyConfig` key, nudge it live
   with h/l/H/L, reset it with r, and keep the on-disk file and the running
   sky in agreement on every nudge.
@@ -46,13 +48,14 @@ from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
 from . import garden
 from .field import World
 from .scope import project_label
-from .sky import SkyConfig, TuneField, config_path as sky_config_path, slots as sky_slots, tuning_fields_for
+from .sky import (SkyConfig, TuneField, config_path as sky_config_path, slots as sky_slots, tuning_fields_for,
+                  tuning_panel_of, tuning_panel_order)
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
                     Question, Store)
 
@@ -61,6 +64,9 @@ POLL_INTERVAL = 0.5
 # never hand `World.advance` a giant elapsed time and make the sky or a
 # falling seed jump.
 FIELD_MAX_DT = 0.5
+# Card first: the field gets only the rows the card leaves, and hides rather
+# than squashes when fewer than this are left (sky plus the 2 ground rows).
+FIELD_MIN_ROWS = 4
 
 TUI_SETTINGS_DEFAULTS = {
     "orientation": "side", "figlet_header": False, "projects_pane": True,
@@ -455,6 +461,16 @@ class FieldView(Static):
             app._render_field()
 
 
+class KeyBar(Static):
+    """The in-card row key bar; content is set by CactusApp._rebuild_keybar,
+    which centres it in this widget's width — so a resize re-centres it."""
+
+    def on_resize(self, event: events.Resize) -> None:
+        app = self.app
+        if isinstance(app, CactusApp):
+            app._rebuild_keybar()
+
+
 class RailList(ListView):
     """The question rail. A click moves the highlight; only a key submits.
 
@@ -643,13 +659,17 @@ class CactusApp(App[int]):
         padding: 1 2;
         overflow-y: auto;
     }
-    #tuning-panel {
+    #tuning-scroll {
         display: none;
         height: 1fr;
         border: round $accent;
         margin: 1 2;
-        padding: 1 2;
-        overflow-y: auto;
+        padding: 0 2;
+    }
+    #tuning-panel {
+        display: none;
+        height: auto;
+        padding: 1 0;
     }
     #card {
         border: round $accent;
@@ -662,9 +682,11 @@ class CactusApp(App[int]):
     QuestionBlock.-sent, QuestionBlock.-heard {
         opacity: 60%;
     }
+    /* Card first: the text takes every row it needs, up to the whole card
+       above the docked key bar (then it scrolls); the field gets the rest. */
     #card-text {
         height: auto;
-        max-height: 35%;
+        max-height: 100%;
         overflow-y: auto;
         padding: 0 2;
     }
@@ -680,11 +702,12 @@ class CactusApp(App[int]):
     }
     #field {
         height: 1fr;
-        min-height: 8;
+        min-height: 0;
         width: 100%;
         background: $surface;
     }
     #keybar {
+        dock: bottom;
         height: 1;
         padding: 0 2;
         color: $text-muted;
@@ -851,9 +874,9 @@ class CactusApp(App[int]):
         # time, only acting on it when its mtime has actually moved.
         self._sky_config_mtime: float | None = None
         self._sky_reload_last: float | None = None
-        # Each key bar item's x offset inside `#keybar`, rebuilt on every
-        # `_rebuild_keybar` — `_field_column` reads this to drop a seed under
-        # the key that answered.
+        # Each key bar glyph's field column (its x from the card's left edge,
+        # which `#field` shares), rebuilt on every `_rebuild_keybar` —
+        # `_field_column` reads this to drop a seed under the key that answered.
         self._keybar_x: dict[str, int] = {}
         # Garden persistence: the landed pile is shared across every TUI on
         # this database, saved beside it (garden.py) and reloaded whenever
@@ -893,12 +916,12 @@ class CactusApp(App[int]):
                 with Vertical(id="card"):
                     yield Static(id="card-text", markup=False)
                     yield FieldView(id="field", markup=False)
-                    yield Static(id="keybar", markup=False)
+                    yield KeyBar(id="keybar", markup=False)
                 yield Input(id="answer-input", placeholder="free text — enter to confirm")
         yield Static(id="settings-panel", markup=False)
         yield Static(id="projects-panel", markup=False)
         yield Static(id="answers-panel", markup=False)
-        yield Static(id="tuning-panel", markup=False)
+        yield VerticalScroll(Static(id="tuning-panel", markup=False), id="tuning-scroll")
         yield Static(id="status-bar", markup=False)
         yield Footer()
 
@@ -936,12 +959,40 @@ class CactusApp(App[int]):
         seed still falls and lands, and the landing still reaches
         garden.json for the other TUIs — only the draw is skipped
         (`_render_field` returns early while nothing is on screen)."""
+        self._fit_field()
+        self._sync_field_interval()
+        self.call_after_refresh(self._render_field)
+
+    def _fit_field(self) -> None:
+        """Card first: size `#field` to the rows the card leaves over.
+
+        CSS does the split — `#card-text` is `height: auto` capped at the
+        card, `#keybar` docks to the bottom, `#field` is `1fr` with no
+        minimum — so the field already gets exactly the remainder. This
+        only adds what CSS cannot say: below `FIELD_MIN_ROWS` spare rows the
+        field is hidden, not squashed. Spare is measured from the text's own
+        height, which never depends on the field, so hiding cannot flip it.
+        Pile-only caps the field at the pile's rows and shows down to the
+        pile's own height when that is under the minimum."""
         try:
+            card = self.query_one("#card", Vertical)
+            text = self.query_one("#card-text", Static)
+            keybar = self.query_one("#keybar", Static)
             widget = self.query_one("#field", FieldView)
         except NoMatches:
             return
-        widget.display = self.tui_settings["field"] or self.tui_settings["pile_only"]
-        self._sync_field_interval()
+        pile_only = not self.tui_settings["field"] and self.tui_settings["pile_only"]
+        floor = FIELD_MIN_ROWS
+        if pile_only:
+            rows = self.world.pile_rows()
+            widget.styles.max_height = rows
+            floor = min(rows, FIELD_MIN_ROWS)
+        else:
+            widget.styles.max_height = None
+        spare = card.content_size.height - keybar.outer_size.height - text.outer_size.height
+        show = (self.tui_settings["field"] or self.tui_settings["pile_only"]) and spare >= floor
+        if widget.display != show:
+            widget.display = show
 
     def _rebuild_project_banner(self) -> None:
         banner = self.query_one("#project-banner", Static)
@@ -1182,6 +1233,7 @@ class CactusApp(App[int]):
         if opening != "tuning" and self.tuning_open:
             self.tuning_open = False
             self.query_one("#tuning-panel", Static).display = False
+            self.query_one("#tuning-scroll", VerticalScroll).display = False
 
     # ---- tuning overlay (`T`, v6c) --------------------------------------
 
@@ -1200,6 +1252,7 @@ class CactusApp(App[int]):
         else:
             self.tuning_index = 0
         self.query_one("#body", Horizontal).display = False
+        self.query_one("#tuning-scroll", VerticalScroll).display = True
         panel = self.query_one("#tuning-panel", Static)
         panel.display = True
         self._render_tuning()
@@ -1208,6 +1261,7 @@ class CactusApp(App[int]):
     def _close_tuning(self) -> None:
         self.tuning_open = False
         self.query_one("#tuning-panel", Static).display = False
+        self.query_one("#tuning-scroll", VerticalScroll).display = False
         self.query_one("#body", Horizontal).display = True
         self._sync_input_focus()
         self.refresh_bindings()
@@ -1234,7 +1288,38 @@ class CactusApp(App[int]):
     def _move_tuning_cursor(self, delta: int) -> None:
         if not self.tuning_rows:
             return
+        # tuning_rows is in panel order (sky.tuning_fields_for), so a flat
+        # step past a panel's last row lands on the next panel's first.
         self.tuning_index = (self.tuning_index + delta) % len(self.tuning_rows)
+        self._render_tuning()
+
+    def _tuning_panels(self) -> list[tuple[str, int, int]]:
+        """The non-empty panels in page order as `(name, start, end)` slices
+        of `tuning_rows` — contiguous because the rows arrive panel-sorted."""
+        spans: list[tuple[str, int, int]] = []
+        for i, row in enumerate(self.tuning_rows):
+            name = tuning_panel_of(row)
+            if spans and spans[-1][0] == name:
+                spans[-1] = (name, spans[-1][1], i + 1)
+            else:
+                spans.append((name, i, i + 1))
+        return spans
+
+    def _current_tuning_panel(self) -> int:
+        """Index into `_tuning_panels()` of the panel holding the cursor."""
+        for n, (_, start, end) in enumerate(self._tuning_panels()):
+            if start <= self.tuning_index < end:
+                return n
+        return 0
+
+    def _switch_tuning_panel(self, delta: int) -> None:
+        """`tab`/`]` (+1) and `shift+tab`/`[` (-1): the cursor jumps to the
+        first row of the next/previous non-empty panel, wrapping."""
+        panels = self._tuning_panels()
+        if not panels:
+            return
+        n = (self._current_tuning_panel() + delta) % len(panels)
+        self.tuning_index = panels[n][1]
         self._render_tuning()
 
     def _nudge_tuning(self, steps: int) -> None:
@@ -1307,11 +1392,20 @@ class CactusApp(App[int]):
         return ["  " + "  ".join(cells[i:i + 3]) for i in range(0, len(cells), 3)]
 
     def _tuning_text(self) -> str:
+        return "\n".join(self._tuning_lines()[0])
+
+    def _tuning_lines(self) -> tuple[list[str], int]:
+        """The overlay's lines and the index of the cursor's line in them
+        (0 when there is no cursor) — the title, the panel strip, the
+        saved-skies grid, then only the current panel's rows."""
         if not self.tuning_rows:
-            return "tuning\n\nno tunable keys\n\nesc or T  return to inbox"
+            return ["tuning", "", "no tunable keys", "", "esc or T  return to inbox"], 0
         cfg = self.world.sky.config
         engine = cfg.sky_engine + (f" / {cfg.cloud_style}" if cfg.sky_engine == "puffs" else "")
-        lines = [f"tuning   engine {engine}   (keys shown follow the engine)", ""]
+        panels = self._tuning_panels()
+        current = self._current_tuning_panel()
+        strip = "  ".join(f"[{name}]" if n == current else name for n, (name, _, _) in enumerate(panels))
+        lines = [f"tuning   engine {engine}   (keys shown follow the engine)", "", strip, ""]
         lines.append("saved skies      digit loads one    S then digit saves the current sky")
         lines.extend(self._slot_grid_lines())
         if self.tuning_name_slot is not None:
@@ -1319,20 +1413,21 @@ class CactusApp(App[int]):
         elif self.tuning_save_armed:
             lines.append("  press a digit 1-9 to name and save the current sky there (esc cancels)")
         lines.append("")
-        current_group: str | None = None
-        for i, row in enumerate(self.tuning_rows):
-            if row.group != current_group:
-                lines.append(f"[{row.group}]")
-                current_group = row.group
+        _, start, end = panels[current]
+        cursor_line = 0
+        for i in range(start, end):
+            row = self.tuning_rows[i]
+            if i == self.tuning_index:
+                cursor_line = len(lines)
             marker = "▸" if i == self.tuning_index else " "
             value = getattr(self._tuning_obj(row.group), row.name)
             lines.append(f"{marker} {row.name}  {value!r}  # {row.comment}")
         lines.extend([
             "",
-            "j/k or ↑↓  move   h/l or ←→  nudge   H/L or shift+←→  nudge x10   r  reset",
+            "tab / [ ]  panels   j/k ↑↓  move   h/l ←→  nudge   H/L shift+←→  x10   r  reset",
             "esc or T  return to inbox",
         ])
-        return "\n".join(lines)
+        return lines, cursor_line
 
     def _refilter_tuning(self) -> None:
         """Rebuild the visible rows for the current engine and style (v8),
@@ -1352,7 +1447,41 @@ class CactusApp(App[int]):
 
     def _render_tuning(self) -> None:
         self._refilter_tuning()
-        self.query_one("#tuning-panel", Static).update(self._tuning_text())
+        lines, cursor_line = self._tuning_lines()
+        self.query_one("#tuning-panel", Static).update("\n".join(lines))
+        # The Static's new height lands on the next layout pass; scroll after it.
+        self.call_after_refresh(self._scroll_tuning_cursor)
+
+    def _tuning_cursor_span(self) -> tuple[int, int]:
+        """`(y, h)`: the cursor row's first screen row inside `#tuning-scroll`'s
+        virtual space and how many rows it wraps to. A long comment wraps, so
+        the logical line index alone would undercount everything above it."""
+        from textual.content import Content
+
+        lines, cursor_line = self._tuning_lines()
+        panel = self.query_one("#tuning-panel", Static)
+        width = max(1, panel.content_region.width)
+
+        def rows(line: str) -> int:
+            return max(1, len(Content(line).wrap(width)))
+
+        y = panel.virtual_region.y + panel.styles.padding.top + sum(rows(line) for line in lines[:cursor_line])
+        return y, rows(lines[cursor_line])
+
+    def _scroll_tuning_cursor(self) -> None:
+        """Scroll `#tuning-scroll` the least amount that brings the cursor's
+        whole (possibly wrapped) row into view."""
+        if not self.tuning_open or not self.tuning_rows:
+            return
+        scroll = self.query_one("#tuning-scroll", VerticalScroll)
+        top, height = int(scroll.scroll_y), scroll.scrollable_content_region.height
+        if height <= 0:
+            return
+        y, h = self._tuning_cursor_span()
+        if y < top:
+            scroll.scroll_to(y=y, animate=False)
+        elif y + h > top + height:
+            scroll.scroll_to(y=min(y, y + h - height), animate=False)
 
     def _selected_project_row(self) -> dict[str, Any] | None:
         if 0 <= self.project_index < len(self.project_rows):
@@ -1578,6 +1707,7 @@ class CactusApp(App[int]):
             text.update("inbox empty — waiting for questions")
             self._rebuild_keybar()
             self.refresh_bindings()
+            self.call_after_refresh(self._render_field)
             return
         card.border_title = f"answering  {q.key}"
         card.set_class(q.heard_state == "sent", "-sent")
@@ -1605,6 +1735,9 @@ class CactusApp(App[int]):
         # would go stale right along with it.
         self._rebuild_keybar()
         self.refresh_bindings()
+        # Card first: once the new text is laid out, re-fit the field to the
+        # rows it left and resize the World to match.
+        self.call_after_refresh(self._render_field)
 
     def _keybar_items(self, q: Question | None) -> list[tuple[str, str]]:
         """`(key, label)` pairs for the row key bar, in display order.
@@ -1694,11 +1827,15 @@ class CactusApp(App[int]):
         return items
 
     def _rebuild_keybar(self) -> None:
-        """Render the row key bar and record each key's x offset.
+        """Render the row key bar, centred, and record each key's x offset.
 
         `_field_column` reads `self._keybar_x` to drop a seed under the key
         that answered — so this must run before any seed drop, which is why
-        every caller runs it alongside `refresh_bindings()`.
+        every caller runs it alongside `refresh_bindings()`. The bar is
+        centred so the digits sit mid-field rather than weighting the pile to
+        the left; each recorded x includes that centring pad and the bar's
+        own left gutter, so it is the glyph's column in `#field`, which spans
+        the same card width from the same left edge.
         """
         try:
             bar = self.query_one("#keybar", Static)
@@ -1723,7 +1860,10 @@ class CactusApp(App[int]):
             piece = head + shown
             pieces.append(piece)
             pos += len(piece)
-        bar.update("".join(pieces))
+        pad = max((width - pos) // 2, 0)
+        left = pad + bar.styles.gutter.left
+        self._keybar_x = {key: x + left for key, x in self._keybar_x.items()}
+        bar.update(" " * pad + "".join(pieces))
 
     # Transient one-line feedback for actions that touch the outside world, so a
     # poke that failed says so instead of looking like a dead key.
@@ -2406,6 +2546,10 @@ class CactusApp(App[int]):
                 self._move_tuning_cursor(1)
             elif event.key in ("k", "up"):
                 self._move_tuning_cursor(-1)
+            elif event.key in ("tab", "right_square_bracket"):
+                self._switch_tuning_panel(1)
+            elif event.key in ("shift+tab", "left_square_bracket"):
+                self._switch_tuning_panel(-1)
             elif event.key in ("h", "left"):
                 self._nudge_tuning(-1)
             elif event.key in ("l", "right"):
@@ -3198,9 +3342,9 @@ class CactusApp(App[int]):
     def _field_column(self, key: str) -> int:
         """Resolve the drop column for a key via its own key bar glyph's x.
 
-        `self._keybar_x` (rebuilt on every `_rebuild_keybar`) shares the
-        field's own width and padding, so a key's x offset in the bar is the
-        field column directly — each digit now has its own column, not one
+        `self._keybar_x` (rebuilt on every `_rebuild_keybar`) already counts
+        the bar's centring pad and gutter from the card's left edge, which
+        the field shares, so it is the field column directly — each digit now has its own column, not one
         shared "1" slot. `enter` falls back to `i`'s column when the row has
         no "enter" item of its own (a plan or review row, say), since that is
         where its typing began. Falls back to a column chosen uniformly at
@@ -3339,6 +3483,11 @@ class CactusApp(App[int]):
         self.flash = "garden updated"
         self._rebuild_status_bar()
 
+    def on_resize(self, event: events.Resize) -> None:
+        """A terminal resize re-fits the field once the layout settles; a
+        hidden field gets no Resize of its own to do it."""
+        self.call_after_refresh(self._render_field)
+
     def on_unmount(self) -> None:
         if self._field_timer is not None:
             self._field_timer.stop()
@@ -3352,16 +3501,14 @@ class CactusApp(App[int]):
                 self._field_timer.stop()
                 self._field_timer = None
             return
-        if not self.tui_settings["field"] and not self.tui_settings["pile_only"]:
-            return  # fully hidden — nothing to draw
+        # Every draw re-fits first, so the timer is the backstop for any
+        # layout change no event reached (a hidden field gets no Resize).
+        self._fit_field()
+        if not widget.display:
+            return  # hidden by the setting or by the card — nothing to draw
+        if widget.size.height == 0:
+            return  # just shown, not laid out yet; its Resize draws it
         pile_only = not self.tui_settings["field"] and self.tui_settings["pile_only"]
-        if pile_only:
-            rows = self.world.pile_rows()
-            widget.styles.max_height = rows
-            widget.styles.min_height = rows
-        else:
-            widget.styles.max_height = None
-            widget.styles.min_height = None
         width = max(widget.size.width, 1)
         height = max(widget.size.height, 1)
         if width != self.world.cols or height != self.world.rows:

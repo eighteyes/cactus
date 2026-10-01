@@ -19,6 +19,9 @@ Responsibilities:
 - The card is always displayed, showing the empty-state message with an
   empty store; the field lives inside it, sized to the card's remaining
   height once the text and key bar rows are accounted for.
+- Card first: the card's content gets every row it needs in both
+  orientations; the field (pile-only too) takes the leftover and hides below
+  4 rows. The key bar is centred and a seed drops under the key pressed.
 - The garden (the landed pile) is shared and persisted: it survives a
   restart and stays in sync across every TUI on the same database.
 """
@@ -545,6 +548,67 @@ async def test_field_column_matches_the_keybar_glyph(store: Store, project: str)
         assert col_2 > col_1
 
 
+def _keybar_centre_check(app: CactusApp) -> int:
+    """Assert the key bar is centred and "1"'s recorded column is its glyph's
+    screen column in `#field`; return that column."""
+    bar = app.query_one("#keybar", Static)
+    field = app.query_one("#field")
+    line = str(bar.content)
+    body = line.lstrip(" ")
+    pad = len(line) - len(body)
+    assert pad == (bar.size.width - len(body)) // 2
+    assert pad > 0
+    col = app._keybar_x["1"]
+    assert bar.content_region.x + line.index("1 ") == field.region.x + col
+    return col
+
+
+@pytest.mark.parametrize("orientation, width", [("bottom", 100), ("side", 200)])
+async def test_keybar_is_centred_and_a_seed_drops_under_the_key(
+    store: Store, project: str, orientation: str, width: int,
+) -> None:
+    """The key bar sits mid-card so the digits drop seeds mid-field; the
+    column `_keybar_x` records is the pressed glyph's own screen column.
+    Side at 100 columns leaves the bar no slack to centre in (it fills and
+    truncates), so side runs wider."""
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice(c) for c in "abcde"],
+    )
+
+    app = CactusApp(store, project=project)
+    app.tui_settings["orientation"] = orientation
+    async with app.run_test(size=(width, 40)) as pilot:
+        await _settle(pilot)
+        col = _keybar_centre_check(app)
+        assert app._field_column("1") == col
+        # Record the spawn column itself: the seed drifts on the wind as
+        # soon as the field ticks, so its later x says nothing about the drop.
+        dropped: list[int] = []
+        real_drop = app.world.drop
+        app.world.drop = lambda c: (dropped.append(c), real_drop(c))[1]
+        await pilot.press("1")
+        await pilot.pause()
+        assert dropped == [col]
+        assert len(app.world.seeds) == 1
+
+
+async def test_keybar_recentres_on_resize(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice(c) for c in "abcde"],
+    )
+
+    app = CactusApp(store, project=project)
+    app.tui_settings["orientation"] = "bottom"
+    async with app.run_test(size=(100, 40)) as pilot:
+        await _settle(pilot)
+        before = _keybar_centre_check(app)
+        await pilot.resize_terminal(140, 40)
+        await _settle(pilot)
+        assert _keybar_centre_check(app) > before
+
+
 async def test_field_column_enter_falls_back_to_i(store: Store, project: str) -> None:
     """A plan row's key bar offers "i note" but no "enter" item of its own —
     `_field_column("enter")` should fall back to "i"'s column rather than
@@ -1042,6 +1106,165 @@ async def test_field_height_fills_the_card_beneath_text_and_keybar(store: Store,
         assert field.size.height == card.size.height - text.size.height - keybar.size.height
 
 
+def _ask_context(store: Store, project: str, text: str, lines: int) -> None:
+    context = "\n".join(f"context line {i}" for i in range(lines)) if lines else None
+    store.ask(
+        text, project=project, cwd=project, agent=AGENT, context=context,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+
+
+async def _settle(pilot) -> None:
+    # One pause lays the card out; the field re-fit runs after that refresh.
+    await pilot.pause()
+    await pilot.pause()
+
+
+def _card_fills_column(app: CactusApp) -> bool:
+    """The card text takes every row of the card above the key bar."""
+    card = app.query_one("#card")
+    text = app.query_one("#card-text", Static)
+    keybar = app.query_one("#keybar", Static)
+    return text.outer_size.height == card.content_size.height - keybar.outer_size.height
+
+
+async def test_short_question_gets_its_rows_and_the_field_the_rest(store: Store, project: str) -> None:
+    """Card first: a short card shows every line, the field takes the rest."""
+    _ask_context(store, project, "short one", 0)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await _settle(pilot)
+        card = app.query_one("#card")
+        text = app.query_one("#card-text", Static)
+        field = app.query_one("#field")
+        keybar = app.query_one("#keybar", Static)
+        assert text.region.height >= text.virtual_size.height
+        assert text.region.height >= len(str(text.content).splitlines())
+        assert field.display is True
+        assert field.size.height > 10
+        assert field.size.height == card.content_size.height - text.outer_size.height - keybar.outer_size.height
+        assert (app.world.cols, app.world.rows) == (field.size.width, field.size.height)
+
+
+async def test_mid_question_fits_whole_and_shrinks_the_field(store: Store, project: str) -> None:
+    """A card that still fits shows every line; the field shrinks to make room."""
+    _ask_context(store, project, "short one", 0)
+    _ask_context(store, project, "mid one", 12)
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await _settle(pilot)
+        short_field = app.query_one("#field").size.height
+        await pilot.press("j")
+        await _settle(pilot)
+        assert app._current_question().text == "mid one"
+        card = app.query_one("#card")
+        text = app.query_one("#card-text", Static)
+        field = app.query_one("#field")
+        assert text.region.height >= text.virtual_size.height
+        assert card.region.contains_region(text.region)
+        assert 0 < field.size.height < short_field
+        assert (app.world.cols, app.world.rows) == (field.size.width, field.size.height)
+
+
+async def test_long_question_takes_the_card_and_hides_the_field(store: Store, project: str) -> None:
+    """30 context lines at 100x40: the card keeps every row it can use and
+    the field yields — smaller than the short case, or hidden."""
+    _ask_context(store, project, "short one", 0)
+    _ask_context(store, project, "long one", 30)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await _settle(pilot)
+        short_field = app.query_one("#field").size.height
+        await pilot.press("j")
+        await _settle(pilot)
+        assert app._current_question().text == "long one"
+        card = app.query_one("#card")
+        text = app.query_one("#card-text", Static)
+        field = app.query_one("#field")
+        assert card.region.contains_region(text.region)
+        assert text.region.height >= min(text.virtual_size.height, card.content_size.height - 1)
+        assert field.display is False or field.size.height < short_field
+        if text.virtual_size.height > text.region.height:
+            assert _card_fills_column(app)
+            assert field.display is False
+
+
+async def test_too_long_question_hides_the_field_and_fills_the_column(store: Store, project: str) -> None:
+    _ask_context(store, project, "long one", 30)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await _settle(pilot)
+        field = app.query_one("#field")
+        assert field.display is False or field.size.height == 0
+        assert _card_fills_column(app)
+        # The key bar still sits on the card's last content row.
+        card = app.query_one("#card")
+        keybar = app.query_one("#keybar", Static)
+        assert keybar.region.bottom == card.content_region.bottom
+
+
+async def test_moving_to_a_short_row_gives_the_field_its_rows_back(store: Store, project: str) -> None:
+    _ask_context(store, project, "long one", 30)
+    _ask_context(store, project, "short one", 0)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await _settle(pilot)
+        assert app._current_question().text == "long one"
+        assert app.query_one("#field").display is False
+        await pilot.press("j")
+        await _settle(pilot)
+        assert app._current_question().text == "short one"
+        field = app.query_one("#field")
+        assert field.display is True
+        assert field.size.height > 10
+        assert (app.world.cols, app.world.rows) == (field.size.width, field.size.height)
+        await pilot.press("k")
+        await _settle(pilot)
+        assert app.query_one("#field").display is False
+
+
+async def test_bottom_orientation_is_card_first_too(store: Store, project: str) -> None:
+    _ask_context(store, project, "long one", 30)
+    _ask_context(store, project, "short one", 0)
+
+    app = CactusApp(store, project=project)
+    app.tui_settings["orientation"] = "bottom"
+    async with app.run_test(size=(100, 40)) as pilot:
+        await _settle(pilot)
+        assert app.query_one("#field").display is False
+        assert _card_fills_column(app)
+        await pilot.press("j")
+        await _settle(pilot)
+        text = app.query_one("#card-text", Static)
+        field = app.query_one("#field")
+        assert text.region.height >= text.virtual_size.height
+        assert field.display is True
+        assert field.size.height >= 4
+
+
+async def test_pile_only_yields_to_the_card(store: Store, project: str) -> None:
+    """Pile-only sizes to the pile's rows, but only in rows the card leaves."""
+    _ask_context(store, project, "long one", 30)
+    _ask_context(store, project, "short one", 0)
+
+    app = CactusApp(store, project=project)
+    app.tui_settings["field"] = False
+    app.tui_settings["pile_only"] = True
+    async with app.run_test(size=(100, 24)) as pilot:
+        await _settle(pilot)
+        assert app.query_one("#field").display is False
+        assert _card_fills_column(app)
+        await pilot.press("j")
+        await _settle(pilot)
+        field = app.query_one("#field")
+        assert field.display is True
+        assert field.size.height == app.world.pile_rows()
+
+
 async def test_sky_config_reload_updates_the_running_world(
     store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1285,7 +1508,7 @@ async def test_tuning_overlay_named_slot_save_and_recall(
 
         text = app._tuning_text()
         assert "2 wisp" in text
-        assert text.index("2 wisp") < text.index("[shared]")
+        assert text.index("2 wisp") < text.index("▸ ")  # slots grid sits above the panel's rows
 
         # Save, arm, then bail out without saving: cursor/nudge untouched.
         default_index = app.tuning_index
@@ -1535,7 +1758,7 @@ async def test_tuning_overlay_reshapes_when_the_engine_changes(
         await pilot.pause()
         text = app._tuning_text()
         assert "engine texture" in text
-        assert "[far]" not in text and "cloud_style" not in text
+        assert "far" not in _tuning_panel_names(app) and "clouds" not in _tuning_panel_names(app)
         # walk to sky_engine and cycle texture -> puffs
         idx = next(i for i, r in enumerate(app.tuning_rows) if r.name == "sky_engine")
         for _ in range(idx):
@@ -1543,13 +1766,177 @@ async def test_tuning_overlay_reshapes_when_the_engine_changes(
         await pilot.press("l")
         await pilot.pause()
         text = app._tuning_text()
-        assert "engine puffs" in text and "cloud_style" in text and "[far]" not in text
+        assert "engine puffs" in text and "clouds" in _tuning_panel_names(app)
+        assert "far" not in _tuning_panel_names(app)
         assert app.tuning_rows[app.tuning_index].name == "sky_engine"
         await pilot.press("l")  # puffs -> fluid
         await pilot.pause()
         text = app._tuning_text()
-        assert "engine fluid" in text and "[far]" in text and "horizon" in text and "cloud_style" not in text
+        names = _tuning_panel_names(app)
+        assert "engine fluid" in text and "far" in names and "projection" in names and "clouds" not in names
         assert app.tuning_rows[app.tuning_index].name == "sky_engine"
+
+
+def _tuning_panel_names(app: CactusApp) -> list[str]:
+    """The panel strip's names, in order, with the current one's brackets
+    stripped — read off the overlay text, the same line the human sees."""
+    strip = app._tuning_text().splitlines()[2]
+    return [w.strip("[]") for w in strip.split()]
+
+
+def _tuning_current_panel(app: CactusApp) -> str:
+    strip = app._tuning_text().splitlines()[2]
+    return next(w.strip("[]") for w in strip.split() if w.startswith("["))
+
+
+async def _open_tuning_under(pilot, app: CactusApp, **overrides) -> None:
+    """Swap the live sky to `SkyConfig(**overrides)`, then open `T`."""
+    from cactus.sky import SkyConfig
+
+    app.world.apply_sky_config(SkyConfig(**overrides))
+    await pilot.press("T")
+    await pilot.pause()
+
+
+async def test_tuning_panels_filter_by_engine(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_tuning_under(pilot, app, sky_engine="puffs", cloud_style="bands")
+        names = _tuning_panel_names(app)
+        assert names[0] == "engine" and "clouds" in names
+        assert not {"projection", "far", "mid", "near"} & set(names)
+        await pilot.press("T")
+        await pilot.pause()
+        await _open_tuning_under(pilot, app, sky_engine="fluid", perspective="on")
+        names = _tuning_panel_names(app)
+        assert "projection" in names and names[-3:] == ["far", "mid", "near"]
+        assert "clouds" not in names
+
+
+async def test_tuning_tab_cycles_panels_and_wraps(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_tuning_under(pilot, app, sky_engine="fluid", perspective="on")
+        names = _tuning_panel_names(app)
+        assert _tuning_current_panel(app) == names[0]
+        seen = []
+        for _ in range(len(names)):
+            await pilot.press("tab")
+            await pilot.pause()
+            seen.append(_tuning_current_panel(app))
+        assert seen == names[1:] + names[:1]
+        await pilot.press("shift+tab")
+        await pilot.pause()
+        assert _tuning_current_panel(app) == names[-1]
+        await pilot.press("left_square_bracket")
+        await pilot.pause()
+        assert _tuning_current_panel(app) == names[-2]
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+        assert _tuning_current_panel(app) == names[-1]
+        # a panel switch lands on that panel's first row
+        from cactus.sky import tuning_panel_of
+
+        row = app.tuning_rows[app.tuning_index]
+        assert tuning_panel_of(row) == names[-1]
+        assert tuning_panel_of(app.tuning_rows[app.tuning_index - 1]) != names[-1]
+
+
+async def test_tuning_j_past_panel_end_lands_on_next_panel(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cactus.sky import tuning_panel_of
+
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_tuning_under(pilot, app, sky_engine="puffs", cloud_style="bands")
+        names = _tuning_panel_names(app)
+        first = names[0]
+        last = max(i for i, r in enumerate(app.tuning_rows) if tuning_panel_of(r) == first)
+        for _ in range(last):
+            await pilot.press("j")
+        await pilot.pause()
+        assert _tuning_current_panel(app) == first
+        await pilot.press("j")
+        await pilot.pause()
+        assert _tuning_current_panel(app) == names[1]
+        assert app.tuning_index == last + 1
+        await pilot.press("k")
+        await pilot.pause()
+        assert _tuning_current_panel(app) == first and app.tuning_index == last
+        # only the current panel's rows are on the page
+        text = app._tuning_text()
+        other = next(r for r in app.tuning_rows if tuning_panel_of(r) == names[1])
+        assert f" {other.name}  " not in text
+
+
+async def test_tuning_scroll_keeps_cursor_visible_on_a_short_terminal(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textual.containers import VerticalScroll
+    from cactus.sky import tuning_panel_of
+
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(100, 20)) as pilot:
+        await pilot.pause()
+        await _open_tuning_under(pilot, app, sky_engine="fluid", perspective="on")
+        while _tuning_current_panel(app) != "far":
+            await pilot.press("tab")
+        await pilot.pause()
+        last = max(i for i, r in enumerate(app.tuning_rows) if tuning_panel_of(r) == "far")
+        while app.tuning_index != last:
+            await pilot.press("j")
+        await pilot.pause()
+        await pilot.pause()
+        scroll = app.query_one("#tuning-scroll", VerticalScroll)
+        assert scroll.max_scroll_y > 0  # the page really is taller than the view
+        assert scroll.scroll_y > 0
+
+        def cursor_on_screen() -> bool:
+            y, h = app._tuning_cursor_span()
+            top, height = scroll.scroll_y, scroll.scrollable_content_region.height
+            name = app.tuning_rows[app.tuning_index].name
+            screen = "\n".join(s.text for s in app.screen._compositor.render_strips())
+            return top <= y and y + h <= top + height and f"▸ {name}  " in screen
+
+        assert cursor_on_screen()
+        # and back up to the panel's first row scrolls up again
+        first = min(i for i, r in enumerate(app.tuning_rows) if tuning_panel_of(r) == "far")
+        while app.tuning_index != first:
+            await pilot.press("k")
+        await pilot.pause()
+        await pilot.pause()
+        assert cursor_on_screen()
+
+
+async def test_tuning_engine_change_keeps_cursor_on_sky_engine(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CACTUS_SKY", str(tmp_path / "sky.toml"))
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_tuning_under(pilot, app, sky_engine="puffs", cloud_style="bands")
+        app.tuning_index = next(i for i, r in enumerate(app.tuning_rows) if r.name == "sky_engine")
+        app._render_tuning()
+        before = _tuning_panel_names(app)
+        await pilot.press("l")  # puffs -> fluid: clouds goes, projection/far/mid/near arrive
+        await pilot.pause()
+        assert app.world.sky.config.sky_engine == "fluid"
+        assert _tuning_panel_names(app) != before
+        assert app.tuning_rows[app.tuning_index].name == "sky_engine"
+        assert _tuning_current_panel(app) == "engine"
 
 
 def _review(store: Store, project: str, text: str = "check it"):
