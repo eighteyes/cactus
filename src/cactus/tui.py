@@ -19,7 +19,8 @@ Responsibilities:
   on every answer, or manually via backtick/tilde at any time outside
   free-text mode. Card first: the field gets only the rows the card's
   content leaves, hidden below `FIELD_MIN_ROWS`; the centred key bar drops
-  each seed under the key pressed.
+  each seed under the key pressed, or at its mirrored column under the
+  `seed_release = "right"` setting.
 - Show a `T` tuning overlay listing every `SkyConfig` key, nudge it live
   with h/l/H/L, reset it with r, and keep the on-disk file and the running
   sky in agreement on every nudge.
@@ -71,7 +72,7 @@ FIELD_MIN_ROWS = 4
 
 TUI_SETTINGS_DEFAULTS = {
     "orientation": "side", "figlet_header": False, "projects_pane": True,
-    "field": True, "pile_only": False,
+    "field": True, "pile_only": False, "seed_release": "left",
 }
 
 
@@ -97,6 +98,8 @@ def _load_tui_settings() -> dict[str, Any]:
         settings["field"] = data["field"]
     if isinstance(data, dict) and isinstance(data.get("pile_only"), bool):
         settings["pile_only"] = data["pile_only"]
+    if isinstance(data, dict) and data.get("seed_release") in ("left", "right"):
+        settings["seed_release"] = data["seed_release"]
     return settings
 
 
@@ -1023,12 +1026,14 @@ class CactusApp(App[int]):
         orientation = self.tui_settings["orientation"]
         figlet = "on" if self.tui_settings["figlet_header"] else "off"
         pane = "on" if self.tui_settings["projects_pane"] else "off"
+        release = self.tui_settings["seed_release"]
         return "\n".join([
             "settings",
             "",
             f"1  left / right   questions left, detail right  {'●' if orientation == 'side' else '○'}",
             f"2  under / over   detail above, questions bottom {'●' if orientation == 'bottom' else '○'}",
             f"3  projects pane  due-ranked, left of the rail    {pane}",
+            f"4  seed release   drop under the key, or mirror   {release}",
             f"f  Figlet project header (cybermedium)            {figlet}",
             "",
             "esc or ?  return to the inbox",
@@ -1534,6 +1539,13 @@ class CactusApp(App[int]):
     def _toggle_figlet_header(self) -> None:
         self.tui_settings["figlet_header"] = not self.tui_settings["figlet_header"]
         self._apply_tui_settings()
+        self._save_settings()
+        self._render_settings()
+
+    def _toggle_seed_release(self) -> None:
+        """Flip `seed_release` between `left` (a seed drops under its key)
+        and `right` (the mirrored column); `_field_column` reads it."""
+        self.tui_settings["seed_release"] = "right" if self.tui_settings["seed_release"] == "left" else "left"
         self._save_settings()
         self._render_settings()
 
@@ -2614,6 +2626,8 @@ class CactusApp(App[int]):
                 self._set_orientation("bottom")
             elif event.key == "3":
                 self._toggle_projects_pane()
+            elif event.key == "4":
+                self._toggle_seed_release()
             elif event.key == "f":
                 self._toggle_figlet_header()
             else:
@@ -3362,7 +3376,9 @@ class CactusApp(App[int]):
         no "enter" item of its own (a plan or review row, say), since that is
         where its typing began. Falls back to a column chosen uniformly at
         random when neither is on the bar, e.g. the key bar is not mounted
-        yet, or the row offers neither key at all.
+        yet, or the row offers neither key at all. `seed_release == "right"`
+        mirrors a key's column across the field (`width - 1 - col`), so the
+        pile builds on the right while the bar stays where it is.
         """
         try:
             pane_cols = max(self.query_one("#field", FieldView).size.width, 1)
@@ -3373,7 +3389,10 @@ class CactusApp(App[int]):
             col = self._keybar_x.get("i")
         if col is None:
             return random.randrange(pane_cols)
-        return max(0, min(col, pane_cols - 1))
+        col = max(0, min(col, pane_cols - 1))
+        if self.tui_settings["seed_release"] == "right":
+            col = pane_cols - 1 - col
+        return col
 
     def _field_drop(self, key: str) -> None:
         """Drop a seed for the column named by `key`.

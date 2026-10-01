@@ -81,6 +81,8 @@ Responsibilities:
   recedes the same way and is replaced. `cloud_style` picks a `_PUFF_STYLES`
   table (`drift`, `bloom`, `streaks`), `cloud_count` scales the population.
   `camera_x` stays 0: the sky changes more than it travels.
+  `band_belts` deals the `bands` style's lanes as alternating zones and
+  belts, all zones, or all belts.
 - Scatter: every engine takes `scatter(px, py, radius, strength)`, called by
   `field.py` once per falling member per frame while its clump is inside a
   cloud. `Sky` pushes each grid's density outward from the point
@@ -339,6 +341,7 @@ _SHARED_COMMENTS = {
     "band_flow": "bands style: how neighbouring lanes flow: 'alternate' (opposite ways), 'same', or 'random'",
     "band_height": "bands style: each lane's height in terminal rows, laid top to bottom (0 = lane count from cloud_count)",
     "band_edge": "bands style: the share of a band's height that is a noisy fringe at top and bottom, wandering along the band",
+    "band_belts": "bands style: 'alternate' (dense zones and streaky belts by turns), 'dense' (every lane a zone), or 'belts' (every lane a belt)",
     "seed_mass": "'accrete': a falling seed gains a block per cloud it enters; 'single': it stays one block (charge still counts)",
     "accrete_spin": "rad/s kick a cloud accretion gives the whole clump; 0 keeps it upright",
     "accrete_count": "blocks one cloud entry adds, grown per `accrete_shape` (accrete only; charge is still +1)",
@@ -450,10 +453,12 @@ class SkyConfig:
     # `band_height` fixes each lane's height in rows (0 = lane count from
     # `cloud_count`); `band_edge` is the share of a band's height that is a
     # noisy, per-column wandering fringe at its top and bottom.
+    # `band_belts` deals which lanes are dense zones and which wispy belts.
     band_gap: float = field(default=0.3, metadata={"step": 0.05, "lo": 0.0, "hi": 0.8})
     band_flow: str = field(default="alternate", metadata={"choices": ("alternate", "same", "random")})
     band_height: int = field(default=0, metadata={"step": 1, "lo": 0, "hi": 20})
     band_edge: float = field(default=0.35, metadata={"step": 0.05, "lo": 0.0, "hi": 0.9})
+    band_belts: str = field(default="alternate", metadata={"choices": ("alternate", "dense", "belts")})
     # Birds (v8): which depth bands may spawn a flock, how often, how many.
     # `field.py` reads these off `World.sky.config`, the same way `seed_wind`
     # reaches it; the glyph sets per depth stay in `field.DEPTH_GLYPHS`.
@@ -628,7 +633,7 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
         return engine == "fluid"
     if row.name in _TUNE_ALWAYS:
         return True
-    if row.name in ("band_gap", "band_flow", "band_height", "band_edge"):
+    if row.name in ("band_gap", "band_flow", "band_height", "band_edge", "band_belts"):
         return engine == "puffs" and cfg.cloud_style == "bands"
     if row.name in _TUNE_ENGINE.get(engine, frozenset()):
         return True
@@ -643,7 +648,7 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
 TUNE_PANELS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("engine", ("sky_engine", "perspective", "fps", "cloud_fade")),
     ("clouds", ("cloud_style", "cloud_count", "cloud_drift", "cloud_life",
-                "band_gap", "band_flow", "band_height", "band_edge")),
+                "band_gap", "band_flow", "band_height", "band_edge", "band_belts")),
     ("projection", ("horizon", "focal", "z_far", "ground_lines", "deck_altitude_px")),
     ("wind", ("shear_floor", "shear_base", "shear_span", "seed_wind")),
     ("birds", ("birds", "bird_rate", "bird_max")),
@@ -1743,19 +1748,26 @@ _PUFF_STYLES: dict[str, dict[str, dict]] = {
     },
     # Planetary layers (v8): full-width bands tiling the whole sky, each its
     # own lane, lanes touching, neighbours flowing opposite ways like zonal
-    # jets. Even lanes are dense *zones*, odd lanes sparse *belts*: a lane's
-    # resting cutoff is `cutoff + zone` or `cutoff + belt`. `w`/`h` are
+    # jets. Even lanes are dense *zones*, odd lanes sparse *belts*
+    # (`SkyConfig.band_belts` can make every lane one or the other): a lane's
+    # resting cutoff is `cutoff + zone` or `cutoff + belt`, and a belt's
+    # patch is cut from finer noise, `belt_scale_x`/`belt_octaves` in place
+    # of `scale_x`/`octaves`, so it reads as streaky turbulence between the
+    # smooth zones. `w`/`h` are
     # unused (the lane sets them); `lanes` is the band count at
     # `cloud_count == 1.0`; `SkyConfig.band_gap`/`band_flow` set a lane's
     # empty share and which way neighbours flow, `band_height`/`band_edge`
     # its fixed row height and the depth of its noisy top/bottom fringe.
     "bands": {
         "far": dict(w=(0, 0), h=(0, 0), scale_x=26, scale_y=3, octaves=2, cutoff=0.30, gain=2.0,
-                    drift=0.25, spacing=0, rise=0.10, fall=0.10, morph=180.0, lanes=7, belt=0.16, zone=-0.06),
+                    drift=0.25, spacing=0, rise=0.10, fall=0.10, morph=180.0, lanes=7, belt=0.16, zone=-0.06,
+                    belt_scale_x=16, belt_octaves=3),
         "mid": dict(w=(0, 0), h=(0, 0), scale_x=24, scale_y=3, octaves=2, cutoff=0.30, gain=2.0,
-                    drift=0.45, spacing=0, rise=0.10, fall=0.10, morph=160.0, lanes=7, belt=0.16, zone=-0.06),
+                    drift=0.45, spacing=0, rise=0.10, fall=0.10, morph=160.0, lanes=7, belt=0.16, zone=-0.06,
+                    belt_scale_x=15, belt_octaves=3),
         "near": dict(w=(0, 0), h=(0, 0), scale_x=22, scale_y=4, octaves=2, cutoff=0.30, gain=2.0,
-                     drift=0.7, spacing=0, rise=0.10, fall=0.10, morph=140.0, lanes=7, belt=0.16, zone=-0.06),
+                     drift=0.7, spacing=0, rise=0.10, fall=0.10, morph=140.0, lanes=7, belt=0.16, zone=-0.06,
+                     belt_scale_x=13, belt_octaves=3),
     },
     "streaks": {
         "far": dict(w=(70, 140), h=(2, 4), scale_x=14, scale_y=2, octaves=2, cutoff=0.40, gain=3.4,
@@ -1993,14 +2005,21 @@ class PuffSky:
     @staticmethod
     def _band_key(cfg: SkyConfig) -> tuple:
         """The levers a baked lane layout was cut from; any change re-bakes."""
-        return (cfg.band_gap, cfg.band_flow, cfg.band_height, cfg.band_edge)
+        return (cfg.band_gap, cfg.band_flow, cfg.band_height, cfg.band_edge, cfg.band_belts)
 
     def _lane_params(self, band: str, index: int) -> dict:
-        """A lane's own copy of the style: even lanes are dense zones, odd
-        lanes sparse belts, by shifting the resting cutoff; `edge` carries
-        `band_edge` to the lane's fringe window."""
+        """A lane's own copy of the style: a dense zone or a sparse belt per
+        `band_belts` (`alternate`: even lanes zones, odd lanes belts), by
+        shifting the resting cutoff; a belt also takes the finer
+        `belt_scale_x`/`belt_octaves` noise. `edge` carries `band_edge` to
+        the lane's fringe window."""
         p = dict(self._style()[band])
-        p["cutoff"] = _clamp(p["cutoff"] + (p["zone"] if index % 2 == 0 else p["belt"]), 0.05, 0.95)
+        mode = self.config.band_belts
+        belt = mode == "belts" or (mode != "dense" and index % 2 == 1)
+        p["cutoff"] = _clamp(p["cutoff"] + (p["belt"] if belt else p["zone"]), 0.05, 0.95)
+        if belt:
+            p["scale_x"] = p.get("belt_scale_x", p["scale_x"])
+            p["octaves"] = p.get("belt_octaves", p["octaves"])
         p["edge"] = self.config.band_edge
         return p
 

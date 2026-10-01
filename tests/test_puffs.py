@@ -314,6 +314,49 @@ def test_band_edge_fringe_wanders_along_the_band_and_wraps() -> None:
     assert any(len(set(lane.window[1])) > 1 for lane in _lanes(slab))
 
 
+@pytest.mark.parametrize("mode, belts", [
+    ("alternate", lambda i: i % 2 == 1),
+    ("dense", lambda i: False),
+    ("belts", lambda i: True),
+])
+def test_band_belts_deals_zone_and_belt_lanes(mode: str, belts) -> None:
+    """`band_belts`: `alternate` makes odd lanes belts, `dense` every lane a
+    zone, `belts` every lane a belt. A belt rests at `cutoff + belt` and is
+    cut from the finer `belt_scale_x`/`belt_octaves` noise; a zone rests at
+    `cutoff + zone` on the style's own smooth noise."""
+    sky = _puffs("bands", cols=60, rows=20, band_belts=mode)
+    lanes = _lanes(sky)
+    assert len(lanes) >= 2
+    for lane in lanes:
+        style = _PUFF_STYLES["bands"][lane.band]
+        if belts(lane.lane[0]):
+            assert lane.p["cutoff"] == pytest.approx(style["cutoff"] + style["belt"])
+            assert lane.p["scale_x"] == style["belt_scale_x"] < style["scale_x"]
+            assert lane.p["octaves"] == style["belt_octaves"] > style["octaves"]
+        else:
+            assert lane.p["cutoff"] == pytest.approx(style["cutoff"] + style["zone"])
+            assert lane.p["scale_x"] == style["scale_x"]
+            assert lane.p["octaves"] == style["octaves"]
+
+
+def test_band_belts_change_rebakes_the_lanes() -> None:
+    sky = _puffs("bands", cols=60, rows=20)
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_belts="dense"))
+    style = _PUFF_STYLES["bands"]
+    assert all(lane.p["cutoff"] == pytest.approx(style[lane.band]["cutoff"] + style[lane.band]["zone"])
+               for lane in _lanes(sky))
+
+
+def test_band_belts_shows_only_under_puffs_bands() -> None:
+    def shown(cfg: SkyConfig) -> set[str]:
+        return {row.name for row in tuning_fields_for(cfg)}
+
+    assert "band_belts" in shown(SkyConfig(sky_engine="puffs", cloud_style="bands"))
+    assert "band_belts" not in shown(SkyConfig(sky_engine="puffs", cloud_style="drift"))
+    assert "band_belts" not in shown(SkyConfig(sky_engine="fluid", cloud_style="bands"))
+    assert "band_belts" not in shown(SkyConfig(sky_engine="texture", cloud_style="bands"))
+
+
 def test_band_height_and_edge_show_only_under_puffs_bands() -> None:
     def shown(cfg: SkyConfig) -> set[str]:
         return {row.name for row in tuning_fields_for(cfg)}

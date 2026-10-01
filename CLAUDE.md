@@ -547,6 +547,9 @@ scope.
   `KeyBar.on_resize`); `_keybar_x` records each glyph's field column,
   centring pad and bar gutter included, so a seed drops under the key
   pressed. A bar that fills its width has no slack and stays left-flush.
+  The `seed_release` TUI setting (`tui.json`, settings `4`, default
+  `left`) mirrors that column to `width - 1 - col` under `right`, so seeds
+  land on the right while the bar stays where it is.
 - A falling clump has hidden `charge` (no UI text): +1 and `accrete_count` members on each
   clear-sky-to-cloud entry (`in_cloud`'s False->True edge, not per frame
   spent inside one), +1 per distinct bird it shares a terminal cell with.
@@ -599,7 +602,10 @@ scope.
   and `cloud_count` ignored (0 = count from `cloud_count`); `band_edge` is
   the share of a band's height that is a noisy fringe top and bottom, its
   depth wandering per column (`_lane_window`, periodic like the lattice).
-  All four show on the T page only under puffs/bands, and any change
+  `band_belts` deals zones and belts: `alternate` (default), `dense` (all
+  zones), `belts` (all belts); a belt also takes finer noise
+  (`belt_scale_x`/`belt_octaves`), streaky between the smooth zones.
+  All five show on the T page only under puffs/bands, and any change
   re-cuts every lane.
 - Birds are levers on `SkyConfig` (v8), read off `World.sky.config` like
   `seed_wind`: `birds` picks the depth bands a flock may spawn in (`all`,

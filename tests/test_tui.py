@@ -593,6 +593,52 @@ async def test_keybar_is_centred_and_a_seed_drops_under_the_key(
         assert len(app.world.seeds) == 1
 
 
+async def test_seed_release_right_mirrors_the_drop_column(store: Store, project: str) -> None:
+    """`seed_release`: the default `left` drops a seed under the pressed
+    key's glyph; `right` drops it at the mirrored column, `width - 1 - col`,
+    while the key bar itself stays put."""
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice(c) for c in "abcde"],
+    )
+
+    app = CactusApp(store, project=project)
+    app.tui_settings["orientation"] = "bottom"
+    async with app.run_test(size=(100, 40)) as pilot:
+        await _settle(pilot)
+        assert app.tui_settings["seed_release"] == "left"
+        col = app._keybar_x["1"]
+        width = app.query_one("#field").size.width
+        assert app._field_column("1") == col
+
+        app.tui_settings["seed_release"] = "right"
+        dropped: list[int] = []
+        real_drop = app.world.drop
+        app.world.drop = lambda c: (dropped.append(c), real_drop(c))[1]
+        await pilot.press("1")
+        await pilot.pause()
+        assert dropped == [width - 1 - col]
+        assert width - 1 - col != col
+
+
+async def test_seed_release_settings_toggle_persists(store: Store, project: str) -> None:
+    store.ask("hi", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("?")
+        await pilot.pause()
+        await pilot.press("4")
+        await pilot.pause()
+        assert app.tui_settings["seed_release"] == "right"
+
+    second = CactusApp(store, project=project)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        assert second.tui_settings["seed_release"] == "right"
+
+
 async def test_keybar_recentres_on_resize(store: Store, project: str) -> None:
     store.ask(
         "pick one", project=project, cwd=project, agent=AGENT,
