@@ -15,15 +15,16 @@ The bundled hooks use Codex's hook-event `session_id` as the Cactus owner.
 Use the `AGENT` value injected at session start on every `ask`, `edit`, and
 `clear`; do not replace it with a terminal pane id.
 
-Codex has no wake-up from idle, and `cactus ask` and `cactus run` wait for
-the human by default, which blocks Codex. Post with `--no-wait`; answers
-reach you on the next turn through the frontier hook. When the very next
-step needs an answer, block in the foreground under Codex's shell limit:
+Under herdr, answering a row prompts your pane: act on each wake. `cactus
+ask` and `cactus run` wait for the human by default, which blocks Codex, so
+post with `--no-wait`. Outside herdr the frontier hook lists answered rows at
+the human's next prompt. When the very next step needs an answer, block in
+the foreground under Codex's shell limit:
 
     cactus get KEY --wait --timeout 300 --json
 
-Do not arm a monitor or a `--once` waiter: one that exits while the session
-is idle wakes nobody.
+Outside herdr, do not rely on a `--once` waiter: on Codex one that exits
+while the session is idle wakes nobody (q342).
 
 ## Required workflow
 
@@ -32,7 +33,7 @@ is idle wakes nobody.
 2. Prefer `--act steer --chosen` when a safe default lets work continue.
 3. Use `cactus run CMD --no-wait --agent "$AGENT" --why ...` for a command awaiting
    approval; after approval, read the row result before running anything.
-4. On `answered`, `elaborate`, `reopened`, or `cleared`, re-read the row and
+4. On each wake (answered, elaborate, reopened, cleared), re-read the row and
    act on the new state.
 5. Read a review or plan row with `cactus get KEY --agent "$AGENT"`: that read
    tells the human you heard their verdict. After acting on it, respond through

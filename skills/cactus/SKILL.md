@@ -12,7 +12,7 @@ running you:
 
 - [Claude Code](CLAUDE.md) — Claude plugin hooks and Herdr identity.
 - [Codex](CODEX.md) — Codex plugin hooks and the Codex session identity.
-- [Grok](GROK.md) — webhook wake-up.
+- [Grok](GROK.md) — webhook wake.
 - [Claude Desktop and other MCP hosts](DESKTOP.md) — the verbs are
   `cactus_*` tools, and answers are read at the fork.
 
@@ -41,13 +41,20 @@ only that project; if it is wrong, `cd` before asking.
     1  ask       post every decision the human makes here, not in chat;
                  --recommend LABEL --confidence L when you have a pick, -f
                  for every file the question is about, --agent on every row
-    2  wait      a blocking ask (ask, run) waits for the human by default.
-                 Post it as ONE backgrounded command (Bash run_in_background);
-                 it waits, and its exit is your wake-up. No monitor.
-    3  work      do everything the answer does not block while it waits
-    4  inspect   on wake, `cactus get` the row (the background output holds
-                 the answer); the next-turn frontier lists the rest
-    5  clear     your own rows, by key, once acted on
+    2  work      do everything the answer does not block; the human
+                 answering wakes you, you do not poll
+    3  act       on each wake, `cactus get` the row and act on it
+    4  clear     your own rows, by key, once acted on
+
+The wake arrives one of two ways. Under herdr, answering a row (also a
+skip, an elaborate or decompose request, a review/plan verdict, a run
+approve/deny) prompts your pane: nothing to arm. With no pane and no
+webhook, arm `cactus --monitor --json --agent "$AGENT" --once` in the
+background and re-arm it first on every wake; the host file (CLAUDE.md,
+CODEX.md) has the recipe. The session-start hook prints the right one.
+
+A blocking ask (ask, run) also waits by default: post it as ONE backgrounded
+command (Bash run_in_background); its exit is a wake too.
 
 `steer`, `notify`, `review`, `plan` and `data` never wait. `--no-wait` posts a
 blocking row and returns at once; `--no-block` makes the row non-blocking.
@@ -121,7 +128,7 @@ it exits once every key has left `open`, and that exit is your wake-up:
 
     cactus get q7 q8 q9 --wait --agent "$AGENT" --json
 
-Otherwise leave the batch to the next-turn frontier.
+Otherwise act on each row as its wake arrives.
 
 ## Authoring a row
 
@@ -232,16 +239,19 @@ In the TUI, a digit copies that chunk to the clipboard; each copy appends a
 verdict naming the chunk's label, readable with `cactus get`. `d` retires the
 row.
 
-## Collect on the next turn
+## Act on each wake
 
-A backgrounded waiting ask wakes you when it exits, even on an idle session.
-Rows posted `--no-wait`, and review/plan rows, come back through the
-next-turn frontier, which shows answered, elaborated, and open rows. Use
-`cactus get KEY --agent "$AGENT"` before acting on a review or plan verdict.
+A wake means a row changed: answered, skipped, elaborate requested, a
+review/plan verdict, a run approved or denied. A data chunk copy, a clear
+and an undo never wake you. Under herdr the wake is a prompt to your pane;
+a backgrounded waiting ask or `--once` monitor wakes you by exiting, even
+on an idle session. Re-arm a `--once` monitor first, then
+`cactus get KEY --agent "$AGENT"` the row (the event line alone can miss
+one that landed between exit and re-arm) before acting on it.
 
 ## Elaborate or decompose: the human wants the question changed
 
-`e` on a row moves it to status `elaborate`. The next-turn frontier and
+`e` on a row moves it to status `elaborate`. The wake and
 `cactus get` show its `hint` (what the human typed, or null) and
 `instruction` (the hint, else: rewrite plainly, no jargon, add what you
 tried, the numbers, what each option costs, what happens if nobody
@@ -249,14 +259,14 @@ answers). Rewrite the row in place; the key stays:
 
     cactus edit q7 --agent "$AGENT" --context "..." [--text "..."] [-c "label: desc"]...
 
-The row returns to `open`; your own `--agent` stream does not echo the
-`edited` event back at you (q334). `edit` also works on any open or live row
+The row returns to `open`; your own `--once` monitor does not wake you
+for your own `edited` event (q334). `edit` also works on any open or live row
 you own without a request, so fix a typo or add a fact the moment you notice
 it. `-c` replaces the choices and drops a `--recommend` that no longer names
 one. A human `u` on an elaborate request reads as `withdrawn`: re-read the
 row before rewriting.
 
-`D` in the TUI asks for decomposition through the same `elaborate` event.
+`D` in the TUI asks for decomposition through the same `elaborate` request and the same wake.
 When its instruction says to decompose, do not edit the original row. Post
 each smaller, independently answerable question as a follow-up (`-p q7
 --no-wait`) with the same `--agent`; the follow-ups inherit its thread. Once

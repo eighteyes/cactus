@@ -1,8 +1,8 @@
 # Cactus on Grok
 
-Grok cannot rely on a long-lived local `cactus --monitor` process to re-enter
-the chat. Use a stable external agent id and configure Cactus to wake that id
-through a webhook.
+Grok has no herdr pane to prompt and cannot rely on a local
+`cactus --monitor --once` process to re-enter the chat. Use a stable external
+agent id and configure Cactus to wake that id through a webhook.
 
 1. Use the same stable id on every `cactus ask --agent ID` and `cactus clear`.
 2. Configure the bot's wake routine to run `cactus feed --json --agent ID`,

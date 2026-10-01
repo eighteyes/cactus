@@ -122,8 +122,16 @@ def test_root_enabled_project(cli, hook_env, project):
     hook_env = dict(hook_env, CACTUS_AGENT=agent)
 
     start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
-    assert "--monitor" not in start.stdout
-    assert "next turn" in start.stdout
+    # Outside herdr there is no pane to prompt: the once-loop is the wake-up.
+    assert f"cactus --monitor --json --agent {agent} --once" in start.stdout
+    assert "Not the Monitor tool" in start.stdout
+
+    pushed = run_hook(
+        ROOT_HOOKS / "session-start.sh", {"cwd": project},
+        dict(hook_env, HERDR_PANE_ID="w1:p1"), project,
+    )
+    assert "prompt this pane directly" in pushed.stdout
+    assert "--monitor" not in pushed.stdout
 
     asked = cli("ask", "--no-wait", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
     assert asked.returncode == 0
@@ -287,8 +295,8 @@ def test_stop_hooks_do_not_require_monitor(cli, hook_env, project):
     payload = {"session_id": agent, "cwd": project}
     script = ROOT_HOOKS / "stop-fork.sh"
     assert run_hook(script, payload, on, project).stdout.strip() == ""
-    # The Codex Stop hook never blocks for open rows: collection happens on the
-    # next turn, so a block would repeat on every stop.
+    # The Codex Stop hook never blocks for open rows: an idle Codex session
+    # has no wake-up (q342), so a block would repeat on every stop.
     script = CODEX_HOOKS / "stop.sh"
     assert run_hook(script, payload, on, project).stdout.strip() == ""
 
@@ -315,6 +323,18 @@ def test_stop_hook_on_by_default_holds_a_turn_without_an_ask(hook_env, project, 
     asked = {"cwd": project, "transcript_path": _transcript(
         tmp_path, {"type": "tool_use", "name": "Bash", "input": {"command": "cactus ask hi --agent a"}})}
     assert run_hook(script, asked, env, project).stdout.strip() == ""
+
+
+def test_stop_hook_counts_edit_plan_review_as_posting_the_fork(hook_env, project, tmp_path):
+    script = ROOT_HOOKS / "stop-fork.sh"
+    for cmd in ("cactus edit q1 --agent a --text x", "cac plan q1 --agent a", "cactus review q1"):
+        payload = {"cwd": project, "transcript_path": _transcript(
+            tmp_path, {"type": "tool_use", "name": "Bash", "input": {"command": cmd}})}
+        assert run_hook(script, payload, hook_env, project).stdout.strip() == "", cmd
+    bare = {"cwd": project, "transcript_path": _transcript(tmp_path, {"type": "text", "text": "done"})}
+    reason = json.loads(run_hook(script, bare, hook_env, project).stdout)["reason"]
+    assert "wake" in reason
+    assert "next turn" not in reason
 
 
 # --------------------------------------------------------------------------

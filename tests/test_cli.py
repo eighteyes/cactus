@@ -301,12 +301,12 @@ def test_get_text_shows_file_line(cli, project):
     assert "file" in r.stdout
 
 
-def test_agent_help_uses_next_turn_collection_not_monitor(cli):
+def test_agent_help_names_push_wake_and_once_loop(cli):
     r = cli("--agent-help")
     assert r.returncode == 0
     assert "-f PATH" in r.stdout
-    assert "next turn" in r.stdout
-    assert "--monitor" not in r.stdout
+    assert "woken by the answer itself" in r.stdout
+    assert "cactus --monitor --json --agent ID --once" in r.stdout
 
 
 def test_review_file_replaces_and_keeps(cli, project):
@@ -477,3 +477,16 @@ def test_agent_help_waits_on_the_denied_hook_row(cli):
     r = cli("--agent-help")
     assert "-t denied" in r.stdout
     assert "cactus get KEY --wait" in r.stdout
+
+
+def test_answer_wakes_owner_once_with_the_key(cli, scratch_env, project, tmp_path):
+    log = tmp_path / "wake.log"
+    script = tmp_path / "wake.sh"
+    script.write_text(f'#!/bin/sh\necho "$1|$2" >> {log}\n')
+    script.chmod(0o755)
+    scratch_env["CACTUS_POKE"] = f"{script} {{agent}} {{message}}"
+    cli("ask", "--no-wait", "pick", "--agent", AGENT_A, "-c", "x", "-c", "y")
+    assert cli("answer", "q1", "-s", "x").returncode == 0
+    calls = log.read_text().splitlines()
+    assert len(calls) == 1
+    assert calls[0].startswith(f"{AGENT_A}|") and "q1" in calls[0]

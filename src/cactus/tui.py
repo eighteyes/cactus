@@ -2135,7 +2135,7 @@ class CactusApp(App[int]):
                 key, project=project, exit_code=exit_code, tail=lines[-50:], log=str(log_path)
             )
             answered = self.store.answer(key, project=project, selected=["approve"], text=None)
-            self._auto_poke_webhook(answered.agent)
+            self._wake_owner(answered, "approved")
         except Exception as exc:
             self.flash = f"{key}: result not recorded: {exc}"
         if self.focused_key == key:
@@ -2312,19 +2312,38 @@ class CactusApp(App[int]):
             self.flash = f"{q.key} is act={q.act}, not a dismissable notice"
             self._rebuild_status_bar()
             return
-        await self._submit_answer(q, selected=[], text=None, skipped=True, label="dismissed", key="d")
+        await self._submit_answer(q, selected=[], text=None, skipped=True, label="dismissed", key="d",
+                                  wake=False)
 
-    def _auto_poke_webhook(self, agent: str | None) -> None:
-        """After an answer, wake webhook-mapped agents only (never herdr)."""
-        from .poke import poke_webhook_if_mapped, PokeError
+    def _wake_owner(self, q: Question, event: str) -> None:
+        """Prompt the row's owner after a human event it must act on.
+
+        Runs off the event loop (the transport is a subprocess or an HTTP
+        POST); the flash lands when it returns. Never called for a data chunk
+        copy, a clear, or an undo.
+        """
+        if not q.agent:
+            return
+        self.run_worker(
+            self._wake_worker(q.agent, q.pane, q.key, event), exclusive=False
+        )
+
+    async def _wake_worker(self, agent: str, pane: str | None, key: str, event: str) -> None:
+        import asyncio
+
+        from .poke import wake_owner, PokeError
 
         try:
-            woke = poke_webhook_if_mapped(agent, timeout=5.0)
+            woke = await asyncio.to_thread(
+                wake_owner, agent, pane, key=key, event=event, timeout=5.0
+            )
         except PokeError as exc:
-            self.flash = f"answered; webhook poke failed: {exc}"
-            return
-        if woke:
-            self.flash = f"answered; auto-poked {agent}"
+            self.flash = f"answered; wake failed: {exc}"
+        else:
+            if not woke:
+                return
+            self.flash = f"answered; woke {agent}"
+        self._rebuild_status_bar()
 
     async def action_poke(self) -> None:
         """Nudge the agent that owns the focused row to re-read its feed.
@@ -2886,6 +2905,7 @@ class CactusApp(App[int]):
             self.flash = str(exc)
         else:
             self.flash = f"{q.key} — elaborate requested"
+            self._wake_owner(q, "elaborate")
         self.elaborating = False
         self._hide_input()
         await self._reload(force=True)
@@ -2985,7 +3005,8 @@ class CactusApp(App[int]):
                 self.flash = f"copy failed: {exc}"
                 self._rebuild_status_bar()
                 return
-            await self._submit_answer(q, selected=[choice.label], text=None, key=str(n))
+            await self._submit_answer(q, selected=[choice.label], text=None, key=str(n),
+                                      wake=False)
             self.flash = f"copied {n}) {choice.label} via {tool}"
             self._rebuild_status_bar()
             return
@@ -3158,7 +3179,7 @@ class CactusApp(App[int]):
         except (KeyError, ValueError) as exc:
             await self._refuse(exc)
             return
-        self._auto_poke_webhook(q.agent)
+        self._wake_owner(q, "verdict")
         self._push_undo(q.key, "noted", [], text, project=q.project)
         self._field_drop("enter")
         self.pending_text = ""
@@ -3189,7 +3210,7 @@ class CactusApp(App[int]):
         except (KeyError, ValueError) as exc:
             await self._refuse(exc)
             return
-        self._auto_poke_webhook(q.agent)
+        self._wake_owner(q, "verdict")
         self._push_undo(q.key, "noted", [], text, project=q.project)
         self._field_drop("enter")
         self.pending_text = ""
@@ -3213,7 +3234,7 @@ class CactusApp(App[int]):
             except (KeyError, ValueError) as exc:
                 await self._refuse(exc)
                 return
-            self._auto_poke_webhook(q.agent)
+            self._wake_owner(q, "verdict")
             self._push_undo(q.key, "noted", [], text, project=q.project)
             self._field_drop("1")
             self.pending_text = ""
@@ -3284,6 +3305,7 @@ class CactusApp(App[int]):
         skipped: bool = False,
         label: str | None = None,
         key: str = "i",
+        wake: bool = True,
     ) -> None:
         try:
             self.store.answer(q.key, project=q.project, selected=selected, text=text, skipped=skipped)
@@ -3292,7 +3314,8 @@ class CactusApp(App[int]):
         except (AlreadyAnswered, ValueError) as exc:
             await self._refuse(exc)
             return
-        self._auto_poke_webhook(q.agent)
+        if wake:
+            self._wake_owner(q, "skipped" if skipped else "answered")
         self._push_undo(q.key, label or ("skipped" if skipped else "answered"), selected, text,
                         project=q.project)
         self._field_drop(key)

@@ -1107,6 +1107,60 @@ async def test_inbox_p_still_pokes_only_the_focused_row(
     assert "re-read your answers" not in calls[0]
 
 
+async def test_answer_and_elaborate_wake_owner_but_copy_and_clear_do_not(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import cactus.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "copy", lambda text: "stub")
+    log = _poke_log(tmp_path, monkeypatch)
+    store.ask("pick", project=project, cwd=project, agent="a1", kind="choice", act="ask",
+              choices=[Choice("x"), Choice("y")], pane="w1:p1")
+    store.ask("elab", project=project, cwd=project, agent="a1", kind="text", act="ask",
+              pane="w1:p1")
+    store.ask("chunks", project=project, cwd=project, agent="a1", kind="choice", act="data",
+              choices=[Choice("c1", "body")], pane="w1:p1")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def calls() -> list[str]:
+            return log.read_text().splitlines() if log.exists() else []
+
+        async def settle() -> None:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+        async def focus(key: str) -> None:
+            for _ in range(8):
+                if app.focused_key == key:
+                    return
+                await pilot.press("j" if int(app.focused_key[1:]) < int(key[1:]) else "k")
+                await pilot.pause()
+
+        await focus("q3")
+        await pilot.press("1")  # data copy
+        await settle()
+        assert calls() == []
+
+        await focus("q1")
+        assert app.focused_key == "q1", app.focused_key
+        await pilot.press("1")
+        await settle()
+        assert len(calls()) == 1 and "q1" in calls()[0]
+
+        await focus("q2")
+        await app._submit_elaborate(store.get("q2", project=project), "hint")
+        await settle()
+        assert len(calls()) == 2 and "q2 elaborate" in calls()[1]
+
+        await focus("q3")
+        await pilot.press("c")
+        await settle()
+        assert len(calls()) == 2
+
+
 async def test_seed_dropped_by_a_digit_lands_inside_the_field(store: Store, project: str) -> None:
     store.ask(
         "pick one", project=project, cwd=project, agent=AGENT,

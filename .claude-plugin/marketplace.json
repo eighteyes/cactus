@@ -11,7 +11,7 @@
     {
       "name": "cactus",
       "source": "./",
-      "description": "Durable, project-scoped question inbox between coding agents and a human. Skill teaches ask/steer/run/review/plan, a courier agent waits on answers in the background, a SessionStart hook surfaces open rows.",
+      "description": "Durable, project-scoped question inbox between coding agents and a human. Skill teaches ask/steer/run/review/plan, an answer wakes the owning agent, a SessionStart hook surfaces open rows.",
       "version": "0.1.0",
       "category": "communication",
       "tags": ["human-in-the-loop", "questions", "inbox", "steer", "review", "plan", "tui", "hooks"],

@@ -5,12 +5,12 @@ not follow the TUI process environment, and it is not the same as answering.
 
 | Action | What it does | Wakes the agent? |
 |--------|--------------|------------------|
-| Answer in TUI / `cactus answer` | Writes the answer into SQLite | **Yes, if** the row's agent is in the webhook map (auto-poke). Unmapped (herdr) agents: no — they use `--monitor`. |
+| Answer in TUI / `cactus answer` | Writes the answer into SQLite | **Yes.** Webhook-mapped agent: its webhook is POSTed. Otherwise the owner's herdr pane is prompted (auto-poke, `poke.wake_owner`). |
 | `p` in TUI / `cactus poke` | Runs the poke transport for that row's agent | Yes, if transport succeeds (manual; still useful) |
-| `cactus --monitor` | Streams inbox events while the process runs | Only while monitor is alive (Claude / herdr path) |
+| `cactus --monitor --once` | Exits on the first inbox event | Fallback for an agent with no pane and no webhook; its exit is the wake |
 
-For webhook-mapped agents, answering **auto-pokes** (HTTP POST only; never
-herdr). You do not need a separate `p` after the answer. Manual `p` remains
+Answering **auto-pokes** the owner: a webhook-mapped agent by HTTP POST,
+any other by its herdr pane. You do not need a separate `p` after the answer. Manual `p` remains
 for “nudge without answering” or a failed auto-poke retry.
 
 ## Resolution order
@@ -60,10 +60,11 @@ Do not commit this file. `chmod 600` is appropriate.
 - `cactus poke KEY` and TUI `p` call `poke(row.agent)`.
 - Mapped agent → HTTP POST (no herdr required; pane/session may be null).
 - Unmapped agent → herdr (needs a real herdr agent id).
-- After `cactus answer` / TUI answer (including skip, run-approve, plan note):
-  if the owner is webhook-mapped, cactus auto-POSTs that webhook. Herdr owners
-  are not auto-poked.
-- Auto-poke ignores `CACTUS_POKE` (explicit poke / tests only).
+- After `cactus answer` / TUI answer (including skip, elaborate/decompose
+  request, run approve/deny, review/plan verdict): a webhook-mapped owner gets
+  its webhook; a herdr owner gets its pane prompted. Data chunk copies,
+  clears and undo never wake.
+- `CACTUS_POKE`, when set, overrides both for auto-poke too.
 - TUI offers `p` whenever the row has an `--agent`, including webhook-only
   agents. Restart the TUI after upgrading cactus so answer auto-poke and
   `_pokeable` pick up.
@@ -81,7 +82,7 @@ Do not commit this file. `chmod 600` is appropriate.
 4. **CLI on PATH** — `command -v cactus` on the machine where asks/pokes run
    (human TUI and any agent shells that post rows).
 5. **Human loop** — open `cactus --tui` and answer the row. Webhook agents
-   are auto-poked on answer; herdr agents are not (they watch `--monitor`).
+   are auto-poked on answer, and so are herdr agents (their pane).
    Press **`p`** only for a manual nudge.
 
 Repeat steps 2–3 for each additional Grok Bot (or other webhook agent). Herdr
@@ -119,8 +120,9 @@ will correctly report “still open.”
 
 - **Answer should auto-wake webhook agents.** If chat never updates after you
   pick a choice for a mapped agent, check the map, HTTP status, and TUI flash
-  (`answered; auto-poked …` or `webhook poke failed`). Unmapped agents never
-  auto-poke — that is intentional for herdr/monitor.
+  (`answered; auto-poked …` or `webhook poke failed`). Unmapped agents are
+  poked through their herdr pane; one with no pane has no wake but
+  `--monitor --once`.
 - **“I don’t see qN.”** Status is already `answered` or `cleared`. Use
   `cactus get cactus:qN --json` or filter by status; the TUI open list hides
   them.
@@ -130,8 +132,8 @@ will correctly report “still open.”
   `cactus --tui`.
 - **Global `CACTUS_POKE`.** Fine for tests; bad as a login-shell default when
   herdr and webhook agents share one machine.
-- **Monitor is not a substitute** for webhook wake on agents that cannot keep
-  a long-lived local process attached to chat.
+- **`--monitor --once` is not a substitute** for webhook wake on agents that
+  cannot keep a local background process attached to chat.
 
 
 ## Install as a Grok Bot skill

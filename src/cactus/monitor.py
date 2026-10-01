@@ -292,9 +292,11 @@ def run_monitor(
     emits the current inbox first when asked to.
 
     `once` exits right after the first emitted event that is not `asked` —
-    the once-loop (q339): an agent arms it as a background command, the exit
-    wakes the agent, and the agent re-arms it. The unbounded stream is for
-    a host that can hold one open without a time cap.
+    the once-loop (q339), the fallback wake for an agent with no herdr pane
+    and no webhook (a pane gets `poke.wake_owner` instead): the agent arms it
+    as a background command, the exit wakes the agent, and the agent re-arms
+    it. The unbounded stream is for a host that can hold one open without a
+    time cap.
     """
     def fetch() -> list[Question]:
         return store.list(project=project, status=None, all_projects=all_projects)

@@ -11,7 +11,7 @@
 #   - exempt turns opened by a task-notification or cross-session message,
 #     since those are background events, not a human handing off a decision
 #   - block (exit 0, emit {"decision":"block","reason":...}) unless the turn
-#     already contains a Bash `cactus ask`/`cac ask` invocation or an
+#     already contains a Bash `cactus ask|edit|plan|review` (or `cac`) invocation or an
 #     AskUserQuestion tool_use
 #
 set -u
@@ -154,7 +154,7 @@ for idx in range(start, len(lines)):
             break
         if name == "Bash":
             command = item.get("input", {}).get("command", "")
-            if "cactus ask" in command or "cac ask" in command:
+            if any(f"{b} {v}" in command for b in ("cactus", "cac") for v in ("ask", "edit", "plan", "review")):
                 has_ask = True
                 break
     if has_ask:
@@ -167,7 +167,7 @@ reason = (
     "the turn ended without a fork; post the next directions as one "
     "`cactus ask` with 2-3 `-c` options (or `--act steer --chosen` when one "
     "is the default), `--agent` required, `--recommend` + `--confidence` "
-    "when there is a pick; inspect the frontier on your next turn; then stop"
+    "when there is a pick; the answer will wake you; then stop"
 )
 print(json.dumps({"decision": "block", "reason": reason}))
 sys.exit(0)
