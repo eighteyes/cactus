@@ -599,13 +599,20 @@ scope.
   is taken — otherwise it lands as hit, so an overhang never slides down a
   pile's side; a lone block keeps its perch; `keep`: lands as it hit).
   Both always show on the T page. Under `pile_style = "dots"` a seed latches
-  within `dot_latch` sub-cells (default 2.5, a dot's visible reach) of a
+  within `dot_latch` sub-cells (default 3.5, a dot's visible reach) of a
   pile cell at its height or below, then `World._snap` shifts the clump by
   the shortest integer vector (down first, then toward the pile) onto a
   `SUPPORT_OFFSETS` neighbour or the ground; blocks keep the 1-sub-cell rule.
 - Seed wind: `SkyConfig.seed_wind` is in columns (0-30, default 3), the
   mean drift over a full fall at typical wind; gusts carry ~3x further.
   `World.seed_wind()` is world wind x `seed_wind / SEED_WIND_COLS_PER_UNIT`
+  `drop` also guarantees no floating piece: after every landing,
+  `World._drop_floating` finds the landed cells' component (8-connected, x
+  wrapped) and, when no cell of it is at `cy == 0`, drops it rigidly a row
+  at a time until a cell reaches the ground or sits directly on another
+  component, ages kept, to a fixed point. `World.drop_floaters()` sweeps the
+  whole pile: `garden.load_into` calls it, and so does `apply_sky_config`
+  on a switch to `drop`. `keep` never sweeps.
   (0.55, measured over the 12 s fall at 120x30 with random gusts off:
   drift is linear in the multiplier), never a deck's
   `wind_scale` (puffs ignores wind, texture reads only `shear_base`, so

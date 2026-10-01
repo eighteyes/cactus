@@ -343,7 +343,7 @@ _SHARED_COMMENTS = {
     "accrete_spin": "rad/s kick a cloud accretion gives the whole clump; 0 keeps it upright",
     "accrete_count": "blocks one cloud entry adds, grown per `accrete_shape` (accrete only; charge is still +1)",
     "accrete_shape": "'branch': new blocks go on any side or diagonal, outer cells and the tip favoured; 'rod': a straight rod off the tip",
-    "pile_settle": "'drop': a landed shelf of 2+ blocks resting only on a diagonal drops a row to close the gap; 'keep': lands as it hit",
+    "pile_settle": "'drop': a landed shelf resting only on a diagonal drops a row, and no piece of the pile is left floating (anything not connected to the ground falls until it rests); 'keep': lands as it hit",
     "dot_latch": "dots pile: how far, in sub-cells, a falling seed latches onto the pile; blocks always latch at 1",
     "cloud_fade": "seconds a sky cell takes to fade in when it lights and fade out when it clears (0 = pop)",
     "seed_wind": "columns a falling seed drifts over a full fall at typical wind, on average (gusts carry it ~3x further; 0 = straight down)",
@@ -370,7 +370,7 @@ class SkyConfig:
 
     # A style lever, not a numeric knob (v6d): no step/lo/hi, just the two
     # values a T-overlay `h`/`l` press cycles between (see TuneField.choices).
-    pile_style: str = field(default="blocks", metadata={"choices": ("blocks", "dots")})
+    pile_style: str = field(default="dots", metadata={"choices": ("blocks", "dots")})
 
     # A falling-seed merge lever (v6e), in the same sub-cell units as a
     # `Seed`/`Clump`'s own `x`/`y` — not a pixel-space knob like the splat
@@ -414,13 +414,13 @@ class SkyConfig:
     # Which sky renderer runs: "fluid" is the cellular-automaton `Sky` above,
     # "texture" is the cheaper v5 baked-noise `TextureSky` (same interface),
     # restored as a lever rather than a replacement (v6f, q384).
-    sky_engine: str = field(default="texture", metadata={"choices": ("fluid", "texture", "puffs")})
+    sky_engine: str = field(default="puffs", metadata={"choices": ("fluid", "texture", "puffs")})
     # Puffs engine levers (v8): a population of individual clouds, each with
     # its own drift and life, no whole-sky scroll — see `PuffSky`.
     cloud_style: str = field(default="drift", metadata={"choices": ("drift", "bloom", "streaks", "bands")})
-    cloud_count: float = field(default=1.0, metadata={"step": 0.1, "lo": 0.2, "hi": 4.0})
-    cloud_drift: float = field(default=1.5, metadata={"step": 0.25, "lo": 0.0, "hi": 12.0})
-    cloud_life: float = field(default=90.0, metadata={"step": 10.0, "lo": 10.0, "hi": 900.0})
+    cloud_count: float = field(default=2.2, metadata={"step": 0.1, "lo": 0.2, "hi": 4.0})
+    cloud_drift: float = field(default=6.0, metadata={"step": 0.25, "lo": 0.0, "hi": 12.0})
+    cloud_life: float = field(default=40.0, metadata={"step": 10.0, "lo": 10.0, "hi": 900.0})
     # A falling seed's share of the wind (v8): the world's wind times this,
     # independent of every deck's `wind_scale` — `World.seed_wind()` is the
     # one reader.
@@ -435,8 +435,8 @@ class SkyConfig:
     seed_mass: str = field(default="accrete", metadata={"choices": ("accrete", "single")})
     # Accretion (v8, `seed_mass == "accrete"`): the spin kick one cloud entry
     # gives the whole clump, and how many blocks it grows as a rod.
-    accrete_spin: float = field(default=1.2, metadata={"step": 0.2, "lo": 0.0, "hi": 6.0})
-    accrete_count: int = field(default=1, metadata={"step": 1, "lo": 1, "hi": 6})
+    accrete_spin: float = field(default=1.6, metadata={"step": 0.2, "lo": 0.0, "hi": 6.0})
+    accrete_count: int = field(default=2, metadata={"step": 1, "lo": 1, "hi": 6})
     accrete_shape: str = field(default="branch", metadata={"choices": ("branch", "rod")})
     pile_settle: str = field(default="drop", metadata={"choices": ("drop", "keep")})
     # Latch reach under `pile_style == "dots"`, in sub-cells: a landed dot's
@@ -444,7 +444,7 @@ class SkyConfig:
     # Bayer threshold (1/16) out to ~2.8 px, so its outermost lit pixel sits
     # 2 px from centre and its far edge 2.5 px out — 2.5 sub-cells, since a
     # sub-cell is one pixel wide. A seed latches where the dot looks to end.
-    dot_latch: float = field(default=2.5, metadata={"step": 0.25, "lo": 1.0, "hi": 4.0})
+    dot_latch: float = field(default=3.5, metadata={"step": 0.25, "lo": 1.0, "hi": 4.0})
     # Planetary bands (v8, `cloud_style == "bands"`): how much of each lane
     # stays empty, and whether neighbouring lanes flow opposite ways.
     # `band_height` fixes each lane's height in rows (0 = lane count from

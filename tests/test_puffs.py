@@ -229,7 +229,7 @@ def test_bands_style_lays_full_width_lanes_flowing_opposite_ways() -> None:
     lanes stacked down the sky, each one full-width band that wraps with no
     seam, neighbours flowing opposite ways; a dead band respawns in its own
     lane; `cloud_count` re-cuts the lanes."""
-    sky = _puffs("bands", cols=60, rows=20)
+    sky = _puffs("bands", cols=60, rows=20, cloud_count=1.0)
     bands = sorted((p for band in GRID_ORDER for p in sky.puffs[band]), key=lambda p: p.y0)
     assert len(bands) == 7
     assert all(p.w == sky.width_px for p in bands)
@@ -244,10 +244,10 @@ def test_bands_style_lays_full_width_lanes_flowing_opposite_ways() -> None:
     assert all(a.y0 + a.h >= b.y0 - 1 for a, b in zip(lanes, lanes[1:]))
     same = _puffs("bands", cols=60, rows=20, band_flow="same")
     assert len({p.vx > 0 for band in GRID_ORDER for p in same.puffs[band]}) == 1
-    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_gap=0.6))
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_gap=0.6, cloud_count=1.0))
     regap = sorted((p for band in GRID_ORDER for p in sky.puffs[band]), key=lambda p: p.y0)
     assert all(p.h <= 0.45 * sky.height_px / 7 + 1 for p in regap)
-    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands"))
+    sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", cloud_count=1.0))
     bands = sorted((p for band in GRID_ORDER for p in sky.puffs[band]), key=lambda p: p.y0)
     # seamless wrap: the patch's first and last columns are neighbours in
     # the periodic lattice, so they differ by no more than one lattice step
@@ -282,7 +282,7 @@ def test_band_height_lays_fixed_height_lanes_top_to_bottom() -> None:
         assert i * lane_px <= p.y0 and p.y0 + p.h <= (i + 1) * lane_px
     _, _, row_empty = sky.composite()
     assert all(row_empty[3 * lane_px:]), "leftover rows at the bottom stay empty"
-    assert len(_lanes(_puffs("bands", cols=60, rows=20, band_height=0))) == 7
+    assert len(_lanes(_puffs("bands", cols=60, rows=20, band_height=0, cloud_count=1.0))) == 7
     # cloud_count is ignored while band_height > 0
     sky.apply(SkyConfig(sky_engine="puffs", cloud_style="bands", band_height=6, cloud_count=2.0))
     assert len(_lanes(sky)) == 3

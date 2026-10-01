@@ -6,7 +6,9 @@ Responsibilities:
   so every TUI on the same database reads and writes the same file.
 - Serialize a `World`'s `structure`/`drops` to a small JSON-safe dict
   (`dump`) and restore them back into a `World` (`load_into`) — nothing
-  else about the world (sky, seeds in flight, birds) is persisted.
+  else about the world (sky, seeds in flight, birds) is persisted. Under
+  `pile_settle == "drop"` a load grounds any floating piece
+  (`World.drop_floaters`).
 - Read, write, and clear the file on disk (`read`/`save`/`clear`), writing
   atomically so a reader never observes a half-written file.
 
@@ -38,6 +40,7 @@ def load_into(world: Any, data: dict[str, Any]) -> None:
     Every cell is kept regardless of the world's current `width`/`height` —
     a later resize may bring an out-of-bounds cell back into view. Only
     types are validated; anything else malformed raises `ValueError`.
+    Under `pile_settle == "drop"` floating pieces then drop onto the pile.
     """
     if not isinstance(data, dict):
         raise ValueError("garden data must be an object")
@@ -59,6 +62,8 @@ def load_into(world: Any, data: dict[str, Any]) -> None:
         structure[(cx, cy)] = n
     world.structure = structure
     world.drops = drops
+    if world.sky.config.pile_settle == "drop":
+        world.drop_floaters()
 
 
 def save(world: Any, path: Path) -> float:

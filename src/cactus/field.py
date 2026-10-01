@@ -18,7 +18,9 @@ Responsibilities:
   `_snap`). Count every drop, so
   the structure can carry age in decisions rather than in time. Under
   `pile_settle == "drop"` a shelf perched on a diagonal settles at most one
-  row, and only onto support (`_settle`). A seed feels world wind x
+  row, and only onto support (`_settle`), and no piece is left floating:
+  a component with no 8-connected path to the ground drops rigidly onto
+  the pile (`_drop_floating`, `drop_floaters`). A seed feels world wind x
   `seed_wind`, never a deck's `wind_scale` (`seed_wind()`). A fall takes
   `LANDING_SECONDS` (12 s). On top of the wind, each clump carries its own
   random lateral gust (`_advance_gust`): a target jumping to a fresh random
@@ -86,6 +88,7 @@ Pure Python: no persistence, no store, no Textual import.
 
 from __future__ import annotations
 
+import heapq
 import math
 import random
 import time
@@ -204,6 +207,9 @@ PILE_SPLAT_RADIUS_PX = 3
 # these; dots style also lands within `SkyConfig.dot_latch` and then snaps
 # until one of these holds (`World._snap`).
 SUPPORT_OFFSETS = ((0, -1), (-1, 0), (1, 0), (-1, -1), (1, -1))
+# Safety cap on `World._drop_floating`'s passes: each pass lowers every
+# floating piece at least one row, so a real pile settles in a handful.
+DROP_PASSES = 64
 
 # Charge (hidden rule): a clump gains +1 charge (and `accrete_count` members,
 # cloud mass) on each clear-sky-to-cloud entry, and +1 charge per distinct bird it shares
@@ -351,11 +357,15 @@ class World:
     _fade_cells: list[list] | None = field(default=None, init=False)
     _fade_tint: dict[tuple[str, str, int], str] = field(default_factory=dict, init=False)
     _frame_dt: float = field(default=0.0, init=False)
+    # The `pile_settle` last applied, so `apply_sky_config` sees a switch to
+    # "drop" even when the tuning overlay mutated the live config in place.
+    _pile_settle: str = field(default="", init=False)
 
     def __post_init__(self) -> None:
         self.width = self.cols * SUB_X
         self.height = self.rows * SUB_Y
         self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette, self.sky_config)
+        self._pile_settle = self.sky.config.pile_settle
         self._set_terminal_vy()
 
     def _set_terminal_vy(self) -> None:
@@ -374,11 +384,15 @@ class World:
         — or, when `sky_engine` itself changed, rebuild `self.sky` as the
         other engine (v6f): `apply` alone can only retune the engine that is
         already running, never turn a `Sky` into a `TextureSky` or back.
-        Rebuilding re-bakes the weather from scratch, same as a resize."""
+        Rebuilding re-bakes the weather from scratch, same as a resize.
+        Switching `pile_settle` to "drop" sweeps the pile (`drop_floaters`)."""
         if config.sky_engine != getattr(self.sky, "ENGINE", "fluid"):
             self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette, config)
         else:
             self.sky.apply(config)
+        if config.pile_settle == "drop" and self._pile_settle != "drop":
+            self.drop_floaters()
+        self._pile_settle = config.pile_settle
 
     def resize(self, cols: int, rows: int) -> None:
         """Keep the structure; rebake the sky to the new bounds."""
@@ -853,6 +867,8 @@ class World:
             cells = self._settle(cells)
         for cell in cells:
             self.structure[cell] = self.drops
+        if self.sky.config.pile_settle == "drop":
+            self._drop_floating(cells)
         self.landed_since_save += 1
         if clump.bounty and clump.charge and clump.birds_hit:
             exploded.extend(self._explode(clump))
@@ -1019,6 +1035,87 @@ class World:
         if low - 1 == 0 or any((cx, low - 2) in self.structure for cx in bottom):
             return dropped
         return cells
+
+    def drop_floaters(self) -> None:
+        """Sweep the whole structure for floating components and drop each
+        onto the pile (`_drop_floating`) — for a garden loaded from disk or
+        a switch to `pile_settle == "drop"`, where any cell may float."""
+        self._drop_floating(list(self.structure))
+
+    def _drop_floating(self, cells: list[tuple[int, int]]) -> None:
+        """The `pile_settle == "drop"` guarantee: no component of the
+        structure (8-connected, x wrapped) floats. Every component holding
+        one of `cells` that has no cell at `cy <= 0` drops rigidly
+        (`_drop_component`) and merges where it rests; lowest first, then
+        again over the moved cells, since a piece can land on another
+        floater — to a fixed point, capped at `DROP_PASSES`. A landing only
+        adds cells, so only the landed cells' own component can newly float."""
+        pending = cells
+        for _ in range(DROP_PASSES):
+            seen: set[tuple[int, int]] = set()
+            floating: list[set[tuple[int, int]]] = []
+            for cell in pending:
+                if cell in seen or cell not in self.structure:
+                    continue
+                comp, grounded = self._component(cell)
+                seen |= comp
+                if not grounded:
+                    floating.append(comp)
+            if not floating:
+                return
+            floating.sort(key=lambda comp: min(cy for _, cy in comp))
+            pending = []
+            for comp in floating:
+                pending.extend(self._drop_component(comp))
+
+    def _neighbours8(self, cx: int, cy: int) -> list[tuple[int, int]]:
+        """The 8 cells around `(cx, cy)`, x wrapped at `width`. A cell kept
+        outside the width (a garden from a wider field, `garden.load_into`)
+        reads its neighbours unwrapped, and an in-width cell at the seam also
+        reaches the unwrapped column past it, so such cells stay attached."""
+        w = self.width
+        inside = 0 <= cx < w
+        out = []
+        for nx in (-1, 0, 1):
+            x = cx + nx
+            xs = (x % w, x) if inside and x % w != x else ((x % w,) if inside else (x,))
+            for ny in (-1, 0, 1):
+                if nx or ny:
+                    out.extend((xx, cy + ny) for xx in xs)
+        return out
+
+    def _component(self, start: tuple[int, int]) -> tuple[set[tuple[int, int]], bool]:
+        """`start`'s connected component of the structure and whether it is
+        grounded (a cell at `cy <= 0`). Best-first, lowest row first, and it
+        stops at the first grounded cell — so a grounded component returns
+        early with a partial set; a floating one is always returned whole."""
+        heap = [(start[1], start)]
+        comp = {start}
+        while heap:
+            cy, cell = heapq.heappop(heap)
+            if cy <= 0:
+                return comp, True
+            for n in self._neighbours8(*cell):
+                if n not in comp and n in self.structure:
+                    comp.add(n)
+                    heapq.heappush(heap, (n[1], n))
+        return comp, False
+
+    def _drop_component(self, comp: set[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Lower `comp` rigidly, one row at a time, until a cell reaches
+        `cy == 0` or sits directly above another component's cell (the next
+        row would overlap it). Each cell keeps its age stamp. Returns the
+        cells where it came to rest."""
+        ages = {cell: self.structure.pop(cell) for cell in comp}
+        low = min(cy for _, cy in comp)
+        k = 0
+        while low - k > 0 and not any((cx, cy - k - 1) in self.structure for cx, cy in comp):
+            k += 1
+        moved = []
+        for (cx, cy), age in ages.items():
+            self.structure[(cx, cy - k)] = age
+            moved.append((cx, cy - k))
+        return moved
 
     # ---- age / colour -----------------------------------------------------
 

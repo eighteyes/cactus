@@ -65,6 +65,13 @@ def test_clear_removes_file_and_reports_existence(tmp_path) -> None:
     assert garden.clear(path) is False
 
 
+def test_load_into_grounds_a_floating_cell_under_drop() -> None:
+    world = World(cols=10, rows=8, rng=random.Random(4))
+    assert world.sky.config.pile_settle == "drop"
+    garden.load_into(world, {"version": 1, "drops": 5, "cells": [[1, 0, 0], [6, 4, 3]]})
+    assert world.structure == {(1, 0): 0, (6, 0): 3}
+
+
 def test_load_into_malformed_data_raises() -> None:
     world = make_world()
     for bad in (

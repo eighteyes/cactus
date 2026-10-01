@@ -1373,21 +1373,21 @@ async def test_tuning_overlay_pile_style_cycles_with_h_l(
         idx = next(i for i, row in enumerate(app.tuning_rows) if row.name == "pile_style")
         app.tuning_index = idx
         app._render_tuning()
-        assert app.world.sky.config.pile_style == "blocks"
-
-        await pilot.press("l")
-        await pilot.pause()
         assert app.world.sky.config.pile_style == "dots"
 
         await pilot.press("l")
         await pilot.pause()
         assert app.world.sky.config.pile_style == "blocks"
+
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.world.sky.config.pile_style == "dots"
 
         await pilot.press("h")
         await pilot.pause()
-        assert app.world.sky.config.pile_style == "dots"
+        assert app.world.sky.config.pile_style == "blocks"
 
-        assert SkyConfig.load(path).pile_style == "dots"
+        assert SkyConfig.load(path).pile_style == "blocks"
 
 
 async def test_tuning_overlay_escape_closes_and_keeps_nudge(
@@ -1757,23 +1757,23 @@ async def test_tuning_overlay_reshapes_when_the_engine_changes(
         await pilot.press("T")
         await pilot.pause()
         text = app._tuning_text()
-        assert "engine texture" in text
-        assert "far" not in _tuning_panel_names(app) and "clouds" not in _tuning_panel_names(app)
-        # walk to sky_engine and cycle texture -> puffs
+        assert "engine puffs" in text and "clouds" in _tuning_panel_names(app)
+        assert "far" not in _tuning_panel_names(app)
+        # walk to sky_engine and cycle puffs -> fluid
         idx = next(i for i, r in enumerate(app.tuning_rows) if r.name == "sky_engine")
         for _ in range(idx):
             await pilot.press("j")
         await pilot.press("l")
         await pilot.pause()
         text = app._tuning_text()
-        assert "engine puffs" in text and "clouds" in _tuning_panel_names(app)
-        assert "far" not in _tuning_panel_names(app)
-        assert app.tuning_rows[app.tuning_index].name == "sky_engine"
-        await pilot.press("l")  # puffs -> fluid
-        await pilot.pause()
-        text = app._tuning_text()
         names = _tuning_panel_names(app)
         assert "engine fluid" in text and "far" in names and "projection" in names and "clouds" not in names
+        assert app.tuning_rows[app.tuning_index].name == "sky_engine"
+        await pilot.press("l")  # fluid -> texture
+        await pilot.pause()
+        text = app._tuning_text()
+        assert "engine texture" in text
+        assert "far" not in _tuning_panel_names(app) and "clouds" not in _tuning_panel_names(app)
         assert app.tuning_rows[app.tuning_index].name == "sky_engine"
 
 

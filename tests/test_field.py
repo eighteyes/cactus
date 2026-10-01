@@ -223,7 +223,7 @@ def test_landed_cell_stays_new_through_ticks_then_ages_on_further_drops() -> Non
 
 
 def test_landed_cell_renders_a_quadrant_glyph_in_cactus_new() -> None:
-    world = World(cols=10, rows=8, rng=random.Random(29))
+    world = World(cols=10, rows=8, rng=random.Random(29), sky_config=SkyConfig(pile_style="blocks"))
     world.drop(4)
     run_ticks(world, 900)
     assert world.structure
@@ -242,7 +242,7 @@ def test_landed_cell_renders_a_quadrant_glyph_in_cactus_new() -> None:
 def test_pile_style_dots_renders_a_braille_glyph_not_a_block() -> None:
     """v6d: the same landed world renders a full block under 'blocks' and a
     braille glyph under 'dots', both still coloured by the cell's age."""
-    world = World(cols=10, rows=8, rng=random.Random(29))
+    world = World(cols=10, rows=8, rng=random.Random(29), sky_config=SkyConfig(pile_style="blocks"))
     world.drop(4)
     run_ticks(world, 900)
     assert world.structure
@@ -309,7 +309,7 @@ def test_two_close_seeds_merge_and_land_as_one_clump() -> None:
 
 
 def test_far_apart_seeds_never_merge() -> None:
-    world = World(cols=60, rows=10, rng=random.Random(103))
+    world = World(cols=60, rows=10, rng=random.Random(103), sky_config=SkyConfig(sky_engine="texture"))
     world.seeds = [
         Clump(x=5.0, y=float(world.height - 1), vx=0.0, vy=0.0),
         Clump(x=45.0, y=float(world.height - 1), vx=0.0, vy=0.0),
@@ -347,7 +347,7 @@ def make_sky_cells(world: World, cloud_cells: list[tuple[int, int]]) -> list[lis
 
 
 def test_cloud_entry_awards_charge_and_member_once_per_entry() -> None:
-    world = World(cols=10, rows=10, rng=random.Random(1))
+    world = World(cols=10, rows=10, rng=random.Random(1), sky_config=SkyConfig(accrete_count=1))
     # col 4 (x=9 // SUB_X): row_from_bottom 7 -> r=2, row_from_bottom 3 -> r=6
     world._sky_cells = make_sky_cells(world, [(2, 4), (6, 4)])
     clump = Clump(x=9.0, y=14.0, vx=0.0, vy=0.0)  # row_from_bottom 7: cloud
@@ -489,7 +489,7 @@ def test_burst_skids_sideways_and_down_and_lands_beside_the_pile() -> None:
 
 
 def test_clump_scatters_the_sky_every_frame_inside_a_cloud_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    world = World(cols=10, rows=10, rng=random.Random(6))
+    world = World(cols=10, rows=10, rng=random.Random(6), sky_config=SkyConfig(accrete_count=1))
     world._sky_cells = make_sky_cells(world, [(2, 4)])
     calls: list[tuple[float, float]] = []
     monkeypatch.setattr(world.sky, "scatter", lambda px, py, *a, **k: calls.append((px, py)))
@@ -721,7 +721,8 @@ def test_render_matches_fixture_before_the_v6f_perf_pass() -> None:
     with open(FIXTURES / "field_render_v6f.json") as fh:
         expected = json.load(fh)
 
-    world = World(cols=40, rows=16, rng=random.Random(42), sky_config=SkyConfig(sky_engine="fluid"))
+    config = SkyConfig(sky_engine="fluid", pile_style="blocks", accrete_count=1, accrete_spin=1.2, dot_latch=2.5)
+    world = World(cols=40, rows=16, rng=random.Random(42), sky_config=config)
     drop_cols = {5: 10, 6: 20, 7: 30}
     actual = []
     for i in range(60):
@@ -1243,3 +1244,68 @@ def test_merge_keeps_charge_birds_and_blocks_a_burst_cascade() -> None:
     d = Clump(x=6.0, y=10.0, vx=0.0, vy=0.0, angle=0.0, spin=0.0, bounty=False)
     c.members, d.members = [Member()], [Member()]
     assert not world._merge(c, d).bounty
+
+
+# ---- pile_settle = drop: no floating components ---------------------------
+
+
+def _all_grounded(world: World) -> bool:
+    return all(world._component(cell)[1] for cell in world.structure)
+
+
+def test_drop_lands_a_floating_piece_on_the_pile_below_the_gap() -> None:
+    """A landing that joins a floating cell makes a 2-cell piece with no
+    8-connected path to the ground; it drops rigidly onto the pile under it."""
+    cfg = SkyConfig(sky_engine="texture", pile_settle="drop")
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    world.structure = {(4, 0): 0, (4, 1): 0, (5, 0): 0, (5, 1): 0, (4, 5): 3}
+    world.drops = 7
+    _land(world, [(5, 5)])
+    assert (4, 5) not in world.structure and (5, 5) not in world.structure
+    assert world.structure[(4, 2)] == 3 and world.structure[(5, 2)] == 7, "ages ride along"
+    assert _all_grounded(world)
+
+
+def test_drop_floaters_drops_a_piece_over_open_ground_to_row_zero() -> None:
+    cfg = SkyConfig(sky_engine="texture", pile_settle="drop")
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    world.structure = {(0, 0): 0, (10, 4): 1, (11, 5): 2}
+    world.drop_floaters()
+    assert world.structure == {(0, 0): 0, (10, 0): 1, (11, 1): 2}
+
+
+def test_drop_keeps_a_piece_resting_diagonally_on_the_pile() -> None:
+    """8-connected to a grounded component is anchored, across the x seam
+    too: a diagonal perch is not floating."""
+    cfg = SkyConfig(sky_engine="texture", pile_settle="drop")
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    w = world.width
+    pile = {(4, 0): 0, (4, 1): 0, (0, 0): 0, (0, 1): 0, (0, 2): 0}
+    world.structure = dict(pile)
+    _land(world, [(5, 2), (6, 2)])
+    world.structure[(w - 1, 3)] = 1
+    world.drop_floaters()
+    assert world.structure == {**pile, (5, 2): world.drops, (6, 2): world.drops, (w - 1, 3): 1}
+
+
+def test_keep_leaves_a_floating_piece_until_drop_is_switched_on() -> None:
+    cfg = SkyConfig(sky_engine="texture", pile_settle="keep")
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    world.structure = {(0, 0): 0, (10, 4): 1}
+    _land(world, [(10, 5)])
+    assert (10, 4) in world.structure and (10, 5) in world.structure
+    cfg.pile_settle = "drop"  # the tuning overlay mutates the live config in place
+    world.apply_sky_config(cfg)
+    assert (10, 0) in world.structure and (10, 1) in world.structure
+    assert _all_grounded(world)
+
+
+def test_drop_floaters_grounds_three_floating_pieces() -> None:
+    """Stacked floaters settle to a fixed point: the upper one lands on the
+    lower one after that one has dropped."""
+    cfg = SkyConfig(sky_engine="texture", pile_settle="drop")
+    world = World(cols=20, rows=10, rng=random.Random(4), sky_config=cfg)
+    world.structure = {(0, 0): 0, (10, 3): 1, (10, 7): 2, (20, 4): 3, (21, 5): 4}
+    world.drop_floaters()
+    assert _all_grounded(world)
+    assert world.structure == {(0, 0): 0, (10, 0): 1, (10, 1): 2, (20, 0): 3, (21, 1): 4}

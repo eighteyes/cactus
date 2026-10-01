@@ -374,8 +374,8 @@ def test_dump_of_one_changed_key_writes_exactly_that_live_line(tmp_path) -> None
 # ---- pile_style: a string-valued lever, not a numeric one (v6d) ----------
 
 
-def test_pile_style_defaults_to_blocks() -> None:
-    assert SkyConfig().pile_style == "blocks"
+def test_pile_style_defaults_to_dots() -> None:
+    assert SkyConfig().pile_style == "dots"
 
 
 def test_overlay_sets_pile_style() -> None:
@@ -545,8 +545,8 @@ def test_frame_time_budget_at_100x20_with_perspective() -> None:
 # ---- engine lever (v6f, sky_engine) -------------------------------------
 
 
-def test_sky_engine_defaults_to_texture() -> None:
-    assert SkyConfig().sky_engine == "texture"
+def test_sky_engine_defaults_to_puffs() -> None:
+    assert SkyConfig().sky_engine == "puffs"
 
 
 def test_make_sky_texture_returns_texture_sky_behind_the_same_interface() -> None:
