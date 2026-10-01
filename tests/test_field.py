@@ -47,6 +47,10 @@ Responsibilities:
   mean-frame-time budget; a frame with no seeds never even asks the (empty)
   splat canvas about a cell; a fixture render at the default fps is bit-for-
   bit unchanged from before the pass.
+- Render caches: 40 frames of three seeded worlds over a ~500-cell garden
+  render the same `(plain, spans)` with the caches on as with them off
+  (`World._perf_cache`, `sky.COLOUR_MEMO`); a landing, a `drop_floaters`
+  sweep, and a resize each rebuild the memoised pile splat canvas.
 """
 
 from __future__ import annotations
@@ -75,6 +79,7 @@ from cactus.field import (
     Clump,
     World,
 )
+from cactus import garden, sky as sky_module
 from cactus.sky import SkyConfig, PX_X, PX_Y
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1309,3 +1314,80 @@ def test_drop_floaters_grounds_three_floating_pieces() -> None:
     world.drop_floaters()
     assert _all_grounded(world)
     assert world.structure == {(0, 0): 0, (10, 0): 1, (10, 1): 2, (20, 0): 3, (21, 1): 4}
+
+
+def _garden_data(width: int, n: int = 500, seed: int = 11) -> dict:
+    """A garden-like pile: `n` cells heaped over the middle half of a
+    `width`-sub-cell field, ages spread over every band, plus one floating
+    cell and one cell past the right edge."""
+    rng = random.Random(seed)
+    heights = [0] * width
+    cells: dict[tuple[int, int], int] = {}
+    while len(cells) < n:
+        x = rng.randrange(width // 4, 3 * width // 4)
+        cells[(x, heights[x])] = rng.randrange(0, 200)
+        heights[x] += 1
+    cells[(4, 14)] = 150
+    cells[(width + 3, 0)] = 10
+    return {"version": 1, "drops": 200, "cells": [[x, y, a] for (x, y), a in cells.items()]}
+
+
+def _cache_frames(cfg: SkyConfig, cached: bool) -> list[tuple[str, list]]:
+    """40 frames of one seeded world over `_garden_data`, seeds dropped
+    early enough to land mid-run, a resize at frame 20."""
+    world = World(cols=80, rows=20, rng=random.Random(5), sky_config=cfg)
+    world._perf_cache = cached
+    garden.load_into(world, _garden_data(world.width))
+    frames = []
+    for i in range(40):
+        if i in (0, 3, 6, 9):
+            world.drop(20 + 9 * i)
+        if i == 20:
+            world.resize(84, 21)
+        world.advance(0.4)
+        text = world.render()
+        frames.append((text.plain, list(text.spans)))
+    return frames
+
+
+@pytest.mark.parametrize("cfg_kwargs", [
+    {"sky_engine": "puffs", "cloud_style": "bloom"},
+    {"sky_engine": "puffs", "cloud_style": "bands"},
+    {"sky_engine": "fluid", "pile_style": "blocks"},
+])
+def test_render_caches_match_the_uncached_render_exactly(cfg_kwargs: dict) -> None:
+    with patch.object(sky_module, "COLOUR_MEMO", False):
+        reference = _cache_frames(SkyConfig(**cfg_kwargs), cached=False)
+    cached = _cache_frames(SkyConfig(**cfg_kwargs), cached=True)
+    assert len(cached) == len(reference) == 40
+    for i, (got, want) in enumerate(zip(cached, reference)):
+        assert got == want, f"frame {i} differs"
+
+
+def test_landing_floaters_and_resize_rebuild_the_pile_canvas() -> None:
+    cfg = SkyConfig(sky_engine="texture", pile_style="dots", pile_settle="keep")
+    world = World(cols=40, rows=20, rng=random.Random(9), sky_config=cfg)
+    garden.load_into(world, _garden_data(world.width, n=120))
+    before = world._pile_splat_canvas()
+    assert world._pile_splat_canvas() is before  # memoised while nothing changes
+
+    version = world.structure_version
+    world.drop(10)
+    while world.seeds:
+        world._advance_seeds(TICK_SECONDS)
+    assert world.structure_version > version
+    landed = world._pile_splat_canvas()
+    assert landed is not before and landed[0] != before[0]
+    assert landed == world._build_pile_splat_canvas()
+
+    version = world.structure_version
+    world.drop_floaters()
+    assert world.structure_version > version
+    swept = world._pile_splat_canvas()
+    assert swept[0] != landed[0]
+    assert swept == world._build_pile_splat_canvas()
+
+    world.resize(47, 20)
+    resized = world._pile_splat_canvas()
+    assert resized[0] != swept[0]
+    assert resized == world._build_pile_splat_canvas()

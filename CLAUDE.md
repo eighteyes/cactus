@@ -701,6 +701,16 @@ scope.
   accumulated by every `advance`, zeroed by each `_fade_sky`, so the fade
   runs on wall time whatever `fps` is. Default `fps` is 8 — 10 broke the
   headless CPU test.
+- `World.structure_version` (perf) counts every mutation of `structure`:
+  `_anchor`, `_drop_component` (so `drop_floaters`/`_drop_floating`),
+  `garden.load_into`, and `resize`/`reseed`. The memoised pile splat canvas
+  (`_pile_splat_canvas`) and static pile/speckle layer (`_static_layer`)
+  key on it plus `len(structure)` and the dict's identity, so new code that
+  mutates `structure` must bump it. `sky.downsample` memoises
+  `_cell_colour` on the quantised tone step (`_cell_colour_memo`), cleared
+  when the palette or a tone/haze lever changes. Both are exact:
+  `World._perf_cache = False` / `sky.COLOUR_MEMO = False` render the
+  original path, and `tests/test_field.py` compares the two frame by frame.
 - TUI reload and rail rebuild are serialized under one `asyncio.Lock`
   (`CactusApp._reload_lock`): `_reload`, `_advance_after`, and every
   `_rebuild_rail_locked` call run inside it, and nothing mutates `#rail-list`

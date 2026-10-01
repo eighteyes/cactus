@@ -94,6 +94,9 @@ Responsibilities:
   a rim, both morph patches, a `bands` lane the same way), the cloud itself
   neither moving nor ageing; `TextureSky` is a no-op — baked layers cannot
   scatter.
+- Colour memo (perf): `downsample` reads a cell's colour through
+  `_cell_colour_memo`, keyed on the quantised tone step (the only way `m`
+  reaches the colour), so it is exact; `COLOUR_MEMO = False` bypasses it.
 """
 
 from __future__ import annotations
@@ -1114,6 +1117,48 @@ def _cell_colour(
     )
 
 
+# `_cell_colour` memo (perf): `downsample` sees the same few hundred
+# (owner, tone step, row, z) keys every frame. Keyed on the quantised step
+# `_ramp` itself rounds to, so the result is exact; the context (palette
+# identity and the haze/tone levers, which the tuning overlay mutates in
+# place) clears it on change, and it is cleared outright past the cap.
+COLOUR_MEMO = True
+COLOUR_MEMO_MAX = 16384
+_COLOUR_MEMO: dict[tuple, str] = {}
+_COLOUR_MEMO_CTX: list = [None, None]  # [palette, (tone_exp, haze levers)]
+
+
+def _colour_memo(cfg: SkyConfig, palette) -> dict[tuple, str] | None:
+    """The memo dict for this `downsample` call, emptied first when the
+    palette or a colour lever changed; `None` with `COLOUR_MEMO` off."""
+    if not COLOUR_MEMO:
+        return None
+    levers = (cfg.tone_exp, cfg.haze_depth_weight, cfg.haze_row_weight, cfg.haze_clamp)
+    if (
+        _COLOUR_MEMO_CTX[0] is not palette
+        or _COLOUR_MEMO_CTX[1] != levers
+        or len(_COLOUR_MEMO) > COLOUR_MEMO_MAX
+    ):
+        _COLOUR_MEMO.clear()
+        _COLOUR_MEMO_CTX[0], _COLOUR_MEMO_CTX[1] = palette, levers
+    return _COLOUR_MEMO
+
+
+def _cell_colour_memo(
+    memo: dict[tuple, str] | None, cfg: SkyConfig, palette, owner: str, m: float,
+    row_from_bottom: int, sky_rows: int, z: float | None, z_far: float | None,
+) -> str:
+    """`_cell_colour`, looked up in `memo` by tone step (see `_ramp`)."""
+    if memo is None:
+        return _cell_colour(cfg, palette, owner, m, row_from_bottom, sky_rows, z, z_far)
+    step = round(_clamp(m ** cfg.tone_exp, 0.0, 1.0) * (TONE_STEPS - 1))
+    key = (owner, step, row_from_bottom, sky_rows, z, z_far)
+    colour = memo.get(key)
+    if colour is None:
+        colour = memo[key] = _cell_colour(cfg, palette, owner, m, row_from_bottom, sky_rows, z, z_far)
+    return colour
+
+
 def _composite(grids: dict[str, Air]) -> tuple[list[list[float]], list[list[str]]]:
     """Front-to-back (`GRID_ORDER`) composite: the nearest grid whose pixel
     clears `DENSITY_FLOOR` owns it, never overwritten by one further back."""
@@ -1174,6 +1219,7 @@ def downsample(
         density, owner = _composite(grids)
         density = density[::-1]  # Air is bottom-up; render top-down
         owner = owner[::-1]
+    memo = _colour_memo(cfg, palette)
     out: list[list[tuple[str, str | None]]] = []
     for row_i in range(sky_rows):
         y0 = row_i * PX_Y
@@ -1198,7 +1244,9 @@ def downsample(
                     continue
                 glyph = _speck_glyph(x0, y0)
                 owner_name = _majority_owner(block_owner, x0)
-                colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows, z_for_row, z_far_for_row)
+                colour = _cell_colour_memo(
+                    memo, cfg, palette, owner_name, m, row_from_bottom, sky_rows, z_for_row, z_far_for_row,
+                )
                 out_row.append((glyph, colour))
                 continue
             if m >= cfg.core_mean:
@@ -1208,7 +1256,9 @@ def downsample(
             else:
                 glyph = _ordered_dither(pixels)
             owner_name = _majority_owner(block_owner, x0)
-            colour = _cell_colour(cfg, palette, owner_name, m, row_from_bottom, sky_rows, z_for_row, z_far_for_row)
+            colour = _cell_colour_memo(
+                memo, cfg, palette, owner_name, m, row_from_bottom, sky_rows, z_for_row, z_far_for_row,
+            )
             out_row.append((glyph, colour))
         out.append(out_row)
     return out

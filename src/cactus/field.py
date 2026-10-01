@@ -82,6 +82,11 @@ Responsibilities:
   presence that climbs while lit and sinks once cleared, blending its colour
   from `Palette.fade_from` toward its tone and holding the last glyph while
   it fades out; blank rows pass through, blends are cached in 64 steps.
+- Render caches (perf): `structure_version` counts every mutation of
+  `structure`, and the pile splat canvas and the static pile/ground-speckle
+  layer are memoised on it (plus size, drops, pile style, palette), so a
+  frame with no landing rebuilds neither. `_perf_cache = False` turns both
+  off and renders through the original per-cell path, for exactness tests.
 
 Pure Python: no persistence, no store, no Textual import.
 """
@@ -94,7 +99,7 @@ import random
 import time
 from dataclasses import dataclass, field
 
-from rich.text import Text
+from rich.text import Span, Text
 
 from .sky import PX_X, PX_Y, PuffSky, Sky, SkyConfig, TextureSky, atmospheric_colour, make_sky, _lerp_hex, _ordered_dither
 
@@ -337,6 +342,9 @@ class World:
     height: int = field(init=False)
     structure: dict[tuple[int, int], int] = field(default_factory=dict)
     drops: int = 0
+    # Bumped by every mutation of `structure` (a landing, a floater's drop,
+    # a garden load) and by resize/reseed; the render caches key on it.
+    structure_version: int = field(default=0, init=False)
     # Landings since the garden was last saved (garden.py); the TUI resets
     # this to 0 after each save. The world stays file-agnostic — it only
     # counts, it never reads or writes garden.json itself.
@@ -360,6 +368,12 @@ class World:
     # The `pile_settle` last applied, so `apply_sky_config` sees a switch to
     # "drop" even when the tuning overlay mutated the live config in place.
     _pile_settle: str = field(default="", init=False)
+    # Render caches (perf): `(key, structure dict, value)`, rebuilt when the
+    # key or the dict's identity changes. `_perf_cache = False` bypasses both
+    # and renders through the original per-cell path (exactness tests).
+    _perf_cache: bool = field(default=True, init=False)
+    _pile_memo: tuple | None = field(default=None, init=False)
+    _static_memo: tuple | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.width = self.cols * SUB_X
@@ -378,6 +392,7 @@ class World:
         """Reset the rng and re-bake the sky from it, deterministically."""
         self.rng = random.Random(seed)
         self.sky = make_sky(self.cols, self.rows - GROUND_ROWS, self.rng, self.palette, self.sky.config)
+        self.structure_version += 1
 
     def apply_sky_config(self, config: SkyConfig) -> None:
         """Swap `config` into the running sky (`Sky.apply`/`TextureSky.apply`)
@@ -402,6 +417,7 @@ class World:
         self.height = rows * SUB_Y
         self.sky.resize(cols, rows - GROUND_ROWS)
         self._set_terminal_vy()
+        self.structure_version += 1
 
     # ---- dropping ---------------------------------------------------------
 
@@ -867,6 +883,7 @@ class World:
             cells = self._settle(cells)
         for cell in cells:
             self.structure[cell] = self.drops
+        self.structure_version += 1
         if self.sky.config.pile_settle == "drop":
             self._drop_floating(cells)
         self.landed_since_save += 1
@@ -1116,6 +1133,7 @@ class World:
         for (cx, cy), age in ages.items():
             self.structure[(cx, cy - k)] = age
             moved.append((cx, cy - k))
+        self.structure_version += 1
         return moved
 
     # ---- age / colour -----------------------------------------------------
@@ -1291,7 +1309,21 @@ class World:
         mechanism a falling seed's footprint uses — no tumble, no rotation.
         Only called under `pile_style == "dots"` (v6d); `render` skips it
         entirely for the default "blocks" style. The second element is the
-        set of terminal cells the canvas touched (v6f)."""
+        set of terminal cells the canvas touched (v6f).
+
+        Memoised (perf) on `structure_version` and the field size: the canvas
+        reads only which cells are landed, never their ages, and every splat
+        parameter is a module constant. Callers must not mutate the result."""
+        if not self._perf_cache:
+            return self._build_pile_splat_canvas()
+        key = (self.structure_version, len(self.structure), self.cols, self.rows)
+        memo = self._pile_memo
+        if memo is None or memo[0] != key or memo[1] is not self.structure:
+            memo = self._pile_memo = (key, self.structure, self._build_pile_splat_canvas())
+        return memo[2]
+
+    def _build_pile_splat_canvas(self) -> tuple[dict[tuple[int, int], float], set[tuple[int, int]]]:
+        """`_pile_splat_canvas`, uncached."""
         canvas: dict[tuple[int, int], float] = {}
         if not self.structure:
             return canvas, set()
@@ -1343,7 +1375,110 @@ class World:
         `pile_only` (the `` ` `` toggle with the field strip hidden) skips
         the sky, birds, falling seeds, ground speckle, and ground lines —
         every cell not part of the landed structure renders blank.
+
+        The full field renders through the cached static layer
+        (`_static_layer`) and builds the row text and spans directly;
+        `pile_only`, or `_perf_cache` off, takes `_render_cells`, the
+        original per-cell `_sample_cell` path. Both give identical
+        `(plain, spans)`.
         """
+        if pile_only or not self._perf_cache:
+            return self._render_cells(pile_only)
+        bird_cells = self._bird_cells()
+        seed_canvas, seed_cells = self._seed_splat_canvas()
+        pile_canvas, pile_cells = (
+            self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else ({}, set())
+        )
+        ground_line_cells = self._ground_line_cells()
+        sky_grid = self.sky.render_cells()
+        self._sky_cells = sky_grid
+        sky_grid = self._fade_sky(sky_grid)
+        layer, speck = self._static_layer(pile_canvas, pile_cells)
+        seed_colour = self.palette.seed
+        blank = (" ", None)
+        parts: list[str] = []
+        spans: list[Span] = []
+        pos = 0
+        for r in range(self.rows):
+            cy = self.rows - 1 - r
+            sky_row = sky_grid[r] if r < len(sky_grid) else None
+            run: list[str] = []
+            run_style: str | None = None
+            for cx in range(self.cols):
+                key = (cx, cy)
+                cell = None
+                # Same priority as `_sample_cell`: seed, structure, bird,
+                # sky, speckle, ground line.
+                if key in seed_cells:
+                    block = self._seed_pixel_block(cx, cy, seed_canvas)
+                    if block is not None:
+                        cell = (_ordered_dither(block), seed_colour)
+                if cell is None:
+                    cell = layer.get(key) or bird_cells.get(key)
+                    if cell is None:
+                        if sky_row is not None and sky_row[cx][0] != " ":
+                            cell = sky_row[cx]
+                        else:
+                            cell = speck.get(key) or ground_line_cells.get(key) or blank
+                ch, style = cell
+                if run and style == run_style:
+                    run.append(ch)
+                    continue
+                if run:
+                    chars = "".join(run)
+                    if run_style:
+                        spans.append(Span(pos, pos + len(chars), run_style))
+                    parts.append(chars)
+                    pos += len(chars)
+                run, run_style = [ch], style
+            if run:
+                chars = "".join(run)
+                if run_style:
+                    spans.append(Span(pos, pos + len(chars), run_style))
+                parts.append(chars)
+                pos += len(chars)
+            if r < self.rows - 1:
+                parts.append("\n")
+                pos += 1
+        text = Text("".join(parts))
+        text.spans = spans
+        return text
+
+    def _static_layer(
+        self, pile_canvas: dict[tuple[int, int], float], pile_cells: set[tuple[int, int]]
+    ) -> tuple[dict[tuple[int, int], tuple[str, str]], dict[tuple[int, int], tuple[str, str]]]:
+        """The frame-invariant cells (perf): every on-screen pile cell's
+        `(glyph, colour)` (`_pile_cell`) and every ground speckle's, memoised
+        on `structure_version`, `drops` (age colours), size, `pile_style`,
+        and palette. Rebuilt only when one of those changes."""
+        key = (
+            self.structure_version, len(self.structure), self.drops, self.cols, self.rows,
+            self.sky.config.pile_style, self.palette,
+        )
+        memo = self._static_memo
+        if memo is not None and memo[0] == key and memo[1] is self.structure:
+            return memo[2]
+        layer: dict[tuple[int, int], tuple[str, str]] = {}
+        for sx, sy in self.structure:
+            cell = (sx // SUB_X, sy // SUB_Y)
+            if cell in layer or not (0 <= cell[0] < self.cols and 0 <= cell[1] < self.rows):
+                continue
+            hit = self._pile_cell(cell[0], cell[1], pile_canvas, pile_cells)
+            if hit is not None:
+                layer[cell] = hit
+        speck: dict[tuple[int, int], tuple[str, str]] = {}
+        sand = self.palette.sand_dot
+        for cy in range(min(GROUND_ROWS, self.rows)):
+            for cx in range(self.cols):
+                glyph = self._ground_speckle(cx, cy)
+                if glyph is not None:
+                    speck[(cx, cy)] = (glyph, sand)
+        self._static_memo = (key, self.structure, (layer, speck))
+        return layer, speck
+
+    def _render_cells(self, pile_only: bool = False) -> Text:
+        """`render`'s original path: one `_sample_cell` per cell, one
+        `Text.append` per run. Serves `pile_only` and `_perf_cache = False`."""
         if pile_only:
             bird_cells: dict[tuple[int, int], tuple[str, str]] = {}
             seed_canvas, seed_cells = {}, set()
@@ -1401,24 +1536,9 @@ class World:
             if block is not None:
                 return _ordered_dither(block), self.palette.seed
 
-        struct_bits = 0
-        struct_cells: list[tuple[int, int]] = []
-        if self.structure:
-            base_x, base_y = cx * SUB_X, cy * SUB_Y
-            # tl, tr, bl, br — top is the higher y.
-            for i, (dx, dy) in _STRUCT_OFFSETS:
-                cell = (base_x + dx, base_y + dy)
-                if cell in self.structure:
-                    struct_bits |= 1 << i
-                    struct_cells.append(cell)
-        if struct_bits:
-            age = max(self._age(cell) for cell in struct_cells)
-            colour = self._age_colour(age)
-            if pile_canvas and pile_cells and (cx, cy) in pile_cells:
-                block = self._seed_pixel_block(cx, cy, pile_canvas)
-                if block is not None:
-                    return _ordered_dither(block), colour
-            return QUADRANT[struct_bits], colour
+        pile = self._pile_cell(cx, cy, pile_canvas, pile_cells)
+        if pile is not None:
+            return pile
 
         if pile_only:
             return " ", None
@@ -1442,6 +1562,36 @@ class World:
                 return line
 
         return " ", None
+
+    def _pile_cell(
+        self,
+        cx: int,
+        cy: int,
+        pile_canvas: dict[tuple[int, int], float] | None,
+        pile_cells: set[tuple[int, int]] | None,
+    ) -> tuple[str, str] | None:
+        """The landed structure's `(glyph, colour)` at terminal `(cx, cy)` —
+        quadrant-sampled from its four sub-cells, or dithered from
+        `pile_canvas` under dots — or `None` where no sub-cell is landed."""
+        struct_bits = 0
+        struct_cells: list[tuple[int, int]] = []
+        if self.structure:
+            base_x, base_y = cx * SUB_X, cy * SUB_Y
+            # tl, tr, bl, br — top is the higher y.
+            for i, (dx, dy) in _STRUCT_OFFSETS:
+                cell = (base_x + dx, base_y + dy)
+                if cell in self.structure:
+                    struct_bits |= 1 << i
+                    struct_cells.append(cell)
+        if struct_bits:
+            age = max(self._age(cell) for cell in struct_cells)
+            colour = self._age_colour(age)
+            if pile_canvas and pile_cells and (cx, cy) in pile_cells:
+                block = self._seed_pixel_block(cx, cy, pile_canvas)
+                if block is not None:
+                    return _ordered_dither(block), colour
+            return QUADRANT[struct_bits], colour
+        return None
 
 
 # ---- perf bench (v6f, `cactus sky --bench`) --------------------------------

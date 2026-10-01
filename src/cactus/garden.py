@@ -62,6 +62,7 @@ def load_into(world: Any, data: dict[str, Any]) -> None:
         structure[(cx, cy)] = n
     world.structure = structure
     world.drops = drops
+    world.structure_version += 1
     if world.sky.config.pile_settle == "drop":
         world.drop_floaters()
 
