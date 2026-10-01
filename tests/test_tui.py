@@ -2181,3 +2181,22 @@ async def test_row_move_during_rebuild_is_honoured(
 
         assert app.focused_key == keys[1]
         assert app.query_one("#rail-list", ListView).index == 1
+
+
+async def test_choice_card_renders_tradeoff_marks_colored(store: Store, project: str) -> None:
+    store.ask(
+        "which?", project=project, cwd=project, agent=AGENT, kind="choice",
+        choices=[Choice("oidc", "existing IdP\n+ tenant ready\n- couples us [bold]x[/]")],
+    )
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        content = app.query_one("#card-text", Static).content
+
+    plain = content.plain
+    assert "1)  oidc  — existing IdP" in plain
+    assert "      ✓ tenant ready" in plain
+    assert "      ✗ couples us [bold]x[/]" in plain
+    styles = {content.plain[s.start:s.end].strip(): str(s.style) for s in content.spans}
+    assert styles["✓ tenant ready"] == "green"
+    assert styles["✗ couples us [bold]x[/]"] == "red"

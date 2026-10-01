@@ -44,6 +44,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -51,7 +52,7 @@ from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
-from . import garden
+from . import garden, tradeoffs
 from .field import World
 from .scope import project_label
 from .sky import (SkyConfig, TuneField, config_path as sky_config_path, slots as sky_slots, tuning_fields_for,
@@ -287,7 +288,7 @@ def _card_lines(
     run_output: list[str] | None = None,
     run_state: str = "",
     preview: list[str] | None = None,
-) -> str:
+) -> Text:
     """Full detail for the one question being answered."""
     # LABEL:qN when spanning projects (q166) — the bare key alone can recur
     # across projects once keys number per project.
@@ -299,7 +300,7 @@ def _card_lines(
         meta.append(f"thread {q.agent or '?'}/{q.thread}")
     if q.asked_by:
         meta.append(f"from {q.asked_by}")
-    lines = ["  ".join(meta)]
+    lines: list[str | Text] = ["  ".join(meta)]
     if q.parent_key:
         lines.append(f"follow-up to {q.parent_key}")
     lines.append("")
@@ -383,8 +384,13 @@ def _card_lines(
                 "[ ] " if q.kind == "multi" else ""
             )
             rec = f" ★{CONFIDENCE_GLYPH.get(q.confidence, '')}" if choice.label in q.recommend else ""
-            desc = f"  — {choice.description}" if choice.description else ""
+            summary, marks = tradeoffs.split(choice.description)
+            desc = f"  — {summary}" if summary else ""
             lines.append(f"  {i})  {mark}{choice.label}{rec}{desc}")
+            for is_pro, text in marks:
+                lines.append(
+                    Text(f"      {'✓' if is_pro else '✗'} {text}", style="green" if is_pro else "red")
+                )
         if q.recommend_why:
             lines.append(f"  recommend: {', '.join(q.recommend)} — {q.recommend_why}")
     elif q.kind == "confirm":
@@ -447,7 +453,13 @@ def _card_lines(
     if q.act in ("review", "plan") and q.status == "live":
         lines.append("enter = note · x = close")
     lines.append(KEY_GAP.join(filter(None, [hint, _keys(*extras)])))
-    return "\n".join(lines)
+    # Text, not markup: agent text is never parsed; only mark lines carry a style.
+    out = Text()
+    for n, line in enumerate(lines):
+        if n:
+            out.append("\n")
+        out.append(line) if isinstance(line, str) else out.append_text(line)
+    return out
 
 
 class FieldView(Static):
