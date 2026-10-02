@@ -41,7 +41,7 @@ A background worker proposes a pick on low-stakes rows; the card shows
 
 ### garden
 Every answer drops a seed through the sky strip and lands on a shared pile.
-`~` hides it, `T` tunes the sky.
+Off by default: `~` or settings `7` shows it, `T` tunes the sky.
 
 ### elaborate
 Kick the question back with an optional take; the agent rewrites it.

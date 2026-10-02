@@ -80,7 +80,7 @@ FIELD_MIN_ROWS = 4
 
 TUI_SETTINGS_DEFAULTS = {
     "orientation": "side", "figlet_header": False, "projects_pane": True,
-    "field": True, "pile_only": False, "seed_release": "left",
+    "field": False, "pile_only": False, "seed_release": "left",
     "keybar_align": "center", "keybar_order": "choices_first",
 }
 KEYBAR_ALIGNS = ("left", "center", "right")
@@ -1147,6 +1147,7 @@ class CactusApp(App[int]):
         release = self.tui_settings["seed_release"]
         align = self.tui_settings["keybar_align"]
         order = "first" if self.tui_settings["keybar_order"] == "choices_first" else "last"
+        garden = "on" if self.tui_settings["field"] else "off"
         return "\n".join([
             "settings",
             "",
@@ -1156,6 +1157,7 @@ class CactusApp(App[int]):
             f"4  seed release   drop under the key, or mirror   {release}",
             f"5  key bar        left / center / right           {align}",
             f"6  choice keys    1-9 before or after the rest    {order}",
+            f"7  garden         sky strip under the card (~)    {garden}",
             f"f  Figlet project header (cybermedium)            {figlet}",
             "",
             "esc or ?  return to the inbox",
@@ -2913,6 +2915,9 @@ class CactusApp(App[int]):
                 self._cycle_keybar_align()
             elif event.key == "6":
                 self._toggle_keybar_order()
+            elif event.key == "7":
+                self.action_toggle_field()
+                self._render_settings()
             elif event.key == "f":
                 self._toggle_figlet_header()
             else:

@@ -991,6 +991,11 @@ def _isolated_tui_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     projects pane) must never touch the human's own file.
     """
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    # The garden is off by default; most field tests need it drawn, so the
+    # suite starts with it on. `test_garden_defaults_off_*` removes the file.
+    settings = tmp_path / "xdg-config" / "cactus" / "tui.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text('{"field": true}', encoding="utf-8")
 
 
 @needs_sublists
@@ -2655,3 +2660,19 @@ async def test_process_mode_app_paints_child_frames_and_stops_the_child(store: S
         assert app.field.alive()
         child = app.field
     assert not child.alive()
+
+
+async def test_garden_defaults_off_and_settings_7_toggles_it(
+    store: Store, project: str, tmp_path: Path
+) -> None:
+    (tmp_path / "xdg-config" / "cactus" / "tui.json").unlink()
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.tui_settings["field"] is False
+        assert "garden" in app._settings_text() and app._settings_text().count("off") >= 1
+        app.action_open_settings()
+        await pilot.press("7")
+        await pilot.pause()
+        assert app.tui_settings["field"] is True
+        assert "(~)    on" in app._settings_text()

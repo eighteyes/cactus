@@ -534,7 +534,8 @@ scope.
   itself. A landing saves on the next `_field_tick`; every `SKY_RELOAD_SECONDS`
   poll (the same clock the sky config reload uses) also stats the file and
   reloads it if another process's write is newer, flashing "garden updated".
-  `~` hides/shows the field strip (`tui_settings["field"]`, persisted);
+  `~` (or settings `7`) hides/shows the field strip (`tui_settings["field"]`,
+  persisted, default off);
   backtick drops a seed while shown, or while hidden flips `pile_only`
   (persisted) to show the pile alone without the sky/birds/seeds. A hidden
   garden still grows: the field timer keeps ticking and only the draw is
