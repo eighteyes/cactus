@@ -64,6 +64,13 @@ uv tool install git+https://github.com/eighteyes/cactus     # the CLI: cactus, c
 cactus --tui                                                # answer the queue
 ```
 
+Upgrading, or running from a checkout, reinstall so new dependencies land in the tool's own environment, then restart the TUI:
+
+```sh
+uv tool install --reinstall git+https://github.com/eighteyes/cactus
+uv tool install --editable . --reinstall                    # from a checkout
+```
+
 ### First class
 
 **Claude Code**: plugin with skill, hooks and a bundled `cactus` on `PATH`.
