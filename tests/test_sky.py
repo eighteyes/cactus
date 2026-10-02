@@ -673,3 +673,16 @@ def test_numpy_render_matches_the_pure_python_reference(case: str, size: tuple[i
         assert got == want, f"{case} frame {frame} differs"
         drawn += sum(cell[1] is not None for row in got for cell in row)
     assert drawn > 0, f"{case} drew nothing, so the comparison proved nothing"
+
+
+def test_perspective_composite_survives_a_panning_camera() -> None:
+    """Fluid with perspective on used to IndexError within ~15 frames once
+    the wind panned the camera: `(b + camera_x) % width` can round to
+    exactly `width`. 80 windy frames each way must render."""
+    from cactus.sky import make_sky
+
+    for wind in (0.3, -0.3):
+        sky = make_sky(200, 50, random.Random(11), MONO_PLUS, SkyConfig(sky_engine="fluid", perspective="on"))
+        for _ in range(80):
+            sky.advance(0.4, wind=wind)
+            sky.render_cells()

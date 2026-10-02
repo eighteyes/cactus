@@ -1496,7 +1496,11 @@ def _project_composite(
             row_empty.append(True)
             continue
         z_by_pixel_row.append(z)
+        # A tiny negative `b + camera_x` modulo the width rounds to exactly
+        # `g_width` in floating point; wrap that to 0 or `x0` indexes past
+        # the row (IndexError once the wind pans the camera).
         xs = [(b + camera_x) % g_width for b in base_row]
+        xs = [x if x < g_width else 0.0 for x in xs]
         x0 = [int(x) for x in xs]
         tx = [x - i for x, i in zip(xs, x0)]
         x1 = [i + 1 if i + 1 < g_width else 0 for i in x0]
