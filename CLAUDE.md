@@ -742,6 +742,15 @@ scope.
   when the palette or a tone/haze lever changes. Both are exact:
   `World._perf_cache = False` / `sky.COLOUR_MEMO = False` render the
   original path, and `tests/test_field.py` compares the two frame by frame.
+- numpy (cactus's one heavy dependency) runs the sky's hot path:
+  `PuffSky.composite` (`_composite_np`, patches/windows baked as float64
+  arrays) and `downsample` over arrays (`_downsample_np`, owners as
+  `_OWNER_NAMES` indices). float64 throughout, so every frame is
+  cell-identical to the pure-Python reference behind `sky.NUMPY = False`;
+  only tests flip it (`test_numpy_render_matches_the_pure_python_reference`,
+  every engine, 40 frames, two sizes). Texture converts its list canvas
+  once before `downsample`; fluid stays on lists, where converting measured
+  slower. New sky render code keeps both paths and the exactness test.
 - TUI reload and rail rebuild are serialized under one `asyncio.Lock`
   (`CactusApp._reload_lock`): `_reload`, `_advance_after`, and every
   `_rebuild_rail_locked` call run inside it, and nothing mutates `#rail-list`

@@ -53,9 +53,12 @@ Responsibilities:
   pair, then shifted toward `palette.haze` by that grid's fixed depth and
   the cell's own height (`atmospheric_colour`, shared with a bird's colour
   at its own row).
-- Stay pure Python (no numpy) and free of Textual or store imports; `field.py`
-  is the only caller, and it duck-types `palette` (no import of its type
-  here, to avoid a cycle).
+- Stay free of Textual or store imports; `field.py` is the only caller,
+  and it duck-types `palette` (no import of its type here, to avoid a
+  cycle). numpy runs the hot path — `PuffSky.composite` and `downsample`
+  over float64 arrays (`_composite_np`, `_downsample_np`) — and `NUMPY =
+  False` selects the pure-Python reference they match cell for cell; only
+  tests flip it.
 - Perf (v6f, q384 "horrible, sucks up a ton of cpu"): each `Air` tracks which
   rows are `active` (carry density, or sit beside a row that does) and skips
   advect/diffuse/react/clamp on the rest; `_project_composite` skips a grid's
@@ -107,6 +110,8 @@ import random
 import tomllib
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
+
+import numpy as np
 
 PX_X = 2  # pixels per terminal cell, horizontal (braille dot geometry)
 PX_Y = 4  # pixels per terminal cell, vertical
@@ -1193,6 +1198,122 @@ def _blank_row(cols: int) -> list[tuple[str, None]]:
     return row
 
 
+# ---- numpy path ---------------------------------------------------------
+#
+# `NUMPY` picks the vectorised composite/downsample; off, every function
+# below falls back to the pure-Python reference it was checked against cell
+# for cell (tests flip it, nothing else should). Arrays are float64 so every
+# add, multiply, compare and `**` lands on the same double the reference
+# computes; owners travel as `_OWNER_NAMES` indices, never strings.
+
+NUMPY = True
+_OWNER_NAMES = ("near", "mid", "far", "")
+_OWNER_INDEX = {name: i for i, name in enumerate(_OWNER_NAMES)}
+_NO_OWNER = _OWNER_INDEX[""]
+# Every sky glyph is braille (v8): an offset 0-255 from U+2800, a speck's
+# single dot included; `_BLANK_GLYPH` (256) is the blank cell.
+_GLYPH_CHARS = tuple(chr(0x2800 | i) for i in range(256)) + (" ",)
+_BLANK_GLYPH = 256
+_SPECK_CODES = np.array([ord(g) - 0x2800 for g in _SPECK_GLYPHS], dtype=np.int64)
+_CORE_CODE = ord(CORE_GLYPH) - 0x2800
+_DITHER_TAPS = tuple(
+    (row, col, _BRAILLE_BIT[(col, row)], _BAYER_THRESHOLD[row][col])
+    for row in range(PX_Y) for col in range(PX_X)
+)
+_HASH_GRIDS: dict[tuple[int, int], np.ndarray] = {}
+
+
+def _hash_grid(sky_rows: int, cols: int) -> np.ndarray:
+    """`_cell_hash` of every cell's top-left pixel, cached per size."""
+    grid = _HASH_GRIDS.get((sky_rows, cols))
+    if grid is None:
+        grid = _HASH_GRIDS[(sky_rows, cols)] = np.array(
+            [[_cell_hash(c * PX_X, r * PX_Y) for c in range(cols)] for r in range(sky_rows)], dtype=np.int64,
+        ).reshape(sky_rows, cols)
+    return grid
+
+
+def _as_rows(a):
+    """A patch/window as plain nested lists, for the pure-Python path."""
+    return a.tolist() if isinstance(a, np.ndarray) else a
+
+
+def _canvas_arrays(density, owner) -> tuple[np.ndarray, np.ndarray]:
+    """`downsample`'s `density`/`owner` as a float64 array and an
+    `_OWNER_NAMES` index array, converting list canvases once."""
+    d = density if isinstance(density, np.ndarray) else np.array(density, dtype=np.float64)
+    if isinstance(owner, np.ndarray):
+        return d, owner
+    names = np.array(owner, dtype=str)
+    o = np.full(names.shape, _NO_OWNER, dtype=np.int8)
+    for i, name in enumerate(_OWNER_NAMES[:_NO_OWNER]):
+        o[names == name] = i
+    return d, o
+
+
+def _downsample_np(
+    density: np.ndarray, owner: np.ndarray, palette, sky_rows: int, cols: int, cfg: SkyConfig,
+    z_by_row: list[float] | None, row_empty,
+) -> list[list[tuple[str, str | None]]]:
+    """`downsample` over arrays: every cell's glyph and colour key in a
+    handful of block-shaped array ops, then one dict lookup per cell to
+    build the same `(glyph, colour)` rows the reference returns."""
+    blocks = density[: sky_rows * PX_Y, : cols * PX_X].reshape(sky_rows, PX_Y, cols, PX_X)
+    # Summed in the reference's own order (row-major over the block), so
+    # the mean is the same double.
+    total = blocks[:, 0, :, 0]
+    for row, col, _, _ in _DITHER_TAPS[1:]:
+        total = total + blocks[:, row, :, col]
+    m = total / 8.0
+    peak = blocks.max(axis=(1, 3))
+    bits = np.zeros((sky_rows, cols), dtype=np.int64)
+    for row, col, bit, threshold in _DITHER_TAPS:
+        bits |= (blocks[:, row, :, col] > threshold).astype(np.int64) << bit
+    h = _hash_grid(sky_rows, cols)
+    core = (m >= cfg.core_mean) | ((m >= cfg.semi_core_mean) & (h % 2 == 0))
+    glyph = np.where(core, _CORE_CODE, bits)
+    low = m < cfg.blank_mean
+    glyph = np.where(low, _SPECK_CODES[h % len(_SPECK_CODES)], glyph)
+    glyph = np.where(low & ((peak <= DENSITY_FLOOR) | (h % 3 != 0)), _BLANK_GLYPH, glyph)
+
+    owner_blocks = owner[: sky_rows * PX_Y, : cols * PX_X].reshape(sky_rows, PX_Y, cols, PX_X)
+    counts = np.stack([(owner_blocks == i).sum(axis=(1, 3)) for i in range(_NO_OWNER)])
+    # argmax takes the first of equal counts: ties go to the nearest grid.
+    own = np.where(counts.sum(axis=0) == 0, _NO_OWNER, counts.argmax(axis=0))
+    step = np.rint(np.clip(m ** cfg.tone_exp, 0.0, 1.0) * (TONE_STEPS - 1)).astype(np.int64)
+    span = len(_OWNER_NAMES) * TONE_STEPS
+    keys = (glyph * span + own * TONE_STEPS + step).tolist()
+    m_rows = m.tolist()
+
+    memo = _colour_memo(cfg, palette)
+    blank_key_floor = _BLANK_GLYPH * span
+    out: list[list[tuple[str, str | None]]] = []
+    for row_i in range(sky_rows):
+        y0 = row_i * PX_Y
+        if row_empty is not None and all(row_empty[y0: y0 + PX_Y]):
+            out.append(_blank_row(cols))
+            continue
+        row_from_bottom = (sky_rows - 1) - row_i
+        z_for_row = z_by_row[row_i] if z_by_row is not None else None
+        z_far_for_row = cfg.z_far if z_for_row is not None else None
+        key_row = keys[row_i]
+        # One representative mean per distinct key — every cell sharing a
+        # key shares its glyph, owner and tone step, hence its colour.
+        cells: dict[int, tuple[str, str | None]] = {}
+        for k, mv in dict(zip(key_row, m_rows[row_i])).items():
+            if k >= blank_key_floor:
+                cells[k] = (" ", None)
+                continue
+            g, rest = divmod(k, span)
+            colour = _cell_colour_memo(
+                memo, cfg, palette, _OWNER_NAMES[rest // TONE_STEPS], mv,
+                row_from_bottom, sky_rows, z_for_row, z_far_for_row,
+            )
+            cells[k] = (_GLYPH_CHARS[g], colour)
+        out.append(list(map(cells.__getitem__, key_row)))
+    return out
+
+
 def downsample(
     grids: dict[str, Air], palette, sky_rows: int, cols: int, cfg: SkyConfig, *,
     density: list[list[float]] | None = None,
@@ -1214,11 +1335,24 @@ def downsample(
     whole `PX_Y`-pixel block is empty skip the per-cell loop outright — a
     fully empty block's mean is always 0 and its peak never clears
     `DENSITY_FLOOR`, so every cell in it would render blank anyway.
+
+    `density`/`owner` may also be arrays (`_canvas_arrays`' shape, what
+    `PuffSky.composite` builds); with `NUMPY` on, arrays run through
+    `_downsample_np`. List canvases stay on the reference path: converting
+    the fluid engine's lists costs more than it saves (measured), so only
+    `TextureSky`, where it pays, converts before calling.
     """
     if density is None or owner is None:
         density, owner = _composite(grids)
         density = density[::-1]  # Air is bottom-up; render top-down
         owner = owner[::-1]
+    if NUMPY and isinstance(density, np.ndarray):
+        density, owner = _canvas_arrays(density, owner)
+        return _downsample_np(density, owner, palette, sky_rows, cols, cfg, z_by_row, row_empty)
+    if isinstance(density, np.ndarray):
+        density = density.tolist()
+    if isinstance(owner, np.ndarray):
+        owner = [[_OWNER_NAMES[i] for i in row] for row in owner.tolist()]
     memo = _colour_memo(cfg, palette)
     out: list[list[tuple[str, str | None]]] = []
     for row_i in range(sky_rows):
@@ -1771,6 +1905,8 @@ class TextureSky:
         if self.cols <= 0 or self.sky_rows <= 0:
             return []
         density, owner = _texture_composite(self.layers, self.height_px, self.width_px)
+        if NUMPY:
+            density, owner = _canvas_arrays(density, owner)  # one conversion beats the per-cell loop here
         return downsample(self.layers, self.palette, self.sky_rows, self.cols, self.config, density=density, owner=owner)
 
 
@@ -1862,7 +1998,7 @@ def _plateau(n: int, margin: float = 0.3) -> list[float]:
     return out
 
 
-def _puff_patch(rng: random.Random, w: int, h: int, p: dict, *, periodic: bool = False) -> tuple[list[list[float]], list[list[float]]]:
+def _puff_patch(rng: random.Random, w: int, h: int, p: dict, *, periodic: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """One cloud's raw fbm patch, `h` rows of `w` in [0, 1], plus its edge
     window: a raised cosine in both axes (a `bands` lane, `periodic`, gets
     `_lane_window`'s wandering fringe instead), applied to the *thresholded*
@@ -1881,14 +2017,19 @@ def _puff_patch(rng: random.Random, w: int, h: int, p: dict, *, periodic: bool =
         noise = _TexNoise(rng, lw, lh)
         sx = w / lw
         raw = [[noise.fbm(x / sx, y / sy, octaves) for x in range(w)] for y in range(h)]
-        return raw, _lane_window(rng, w, h, p.get("edge", 0.0), lw)
+        return _patch_array(raw, w, h), _lane_window(rng, w, h, p.get("edge", 0.0), lw)
     ex, ey = _plateau(w), _plateau(h)
     raw = [[noise.fbm(x / sx, y / sy, octaves) for x in range(w)] for y in range(h)]
     win = [[ex[x] * ey[y] for x in range(w)] for y in range(h)]
-    return raw, win
+    return _patch_array(raw, w, h), _patch_array(win, w, h)
 
 
-def _lane_window(rng: random.Random, w: int, h: int, edge: float, lw: int) -> list[list[float]]:
+def _patch_array(rows: list[list[float]], w: int, h: int) -> np.ndarray:
+    """A baked patch or window as the `h x w` float64 array a `_Puff` keeps."""
+    return np.array(rows, dtype=np.float64).reshape(h, w)
+
+
+def _lane_window(rng: random.Random, w: int, h: int, edge: float, lw: int) -> np.ndarray:
     """A `bands` lane's 2D edge window: a solid body whose top and bottom
     fringes wander along the band. Per column, each edge draws its own
     fringe depth `edge * h/2 * (0.4 + 0.6 n(x))` from a periodic 1D noise
@@ -1904,7 +2045,7 @@ def _lane_window(rng: random.Random, w: int, h: int, edge: float, lw: int) -> li
         db = max(half * (0.4 + 0.6 * bottom.sample(x / step, 1.0)), 1.0)
         for y in range(h):
             win[y][x] = min(_smoothstep((y + 0.5) / dt), _smoothstep((h - y - 0.5) / db))
-    return win
+    return _patch_array(win, w, h)
 
 
 def _altitude_exp(altitude: float) -> float:
@@ -2007,15 +2148,22 @@ class _Puff:
         return 0.5 - 0.5 * math.cos(2.0 * math.pi * self.age / self.p["morph"])
 
 
-def _dent_patch(patch: list[list[float]], c0: int, r0: int, radius: int, strength: float) -> None:
+def _dent_patch(patch: np.ndarray | list[list[float]], c0: int, r0: int, radius: int, strength: float) -> None:
     """Push raw patch values outward from `(c0, r0)`: each pixel within
     `radius` gives `strength * (1 - d / radius)` of its value to the pixel
     `radius` further out along the same direction (clamped inside the
     patch; the centre pixel gives sideways, to the right). Moves values,
-    never conjures them, so the cloud's total raw mass holds."""
+    never conjures them, so the cloud's total raw mass holds. An array
+    patch is dented through a list copy (scalar indexing an array is slow)
+    and written back in place."""
     h = len(patch)
     w = len(patch[0]) if h else 0
     if not h or not w:
+        return
+    if isinstance(patch, np.ndarray):
+        rows = patch.tolist()
+        _dent_patch(rows, c0, r0, radius, strength)
+        patch[...] = rows
         return
     moves: list[tuple[int, int, int, int, float]] = []
     for dr in range(-radius, radius + 1):
@@ -2254,7 +2402,13 @@ class PuffSky:
         `_composite` and `_texture_composite` use. A cloud sits at its
         fractional `x`: each screen pixel mixes the two patch columns either
         side of it by `frac(x)`, so a slow drift glides instead of stepping
-        a whole pixel at a time."""
+        a whole pixel at a time.
+
+        With `NUMPY` on this returns arrays (`_composite_np`: float64
+        density, `_OWNER_NAMES` index owner, bool row flags); off, the
+        pure-Python reference below, plain lists."""
+        if NUMPY:
+            return self._composite_np()
         W, H = self.width_px, self.height_px
         density = [[0.0] * W for _ in range(H)]
         owner = [[""] * W for _ in range(H)]
@@ -2274,7 +2428,7 @@ class PuffSky:
                 # columns. A cloud gains one trailing column, its rim fading
                 # out against nothing.
                 span = pw if puff.lane is not None else pw + 1
-                pa, pb, win = puff.patch_a, puff.patch_b, puff.window
+                pa, pb, win = _as_rows(puff.patch_a), _as_rows(puff.patch_b), _as_rows(puff.window)
                 for r in range(puff.h):
                     y = puff.y0 + r
                     if y >= H:
@@ -2305,6 +2459,57 @@ class PuffSky:
                     if touched:
                         row_empty[y] = False
         return density, owner, row_empty
+
+    def _composite_np(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """`composite` over arrays, the same doubles cell for cell. Within a
+        band, overlapping clouds keep the larger density (the reference's
+        `d > drow[x]`), so each band reduces to a running `np.maximum` of
+        its clouds' thresholded patches; a band's nonzero pixels then
+        overwrite whatever farther band owned them."""
+        W, H = self.width_px, self.height_px
+        density = np.zeros((H, W), dtype=np.float64)
+        owner = np.full((H, W), _NO_OWNER, dtype=np.int8)
+        for band in reversed(GRID_ORDER):
+            stamp = None
+            for puff in self.puffs[band]:
+                cut = puff.cutoff()
+                if cut >= 1.0:
+                    continue
+                rows = min(puff.h, H - puff.y0)
+                if rows <= 0:
+                    continue
+                blend = puff.blend()
+                x0 = int(puff.x)
+                f = puff.x - x0
+                g = 1.0 - f
+                pa, pb = puff.patch_a[:rows], puff.patch_b[:rows]
+                raw = pa + (pb - pa) * blend
+                d = (raw - cut) * puff.p["gain"]
+                lit = np.where(d > 1.0, 1.0, np.power(np.maximum(d, 0.0), 0.7)) * puff.window[:rows]
+                lit = np.where(d > 0.0, lit, 0.0)
+                if puff.lane is not None:
+                    # A lane wraps: pixel x0 reads between its last and first columns.
+                    mixed = lit * g + np.roll(lit, 1, axis=1) * f
+                else:
+                    # A cloud gains one trailing column, its rim fading out against nothing.
+                    zero = np.zeros((rows, 1))
+                    mixed = np.hstack((lit, zero)) * g + np.hstack((zero, lit)) * f
+                mixed = np.where(mixed > DENSITY_FLOOR, mixed, 0.0)
+                if stamp is None:
+                    stamp = np.zeros((H, W), dtype=np.float64)
+                y0, span = puff.y0, mixed.shape[1]
+                x0 %= W
+                head = min(span, W - x0)
+                target = stamp[y0: y0 + rows, x0: x0 + head]
+                np.maximum(target, mixed[:, :head], out=target)
+                if span > head:
+                    target = stamp[y0: y0 + rows, : span - head]
+                    np.maximum(target, mixed[:, head:], out=target)
+            if stamp is not None:
+                hit = stamp > 0.0
+                density[hit] = stamp[hit]
+                owner[hit] = _OWNER_INDEX[band]
+        return density, owner, ~(density > 0.0).any(axis=1)
 
     def render_cells(self) -> list[list[tuple[str, str | None]]]:
         if self.cols <= 0 or self.sky_rows <= 0:

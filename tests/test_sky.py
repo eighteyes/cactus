@@ -629,3 +629,47 @@ def test_texture_scatter_is_a_harmless_no_op() -> None:
     sky.scatter(20, 20)
     assert sky.render_cells() == before
 
+
+
+# ---- numpy path: exact against the pure-Python reference ----------------
+
+_EXACT_CASES = {
+    "puffs-bloom-cc8": dict(sky_engine="puffs", cloud_style="bloom", cloud_count=8.0),
+    "puffs-bands": dict(sky_engine="puffs", cloud_style="bands", band_evolve=3.0),
+    "puffs-drift-scatter": dict(sky_engine="puffs", cloud_style="drift", cloud_count=4.0),
+    "fluid-perspective": dict(sky_engine="fluid", perspective="on"),
+    "fluid-flat": dict(sky_engine="fluid", perspective="off"),
+    "texture": dict(sky_engine="texture"),
+}
+
+
+@pytest.mark.parametrize("size", [(116, 16), (200, 50)], ids=lambda s: f"{s[0]}x{s[1]}")
+@pytest.mark.parametrize("case", list(_EXACT_CASES))
+def test_numpy_render_matches_the_pure_python_reference(case: str, size: tuple[int, int], monkeypatch) -> None:
+    """`sky.NUMPY` is a speed path only: every frame's `(glyph, colour)`
+    grid equals the pure-Python reference's, cell for cell, across 40
+    seeded frames per engine (fluid after a warm-up, so its automaton has
+    weather to draw) — with seeds scattered through the clouds, so patches
+    mutate between frames too."""
+    from cactus import sky as sky_mod
+
+    cols, rows = size
+    sky = sky_mod.make_sky(cols, rows, random.Random(11), MONO_PLUS, SkyConfig(**_EXACT_CASES[case]))
+    if case.startswith("fluid"):
+        for _ in range(140):  # the automaton starts clear; let weather form first
+            sky.advance(0.4)
+    rng = random.Random(5)
+    drawn = 0
+    for frame in range(40):
+        # wind 0: a panning camera trips a pre-existing `_project_composite`
+        # edge (`(b + camera_x) % width` rounding up to `width`), on either path.
+        sky.advance(0.4, wind=0.0)
+        if case.endswith("scatter") or frame % 5 == 0:
+            sky.scatter(rng.uniform(0, cols * 2), rng.uniform(0, rows * 4), radius=5.0, strength=0.6)
+        monkeypatch.setattr(sky_mod, "NUMPY", False)
+        want = sky.render_cells()
+        monkeypatch.setattr(sky_mod, "NUMPY", True)
+        got = sky.render_cells()
+        assert got == want, f"{case} frame {frame} differs"
+        drawn += sum(cell[1] is not None for row in got for cell in row)
+    assert drawn > 0, f"{case} drew nothing, so the comparison proved nothing"
