@@ -1391,3 +1391,65 @@ def test_landing_floaters_and_resize_rebuild_the_pile_canvas() -> None:
     resized = world._pile_splat_canvas()
     assert resized[0] != swept[0]
     assert resized == world._build_pile_splat_canvas()
+
+
+# ---- pile age ramp (pile_shades / pile_age_span) ---------------------------
+
+def _ramp_world(**levers) -> World:
+    return World(cols=10, rows=8, rng=random.Random(1), sky_config=SkyConfig(sky_engine="texture", **levers))
+
+
+def _hex(c: str) -> tuple[int, int, int]:
+    return int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+
+
+def test_age_ramp_endpoints_equal_the_anchors_and_clamp_past_span() -> None:
+    world = _ramp_world()
+    span = world.sky.config.pile_age_span
+    assert world._age_colour(0) == MONO_PLUS.cactus_new
+    assert world._age_colour(span) == MONO_PLUS.cactus_old
+    assert world._age_colour(span * 5) == MONO_PLUS.cactus_old
+
+
+def test_age_ramp_darkens_monotonically_with_age() -> None:
+    world = _ramp_world()
+    greens = [_hex(world._age_colour(a))[1] for a in range(0, 101)]
+    assert greens == sorted(greens, reverse=True)
+    assert greens[0] > greens[-1]
+
+
+def test_three_shades_are_exactly_the_three_anchors() -> None:
+    world = _ramp_world(pile_shades=3)
+    seen = {world._age_colour(a) for a in range(0, 150)}
+    assert seen == {MONO_PLUS.cactus_new, MONO_PLUS.cactus_mid, MONO_PLUS.cactus_old}
+
+
+def test_many_shades_give_more_than_three_colours() -> None:
+    world = _ramp_world(pile_shades=32)
+    assert len({world._age_colour(a) for a in range(0, 101)}) > 3
+
+
+def test_age_span_scales_the_ramp_and_levers_redraw_the_pile() -> None:
+    world = _ramp_world(pile_age_span=200)
+    assert world._age_colour(100) != MONO_PLUS.cactus_old
+    assert world._age_colour(200) == MONO_PLUS.cactus_old
+    world.drop(4)
+    run_ticks(world, 900)
+    world.render()
+    before = world._static_memo[0]
+    world.sky.config.pile_shades = 5
+    world.render()
+    assert world._static_memo[0] != before
+
+
+def test_pile_levers_round_trip_through_sky_toml_and_show_on_the_t_page(tmp_path) -> None:
+    cfg = SkyConfig(pile_shades=7, pile_age_span=250)
+    path = tmp_path / "sky.toml"
+    cfg.dump(path)
+    text = path.read_text()
+    assert "pile_shades" in text and "pile_age_span" in text
+    loaded = SkyConfig.load(path)
+    assert (loaded.pile_shades, loaded.pile_age_span) == (7, 250)
+    for engine in ("fluid", "texture", "puffs"):
+        names = {f.name for f in sky_module.tuning_fields_for(SkyConfig(sky_engine=engine))}
+        assert {"pile_shades", "pile_age_span"} <= names

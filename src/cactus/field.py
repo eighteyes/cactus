@@ -372,6 +372,7 @@ class World:
     # key or the dict's identity changes. `_perf_cache = False` bypasses both
     # and renders through the original per-cell path (exactness tests).
     _perf_cache: bool = field(default=True, init=False)
+    _age_tint: dict[tuple, str] = field(default_factory=dict, init=False)
     _pile_memo: tuple | None = field(default=None, init=False)
     _static_memo: tuple | None = field(default=None, init=False)
 
@@ -1142,11 +1143,31 @@ class World:
         return self.drops - self.structure[cell]
 
     def _age_colour(self, age: int) -> str:
-        if age < CACTUS_NEW_MAX:
-            return self.palette.cactus_new
-        if age < CACTUS_MID_MAX:
-            return self.palette.cactus_mid
-        return self.palette.cactus_old
+        """A pile cell's colour: new -> mid -> old blended piecewise-linearly
+        over `[0, pile_age_span]` drops (mid at `CACTUS_NEW_MAX /
+        CACTUS_MID_MAX` of the span, the ramp's halfway), clamped past it and quantised to
+        `pile_shades` steps. Cached per (anchors, shades, span, step)."""
+        cfg = self.sky.config
+        shades, span = cfg.pile_shades, cfg.pile_age_span
+        # age fraction -> ramp position: the mid anchor (34% of the span) is
+        # the ramp's halfway point, so shades=3 gives exactly new/mid/old.
+        u = max(0, min(age, span)) / span
+        mid = CACTUS_NEW_MAX / CACTUS_MID_MAX
+        pos = u / mid * 0.5 if u <= mid else 0.5 + (u - mid) / (1 - mid) * 0.5
+        step = round(pos * (shades - 1))
+        pal = self.palette
+        key = (pal.cactus_new, pal.cactus_mid, pal.cactus_old, shades, span, step)
+        hit = self._age_tint.get(key)
+        if hit is None:
+            if len(self._age_tint) > 4096:
+                self._age_tint.clear()
+            t = step / (shades - 1)
+            if t <= 0.5:
+                hit = _lerp_hex(pal.cactus_new, pal.cactus_mid, t * 2)
+            else:
+                hit = _lerp_hex(pal.cactus_mid, pal.cactus_old, (t - 0.5) * 2)
+            self._age_tint[key] = hit
+        return hit
 
     def _bird_colour(self, cy: int, depth: float) -> str:
         """A bird's colour, atmospheric-shifted by its own flock's depth,
@@ -1454,6 +1475,7 @@ class World:
         key = (
             self.structure_version, len(self.structure), self.drops, self.cols, self.rows,
             self.sky.config.pile_style, self.palette,
+            self.sky.config.pile_shades, self.sky.config.pile_age_span,
         )
         memo = self._static_memo
         if memo is not None and memo[0] == key and memo[1] is self.structure:

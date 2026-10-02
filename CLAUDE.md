@@ -663,6 +663,15 @@ scope.
   `bird_rate` the spawns per second, `bird_max` how many flocks fly at once
   (0 grounds them). `FLOCK_SPAWN_P`/`FLOCK_MAX_ALIVE` are only the defaults'
   documentation now. The glyph set per depth stays `field.DEPTH_GLYPHS`.
+- Pile age ramp on `SkyConfig`: `pile_shades` (3..64, default 32) and
+  `pile_age_span` (10..1000 drops, default 100). `World._age_colour` blends
+  `cactus_new` -> `cactus_mid` -> `cactus_old` piecewise-linearly over
+  `[0, span]`, clamped past it, quantised to `shades` steps and cached per
+  (anchors, shades, span, step) in `_age_tint`. The mid anchor is the ramp's
+  halfway and sits at `CACTUS_NEW_MAX / CACTUS_MID_MAX` (34%) of the span, so
+  `shades = 3` is exactly three flat colours. The static pile memo's key
+  carries both levers, so a change redraws. Both always show on the T page
+  (pile panel).
 - Pile shape levers (v8) on `SkyConfig`, read off `World.sky.config` like
   `seed_wind`: `seed_mass` (`accrete`, a cloud pass adds a block via
   `_grow_clump`; `single`, the seed stays one block, charge still counts)
