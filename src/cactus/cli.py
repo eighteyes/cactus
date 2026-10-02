@@ -1291,6 +1291,97 @@ def cmd_garden(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     return EXIT_OK
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _decider_argv(backend: str, host: str, port: int) -> tuple[list[str], str | None]:
+    """(argv, missing): the server command, and an install hint when its
+    binary or modules are absent. CACTUS_DECIDER_CMD is a template over
+    {backend}, {host}, {port} and replaces the real command (tests)."""
+    import importlib.util
+    import shlex
+    import shutil
+
+    fields = {"backend": backend, "host": host, "port": port}
+    override = os.environ.get("CACTUS_DECIDER_CMD")
+    if override:
+        argv = [a.format(**fields) for a in shlex.split(override)]
+        return argv, None if argv and shutil.which(argv[0]) else f"{argv[0] if argv else '(empty)'} not found"
+    if backend == "clef":
+        argv = [sys.executable, "-m", "cactus.clef_serve", "--host", host, "--port", str(port)]
+        have = all(importlib.util.find_spec(m) for m in ("torch", "transformers", "huggingface_hub"))
+        return argv, None if have else "pip install torch transformers huggingface_hub pillow"
+    argv = ["strands-decider", "serve", "StrandsAgents/strands-decider-2B-hobson-v19",
+            "--host", host, "--port", str(port)]
+    return argv, None if shutil.which(argv[0]) else "pip install strands-decider"
+
+
+def cmd_decider(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Start, check or stop the local model server behind the auto-decider.
+    Never installs anything; ignores `project`/`cwd`."""
+    import signal
+    import subprocess
+    from urllib.parse import urlsplit
+
+    from . import decide
+
+    backend = args.backend or decide.resolve_backend()
+    url = decide.base_url(backend)
+    pid_path = store.path.parent / f"decider-{backend}.pid"
+    log_path = store.path.parent / f"decider-{backend}.log"
+    try:
+        pid = int(pid_path.read_text().strip())
+    except (OSError, ValueError):
+        pid = None
+    if pid is not None and not _pid_alive(pid):
+        pid = None
+
+    def report(up: bool, note: str = "") -> None:
+        if args.json:
+            print(json.dumps({"backend": backend, "url": url, "up": up, "pid": pid,
+                              "log": str(log_path), "note": note}))
+        else:
+            print(f"{backend}  {url}  {'up' if up else 'down'}  pid {pid or '-'}  log {log_path}"
+                  + (f"  {note}" if note else ""))
+
+    action = args.decider_action
+    if action == "status":
+        up = decide.health(backend)
+        report(up)
+        return EXIT_OK if up else EXIT_EMPTY
+    if action == "stop":
+        if pid is None:
+            pid_path.unlink(missing_ok=True)
+            print(f"cactus: {backend} decider not running", file=sys.stderr)
+            return EXIT_EMPTY
+        os.kill(pid, signal.SIGTERM)
+        pid_path.unlink(missing_ok=True)
+        report(False, "stopped")
+        return EXIT_OK
+    if decide.health(backend):
+        report(True, "already running")
+        return EXIT_OK
+    parts = urlsplit(url)
+    argv, missing = _decider_argv(backend, parts.hostname or "127.0.0.1", parts.port or 8000)
+    if missing:
+        print(f"cactus: cannot start {backend} decider; install with: {missing}", file=sys.stderr)
+        return EXIT_ERROR
+    with open(log_path, "ab") as log:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                start_new_session=True)
+    pid_path.write_text(f"{proc.pid}\n")
+    pid = proc.pid
+    report(False, "started")
+    return EXIT_OK
+
+
 # ---- parser ---------------------------------------------------------------
 
 
@@ -1568,6 +1659,13 @@ def build_parser() -> argparse.ArgumentParser:
     gd = verb("garden", help="inspect or clear the shared landed-pile file")
     gd.add_argument("--clear", action="store_true", help="remove the garden file")
     gd.set_defaults(fn=cmd_garden)
+
+    dc = verb("decider", help="start, check or stop the local auto-decider model server")
+    dc.add_argument("decider_action", nargs="?", choices=["start", "status", "stop"],
+                    default="status")
+    dc.add_argument("--backend", choices=["strands", "clef"],
+                    help="which server (default: CACTUS_DECIDER_BACKEND, else strands)")
+    dc.set_defaults(fn=cmd_decider)
 
     return p
 

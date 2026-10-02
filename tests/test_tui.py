@@ -2676,3 +2676,42 @@ async def test_garden_defaults_off_and_settings_7_toggles_it(
         await pilot.pause()
         assert app.tui_settings["field"] is True
         assert "(~)    on" in app._settings_text()
+
+
+async def test_decider_backend_setting_cycles_persists_and_resets_wait(store: Store, project: str) -> None:
+    """Settings `8` cycles strands -> clef -> strands, saves it, and drops the
+    in-memory decider-down wait set; a fresh app reads the saved value back."""
+    app = CactusApp(store, project=project)
+    async with app.run_test(size=(200, 40)) as pilot:
+        await _settle(pilot)
+        assert app.tui_settings["decider_backend"] == "strands"
+        app._auto_wait.add(999)
+        await pilot.press("?")
+        await pilot.pause()
+        await pilot.press("8")
+        await pilot.pause()
+        assert app.tui_settings["decider_backend"] == "clef"
+        assert not app._auto_wait
+        assert "clef" in app._settings_text()
+        await pilot.press("8")
+        await pilot.pause()
+        assert app.tui_settings["decider_backend"] == "strands"
+        await pilot.press("8")
+        await pilot.pause()
+
+    second = CactusApp(store, project=project)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        assert second.tui_settings["decider_backend"] == "clef"
+
+
+def test_decider_backend_setting_validated_on_load(tmp_path, monkeypatch) -> None:
+    from cactus.tui import _load_tui_settings, _tui_settings_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = _tui_settings_path()
+    path.parent.mkdir(parents=True)
+    path.write_text('{"decider_backend": "bogus"}')
+    assert _load_tui_settings()["decider_backend"] == "strands"
+    path.write_text('{"decider_backend": "clef"}')
+    assert _load_tui_settings()["decider_backend"] == "clef"

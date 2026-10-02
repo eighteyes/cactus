@@ -121,3 +121,66 @@ def test_unreachable(monkeypatch):
 
 def test_available_true(stub):
     assert decide.available() is True
+
+
+# ---- backends ---------------------------------------------------------------
+
+
+def _clef_reply(probs: dict[str, float], **extra) -> bytes:
+    return json.dumps({"answers": {"q": {"probabilities": probs, **extra}}}).encode()
+
+
+def test_clef_round_trip(stub, monkeypatch):
+    """Clef posts the SystemOne body plus its model name; the reply parses the same."""
+    monkeypatch.setenv("CACTUS_DECIDER_BACKEND", "clef")
+    stub["reply"] = _reply("b")
+    got = decide.propose("which?", "ctx", CHOICES)
+    assert got is not None and got.label == "b"
+    assert stub["seen"]["model"] == "clef-flash"
+    assert stub["seen"]["questions"]["q"]["criteria"] == {"a": "first", "b": "b"}
+
+
+def test_clef_confidence_is_max_probability(stub, monkeypatch):
+    monkeypatch.setenv("CACTUS_DECIDER_BACKEND", "clef")
+    stub["reply"] = _clef_reply({"a": 0.3, "b": 0.7})
+    assert decide.propose("t", None, CHOICES) == decide.Proposal("b", 0.7, {"a": 0.3, "b": 0.7})
+
+
+def test_strands_body_has_no_model_field(stub):
+    stub["reply"] = _reply("a")
+    decide.propose("t", None, CHOICES)
+    assert "model" not in stub["seen"]
+
+
+def test_backend_selection_order(monkeypatch):
+    monkeypatch.delenv("CACTUS_DECIDER_BACKEND", raising=False)
+    monkeypatch.delenv("CACTUS_DECIDER_URL", raising=False)
+    assert decide.resolve_backend() == "strands"
+    assert decide.resolve_backend("clef") == "clef"
+    assert decide.resolve_backend("nonsense") == "strands"
+    monkeypatch.setenv("CACTUS_DECIDER_BACKEND", "strands")
+    assert decide.resolve_backend("clef") == "strands"
+    monkeypatch.setenv("CACTUS_DECIDER_BACKEND", "bogus")
+    assert decide.resolve_backend("clef") == "clef"
+
+
+def test_backend_default_urls_and_url_override(monkeypatch):
+    monkeypatch.delenv("CACTUS_DECIDER_BACKEND", raising=False)
+    monkeypatch.delenv("CACTUS_DECIDER_URL", raising=False)
+    assert decide.base_url("strands") == "http://127.0.0.1:8000"
+    assert decide.base_url("clef") == "http://127.0.0.1:8001"
+    monkeypatch.setenv("CACTUS_DECIDER_URL", "http://127.0.0.1:9/")
+    assert decide.base_url("clef") == "http://127.0.0.1:9"
+
+
+def test_setting_picks_backend_when_env_unset(stub, monkeypatch):
+    monkeypatch.delenv("CACTUS_DECIDER_BACKEND", raising=False)
+    stub["reply"] = _reply("a")
+    assert decide.propose("t", None, CHOICES, backend="clef") is not None
+    assert stub["seen"]["model"] == "clef-flash"
+
+
+def test_override_short_circuits_backend(monkeypatch):
+    monkeypatch.setenv("CACTUS_DECIDE", "a:0.5")
+    assert decide.propose("t", None, CHOICES, backend="clef").label == "a"
+    assert decide.available(backend="clef") is True

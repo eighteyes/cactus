@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from conftest import needs_project_switch
 
 AGENT_A = "agent-a"
@@ -497,3 +498,84 @@ def test_version_flag_prints_package_version(cli):
     r = cli("--version")
     assert r.returncode == 0
     assert r.stdout.strip() == f"cactus {__version__}"
+
+
+# ---- decider ----------------------------------------------------------------
+
+_STUB_SERVER = '''\
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+'''
+
+
+@pytest.fixture
+def decider_env(tmp_path, monkeypatch):
+    """A free port, an inert stub server command, and the URL pointing at it."""
+    import socket
+    import sys
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    script = tmp_path / "stub_server.py"
+    script.write_text(_STUB_SERVER)
+    monkeypatch.setenv("CACTUS_DECIDER_URL", f"http://127.0.0.1:{port}")
+    monkeypatch.setenv("CACTUS_DECIDER_CMD", f"{sys.executable} {script} {{port}}")
+    monkeypatch.delenv("CACTUS_DECIDER_BACKEND", raising=False)
+    return tmp_path
+
+
+def _wait_up(cli, want_exit: int) -> None:
+    import time
+
+    for _ in range(50):
+        if cli("decider", "status").returncode == want_exit:
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"decider never reached status exit {want_exit}")
+
+
+def test_decider_start_status_stop(cli, decider_env):
+    assert cli("decider", "status").returncode == 3
+    assert cli("decider", "stop").returncode == 3
+    started = cli("decider", "start", "--json")
+    assert started.returncode == 0, started.stderr
+    info = json.loads(started.stdout)
+    assert info["backend"] == "strands" and info["pid"]
+    assert (decider_env / "decider-strands.pid").read_text().strip() == str(info["pid"])
+    try:
+        _wait_up(cli, 0)
+        status = json.loads(cli("decider", "status", "--json").stdout)
+        assert status["up"] is True and status["pid"] == info["pid"]
+        assert status["log"].endswith("decider-strands.log")
+        again = cli("decider", "start")
+        assert again.returncode == 0 and "already running" in again.stdout
+    finally:
+        stopped = cli("decider", "stop")
+    assert stopped.returncode == 0
+    assert not (decider_env / "decider-strands.pid").exists()
+    _wait_up(cli, 3)
+    assert cli("decider", "stop").returncode == 3
+
+
+def test_decider_start_missing_binary_refuses(cli, monkeypatch):
+    monkeypatch.delenv("CACTUS_DECIDER_CMD", raising=False)
+    monkeypatch.delenv("CACTUS_DECIDER_BACKEND", raising=False)
+    monkeypatch.setenv("CACTUS_DECIDER_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("PATH", "/nonexistent")
+    r = cli("decider", "start")
+    assert r.returncode == 1
+    assert "pip install strands-decider" in r.stderr

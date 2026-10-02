@@ -82,7 +82,9 @@ TUI_SETTINGS_DEFAULTS = {
     "orientation": "side", "figlet_header": False, "projects_pane": True,
     "field": False, "pile_only": False, "seed_release": "left",
     "keybar_align": "center", "keybar_order": "choices_first",
+    "decider_backend": "strands",
 }
+DECIDER_BACKENDS = ("strands", "clef")
 KEYBAR_ALIGNS = ("left", "center", "right")
 KEYBAR_ORDERS = ("choices_first", "choices_last")
 
@@ -115,6 +117,8 @@ def _load_tui_settings() -> dict[str, Any]:
         settings["keybar_align"] = data["keybar_align"]
     if isinstance(data, dict) and data.get("keybar_order") in KEYBAR_ORDERS:
         settings["keybar_order"] = data["keybar_order"]
+    if isinstance(data, dict) and data.get("decider_backend") in DECIDER_BACKENDS:
+        settings["decider_backend"] = data["decider_backend"]
     return settings
 
 
@@ -1148,6 +1152,7 @@ class CactusApp(App[int]):
         align = self.tui_settings["keybar_align"]
         order = "first" if self.tui_settings["keybar_order"] == "choices_first" else "last"
         garden = "on" if self.tui_settings["field"] else "off"
+        decider = self.tui_settings["decider_backend"]
         return "\n".join([
             "settings",
             "",
@@ -1158,6 +1163,7 @@ class CactusApp(App[int]):
             f"5  key bar        left / center / right           {align}",
             f"6  choice keys    1-9 before or after the rest    {order}",
             f"7  garden         sky strip under the card (~)    {garden}",
+            f"8  auto-decider   strands / clef (local server)   {decider}",
             f"f  Figlet project header (cybermedium)            {figlet}",
             "",
             "esc or ?  return to the inbox",
@@ -1702,6 +1708,18 @@ class CactusApp(App[int]):
         self._save_settings()
         self._render_settings()
 
+    def _cycle_decider_backend(self) -> None:
+        """Cycle `decider_backend` strands -> clef -> strands. Rows that
+        waited on a down decider retry against the new one; proposals
+        already stamped stay."""
+        i = DECIDER_BACKENDS.index(self.tui_settings["decider_backend"])
+        self.tui_settings["decider_backend"] = DECIDER_BACKENDS[(i + 1) % len(DECIDER_BACKENDS)]
+        self._auto_wait.clear()
+        self._auto_probe_at = 0.0
+        self._save_settings()
+        self._render_settings()
+        self._kick_auto()
+
     def _toggle_keybar_order(self) -> None:
         """Flip `keybar_order` between `choices_first` and `choices_last`
         and rebuild the bar, so `_keybar_x` follows the moved digits."""
@@ -1845,10 +1863,11 @@ class CactusApp(App[int]):
         """
         from . import decide, rank
 
+        backend = self.tui_settings["decider_backend"]
         outcome: tuple = ("skip",)
         try:
             if q is None:
-                outcome = ("up",) if decide.available() else ("down",)
+                outcome = ("up",) if decide.available(backend=backend) else ("down",)
             else:
                 choices = [(c.label, c.description or "") for c in q.choices]
                 ranked = rank.classify(q.text, q.context, choices)
@@ -1857,7 +1876,7 @@ class CactusApp(App[int]):
                 elif not ranked.gated:
                     outcome = ("held", ranked.reason())
                 else:
-                    prop = decide.propose(q.text, q.context, choices)
+                    prop = decide.propose(q.text, q.context, choices, backend=backend)
                     outcome = (
                         ("wait",) if prop is None
                         else ("pick", prop.label, prop.confidence, ranked.reason())
@@ -2918,6 +2937,8 @@ class CactusApp(App[int]):
             elif event.key == "7":
                 self.action_toggle_field()
                 self._render_settings()
+            elif event.key == "8":
+                self._cycle_decider_backend()
             elif event.key == "f":
                 self._toggle_figlet_header()
             else:

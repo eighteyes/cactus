@@ -792,3 +792,18 @@ scope.
   accepts the proposal through the same `_submit_answer`/`_confirm` path as
   the digit; `check_action` admits it only on an open row with `auto_pick`,
   `on_key` flashes otherwise, and the key bar lists `A auto`.
+- The auto-decider has two local pickers (`decide.BACKENDS`): `strands` and
+  `clef` (Cloudflare/clef-flash). Both take the SystemOne POST
+  `/v1/systemone`; clef adds `"model": "clef-flash"`, and a reply with
+  probabilities only takes the top one as `confidence`. Choice is
+  `CACTUS_DECIDER_BACKEND`, then the TUI `decider_backend` (settings `8`,
+  validated on load), then `strands`; `CACTUS_DECIDER_URL` moves either, and
+  `CACTUS_DECIDE` still short-circuits both. Changing the setting clears
+  `_auto_wait`; stamped proposals stay. The Workers AI route is absent on
+  purpose: it would send row text to Cloudflare. `cactus decider
+  [start|status|stop] [--backend B]` runs the server (`clef_serve.py` for
+  clef, which the model card documents no server for): pid and log beside the
+  database (`decider-B.pid/.log`), `start` refuses exit 1 with the install
+  command when the binary is missing and never installs, an up server exits
+  0, `status`/`stop` exit 3 when down. `CACTUS_DECIDER_CMD` templates the
+  launch command (`{backend}`, `{host}`, `{port}`) for tests.
