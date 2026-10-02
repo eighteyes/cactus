@@ -2715,3 +2715,107 @@ def test_decider_backend_setting_validated_on_load(tmp_path, monkeypatch) -> Non
     assert _load_tui_settings()["decider_backend"] == "strands"
     path.write_text('{"decider_backend": "clef"}')
     assert _load_tui_settings()["decider_backend"] == "clef"
+
+
+# ---- pin (the --here scope, toggled from the projects page) ----------------
+
+
+def _two_projects(store: Store, tmp_path: Path) -> tuple[str, str]:
+    a, b = tmp_path / "pa", tmp_path / "pb"
+    a.mkdir()
+    b.mkdir()
+    for p, text in ((a, "in-a"), (b, "in-b")):
+        store.ask(text, project=str(p), cwd=str(p), agent=AGENT, kind="text", act="ask")
+    return str(a), str(b)
+
+
+async def _pick_project(app: CactusApp, pilot, project: str) -> None:
+    if not app.projects_open:
+        await pilot.press("P")
+        await pilot.pause()
+    app.project_index = [r["project"] for r in app.project_rows].index(project)
+    app._render_projects()
+
+
+async def test_pin_scopes_rail_and_unpin_restores(store: Store, tmp_path: Path) -> None:
+    a, b = _two_projects(store, tmp_path)
+    app = CactusApp(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _pick_project(app, pilot, a)
+        await pilot.press("asterisk")
+        await pilot.pause()
+        assert app.scoped_project == a and app.current_project == a
+        assert {q.project for q in app.questions} == {a}
+        assert "pinned" in app.flash
+        assert "* " in app._projects_text()
+        await pilot.press("P")
+        await pilot.pause()
+        assert "pinned" in str(app.query_one("#project-head", Static).render())
+        await _pick_project(app, pilot, a)
+        await pilot.press("asterisk")
+        await pilot.pause()
+        assert app.scoped_project is None
+        assert app.tui_settings["pinned_project"] is None
+        assert len(app._live_projects()) == 2
+        assert "pinned" not in str(app.query_one("#project-head", Static).render())
+
+
+async def test_pin_moves_to_another_row(store: Store, tmp_path: Path) -> None:
+    a, b = _two_projects(store, tmp_path)
+    app = CactusApp(store, project=a)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _pick_project(app, pilot, b)
+        await pilot.press("asterisk")
+        await pilot.pause()
+        assert app.scoped_project == b
+        assert {q.project for q in app.questions} == {b}
+        assert "moved pin" in app.flash
+
+
+async def test_pin_persists_across_apps_and_explicit_project_wins(
+    store: Store, tmp_path: Path
+) -> None:
+    from cactus.tui import _load_tui_settings
+
+    a, b = _two_projects(store, tmp_path)
+    app = CactusApp(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _pick_project(app, pilot, b)
+        await pilot.press("asterisk")
+        await pilot.pause()
+    assert _load_tui_settings()["pinned_project"] == b
+
+    again = CactusApp(store)
+    assert again.scoped_project == b and again.current_project == b
+
+    explicit = CactusApp(store, project=a)
+    assert explicit.scoped_project == a
+    assert _load_tui_settings()["pinned_project"] == b  # not overwritten
+
+
+async def test_stale_pin_is_ignored(store: Store, tmp_path: Path) -> None:
+    from cactus.tui import _save_tui_settings, _load_tui_settings
+
+    _two_projects(store, tmp_path)
+    _save_tui_settings({**_load_tui_settings(), "pinned_project": str(tmp_path / "gone")})
+    app = CactusApp(store)
+    assert app.scoped_project is None
+
+
+async def test_brackets_do_not_rotate_while_pinned(store: Store, tmp_path: Path) -> None:
+    a, b = _two_projects(store, tmp_path)
+    app = CactusApp(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _pick_project(app, pilot, a)
+        await pilot.press("asterisk")
+        await pilot.press("P")
+        await pilot.pause()
+        assert not app.projects_open
+        await pilot.press("]")
+        await pilot.press("[")
+        await pilot.pause()
+        assert app.current_project == a

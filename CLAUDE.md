@@ -509,6 +509,18 @@ scope.
   second view. The verdict column is `_verdict_repr` on the latest answer,
   except a `cleared` row always reads `cleared` there regardless of what
   that last answer actually was.
+- Pin (q448/q449) is the `--here` scope toggled from the projects page:
+  `*` on the selected row sets `scoped_project` (and `current_project`) to
+  it, `*` on the pinned row clears it, `*` on another row moves it — no
+  second scoping mechanism, so `[ ]` don't rotate and the rail shows that
+  project only. Persisted as `tui_settings["pinned_project"]` (absolute
+  path or null). `CactusApp.__init__` applies a saved pin only when no
+  `project` argument came in (an explicit `--here` wins for that run and
+  never rewrites the saved pin) and only if the path is still in
+  `store.projects()`; a stale pin is ignored, not erased. While scoped the
+  header reads `pinned` in place of `[ ] switch`, the `P` page still lists
+  every project and marks the pinned row `*`, and `enter` on another row
+  flashes instead of switching. `pin_project` is gated to `projects_open`.
 - `p` on the projects page (`P`, q370-q372) pokes the selected project: one
   `poke.poke(webhook=False)` per distinct herdr `pane` on its
   `open`/`live`/`elaborate` rows (`Store.project_panes`), each carrying

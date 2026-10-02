@@ -82,7 +82,7 @@ TUI_SETTINGS_DEFAULTS = {
     "orientation": "side", "figlet_header": False, "projects_pane": True,
     "field": False, "pile_only": False, "seed_release": "left",
     "keybar_align": "center", "keybar_order": "choices_first",
-    "decider_backend": "strands",
+    "decider_backend": "strands", "pinned_project": None,
 }
 DECIDER_BACKENDS = ("strands", "clef")
 KEYBAR_ALIGNS = ("left", "center", "right")
@@ -119,6 +119,8 @@ def _load_tui_settings() -> dict[str, Any]:
         settings["keybar_order"] = data["keybar_order"]
     if isinstance(data, dict) and data.get("decider_backend") in DECIDER_BACKENDS:
         settings["decider_backend"] = data["decider_backend"]
+    if isinstance(data, dict) and isinstance(data.get("pinned_project"), str) and data["pinned_project"]:
+        settings["pinned_project"] = data["pinned_project"]
     return settings
 
 
@@ -845,6 +847,7 @@ class CactusApp(App[int]):
         Binding("]", "next_project", "NextProj", key_display="]"),
         Binding("P", "open_projects", "Projects"),
         Binding("a", "open_answers", "Answers"),
+        Binding("asterisk", "pin_project", "Pin", key_display="*", show=False),
         Binding("I", "ignore_project", "Ignore"),
         Binding("A", "activate_project", "Activate/auto"),
         Binding("u", "undo", "Undo", show=False),
@@ -903,6 +906,12 @@ class CactusApp(App[int]):
         self.run_projects: dict[str, str] = {}
         self.run_state = {}
         self.tui_settings = _load_tui_settings()
+        # A saved pin is the `--here` scope applied from settings: it fills
+        # `scoped_project` only when no explicit project came in, and only if
+        # that project still exists (a stale pin is ignored, not erased).
+        pin = self.tui_settings.get("pinned_project")
+        if project is None and pin and any(r["project"] == pin for r in store.projects()):
+            self.scoped_project = self.current_project = pin
         self.settings_open = False
         self.projects_open = False
         self.project_rows: list[dict[str, Any]] = []
@@ -1189,8 +1198,9 @@ class CactusApp(App[int]):
             if row["answered_count"]:
                 counts += f" · {row['answered_count']} answered"
             age = f"  {_relative_age(row['last_activity'])}" if row["last_activity"] else ""
-            lines.append(f"{marker} {project_label(row['project'])}  {state}  {counts}{age}")
-        lines.extend(["", "j/k or ↑/↓ move   enter open   I ignore   A activate   p poke", "esc or P  return to inbox"])
+            pin = " *" if row["project"] == self.scoped_project else ""
+            lines.append(f"{marker}{pin} {project_label(row['project'])}  {state}  {counts}{age}")
+        lines.extend(["", "j/k or ↑/↓ move   enter open   * pin   I ignore   A activate   p poke", "esc or P  return to inbox"])
         return "\n".join(lines)
 
     def _render_projects(self) -> None:
@@ -1649,6 +1659,30 @@ class CactusApp(App[int]):
         self._render_projects()
         await self._reload(force=True)
 
+    async def action_pin_project(self) -> None:
+        """`*` on the projects page: pin the inbox to the selected project (the
+        `--here` scope, `scoped_project`), unpin if it is already the pin, or
+        move the pin. Persisted in `tui_settings["pinned_project"]`."""
+        if not self.projects_open:
+            return
+        row = self._selected_project_row()
+        if row is None:
+            return
+        label = project_label(row["project"])
+        if self.scoped_project == row["project"]:
+            self.scoped_project = None
+            self.tui_settings["pinned_project"] = None
+            self.flash = f"unpinned {label} — all projects"
+        else:
+            moved = self.scoped_project is not None
+            self.scoped_project = self.current_project = row["project"]
+            self.tui_settings["pinned_project"] = row["project"]
+            self.focused_key = None
+            self.flash = f"{'moved pin to' if moved else 'pinned'} {label}"
+        self._save_settings()
+        self._render_projects()
+        await self._reload(force=True)
+
     async def action_ignore_project(self) -> None:
         if self.projects_open:
             await self._set_selected_project_enabled(False)
@@ -1950,7 +1984,8 @@ class CactusApp(App[int]):
         live_count = row["live_count"] if row else 0
         label = project_label(self.current_project)
         others = len(self._live_projects())
-        switch = "" if self.scoped_project is not None or others < 2 else "  [ ] switch"
+        switch = "  pinned" if self.scoped_project is not None else (
+            "" if others < 2 else "  [ ] switch")
         counts = f"{open_count} open"
         if live_count:
             counts += f" · {live_count} live"
@@ -2227,7 +2262,7 @@ class CactusApp(App[int]):
             return action in (
                 "open_projects", "open_settings", "open_answers",
                 "focus_next", "focus_prev", "submit",
-                "ignore_project", "activate_project", "poke", "quit_app",
+                "ignore_project", "activate_project", "pin_project", "poke", "quit_app",
             )
         if self.answers_open:
             return action in (
@@ -2235,8 +2270,10 @@ class CactusApp(App[int]):
                 "focus_next", "focus_prev", "submit",
                 "prev_project", "next_project", "quit_app",
             )
+        if action == "pin_project":
+            return False  # projects page only; that branch returned above
         if self.free_text_mode or self.elaborating:
-            if action in ("open_projects", "ignore_project", "activate_project", "open_answers"):
+            if action in ("open_projects", "ignore_project", "activate_project", "open_answers", "pin_project"):
                 return False
         if action in ("refresh_view", "quit_app", "open_settings", "open_answers", "open_tuning"):
             return True
@@ -3404,6 +3441,10 @@ class CactusApp(App[int]):
         if self.projects_open:
             row = self._selected_project_row()
             if row is None:
+                return
+            if self.scoped_project is not None and row["project"] != self.scoped_project:
+                self.flash = f"pinned to {project_label(self.scoped_project)} — * moves the pin"
+                self._render_projects()
                 return
             self.current_project = row["project"]
             self.focused_key = None
