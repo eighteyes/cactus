@@ -579,3 +579,112 @@ def test_decider_start_missing_binary_refuses(cli, monkeypatch):
     r = cli("decider", "start")
     assert r.returncode == 1
     assert "pip install strands-decider" in r.stderr
+
+
+# ---- human verbs: elaborate, undo, exec ---------------------------------
+
+
+def _row(cli, key="q1"):
+    return json.loads(cli("get", key, "--json").stdout)[0]
+
+
+def test_elaborate_hint_then_withdraw_restores_status(cli):
+    cli("ask", "--no-wait", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    r = cli("elaborate", "q1", "say more", "--json")
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["status"] == "elaborate"
+    assert _row(cli)["elaborate"] == "say more"
+    w = cli("elaborate", "q1", "--withdraw", "--json")
+    assert w.returncode == 0
+    assert json.loads(w.stdout)["status"] == "open"
+    assert cli("elaborate", "q1", "--withdraw").returncode == 1
+
+
+def test_elaborate_decompose_stores_instruction(cli):
+    from cactus.store import DECOMPOSE_INSTRUCTION
+
+    cli("ask", "--no-wait", "big", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    assert cli("elaborate", "q1", "--decompose").returncode == 0
+    assert _row(cli)["elaborate"] == DECOMPOSE_INSTRUCTION.format(key="q1")
+
+
+def test_elaborate_refusals_and_missing_key(cli):
+    cli("ask", "--no-wait", "big", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    assert cli("elaborate", "q1", "hint", "--decompose").returncode == 1
+    assert cli("elaborate", "q1", "hint", "--withdraw").returncode == 1
+    assert cli("elaborate", "q1").returncode == 0
+    again = cli("elaborate", "q1")
+    assert again.returncode == 1 and "elaborate" in again.stderr
+    miss = cli("elaborate", "q99")
+    assert miss.returncode == 3 and len(miss.stderr.strip().splitlines()) == 1
+    assert cli("elaborate", "q99", "--withdraw").returncode == 3
+
+
+def test_undo_withdraws_answer(cli):
+    cli("ask", "--no-wait", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    assert cli("undo", "q1").returncode == 1  # open: nothing to undo
+    cli("answer", "q1", "-s", "a")
+    r = cli("undo", "q1", "--json")
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["status"] == "open"
+    assert cli("answer", "q1", "-s", "b").returncode == 0
+
+
+def test_undo_refuses_cleared_and_missing(cli):
+    cli("ask", "--no-wait", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    cli("answer", "q1", "-s", "a")
+    cli("clear", "q1", "--agent", AGENT_A)
+    r = cli("undo", "q1")
+    assert r.returncode == 1 and "cactus reopen q1 --agent ID" in r.stderr
+    miss = cli("undo", "q99")
+    assert miss.returncode == 3 and len(miss.stderr.strip().splitlines()) == 1
+
+
+def test_undo_live_review_withdraws_only_newest_verdict(cli):
+    cli("ask", "check", "--act", "review", "--no-wait", "--agent", AGENT_A)
+    cli("answer", "q1", "-s", "fail")
+    cli("answer", "q1", "-s", "pass")
+    assert cli("undo", "q1").returncode == 0
+    row = _row(cli)
+    assert row["status"] == "live"
+    assert row["answer"]["selected"] == ["fail"]
+    assert cli("undo", "q1").returncode == 0
+    assert cli("undo", "q1").returncode == 1  # no verdict left
+
+
+def test_exec_run_row_records_result_and_approve(cli):
+    cli("run", "--no-wait", "echo hi", "--agent", AGENT_A)
+    r = cli("exec", "q1")
+    assert r.returncode == 0
+    assert "hi" in r.stdout
+    row = _row(cli)
+    assert row["status"] == "answered"
+    assert row["answer"]["selected"] == ["approve"]
+    assert row["result"]["exit"] == 0
+    assert any("hi" in line for line in row["result"]["tail"])
+
+
+def test_exec_nonzero_command_still_exits_zero(cli):
+    cli("run", "--no-wait", "echo oops; exit 3", "--agent", AGENT_A)
+    assert cli("exec", "q1").returncode == 0
+    assert _row(cli)["result"]["exit"] == 3
+
+
+def test_exec_review_row_records_result_without_answering(cli):
+    cli("ask", "check", "--act", "review", "--no-wait", "--agent", AGENT_A)
+    cli("review", "q1", "--run", "echo hi")
+    r = cli("exec", "q1", "--json")
+    assert r.returncode == 0
+    doc = json.loads(r.stdout)
+    assert doc["result"]["exit"] == 0
+    assert doc["answer"] is None
+    assert doc["status"] == "live"
+    assert "hi" in r.stderr  # live output moves to stderr under --json
+
+
+def test_exec_refusals_and_missing_key(cli):
+    cli("ask", "check", "--act", "review", "--no-wait", "--agent", AGENT_A)
+    no_cmd = cli("exec", "q1")
+    assert no_cmd.returncode == 1 and "no command" in no_cmd.stderr
+    miss = cli("exec", "q99")
+    assert miss.returncode == 3 and len(miss.stderr.strip().splitlines()) == 1

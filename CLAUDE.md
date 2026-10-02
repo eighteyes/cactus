@@ -421,6 +421,19 @@ scope.
   The MCP `cactus_ask`/`cactus_run` pass `--no-wait` unless `wait` is set,
   and the Codex session-start hook tells Codex to post `--no-wait`. The
   courier agent stays deleted (q412); `poke.wake_owner` was removed (q430).
+- `cactus elaborate`, `undo`, `exec` are human verbs like `answer`: no
+  `--agent`, no ownership gate, so an external pane reaches TUI parity.
+  `elaborate KEY [HINT]` is `e` (`Store.elaborate_request`); `--decompose`
+  is `D` (hint is `store.DECOMPOSE_INSTRUCTION`, refuses a HINT);
+  `--withdraw` is `u` on an elaborate row (`Store.unelaborate`). `undo KEY`
+  is `u` on an answer (`Store.reopen`); refuses an `open`/answerless row
+  and a `cleared` one (points at `reopen`), exit 1. `exec KEY` is `R`: runs
+  `review.run_cmd` in `q.cwd` via `shell.run`, streams lines to stdout
+  (stderr under `--json`), spills, `set_run_result`; a `run` row also
+  records `approve` and webhook-pokes its owner, a review row never
+  answers. Exit 0 once the result is recorded, whatever the command's own
+  code; no command exits 1. Missing key exits 3 on all three.
+  `shell.parse_exit_code` is shared with the TUI.
 - `Store.set_steps`, `Store.set_step_done`, and `Store.set_review` all refuse
   a `cleared` row with the same message `Store.answer` uses — pointing at
   `cactus reopen KEY --agent ID` — so a retired plan/review row is frozen for

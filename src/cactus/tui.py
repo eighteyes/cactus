@@ -70,8 +70,8 @@ from .fieldproc import FIELD_MAX_DT, SKY_RELOAD_SECONDS, GardenSync, InlineField
 from .scope import project_label
 from .sky import (SkyConfig, TuneField, slots as sky_slots, tuning_fields_for,
                   tuning_panel_of, tuning_panel_order)
-from .store import (ACTIONABLE, CONFIDENCE_GLYPH, AlreadyAnswered, Answer,
-                    Question, Store)
+from .store import (ACTIONABLE, CONFIDENCE_GLYPH, DECOMPOSE_INSTRUCTION,
+                    AlreadyAnswered, Answer, Question, Store)
 
 POLL_INTERVAL = 0.5
 # Card first: the field gets only the rows the card leaves, and hides rather
@@ -153,17 +153,6 @@ RUN_TAIL = 12
 # How often a down decider is probed again (seconds).
 AUTO_PROBE_SECONDS = 60.0
 
-# `D` uses the existing elaborate state rather than a second kind of pending
-# row: the owner already receives elaborate events and knows it must act before
-# the human can answer. The instruction tells it how to fan a large decision
-# out without losing the original row's thread and context.
-DECOMPOSE_INSTRUCTION = (
-    "Decompose this into several smaller, independently answerable questions. "
-    "Post each replacement as a follow-up (`cactus ask ... -p {key} --no-wait --agent ID`), "
-    "clear the original row once they are posted, then wait on the batch with one "
-    "backgrounded `cactus get KEY... --wait`; its exit is your wake-up."
-)
-
 # `confirm` is built at render time from the row's own choice labels — see
 # `_confirm_pairs` — because a review answers pass/fail and a run approve/deny,
 # and a fixed yes/no hint would lie about what the keys send.
@@ -185,22 +174,6 @@ ACT_HINTS = {
     "data": (("{digits}", "copy chunk"), ("i", "note"),
              ("s", "skip (answers)"), ("d", "close")),
 }
-
-
-def _parse_exit_code(lines: list[str]) -> int:
-    """The exit code shell.run recorded as its last "— exit N —" line.
-
-    -1 if the command never got that far — killed, or a start-up failure that
-    raised before a shell was ever spawned — matching the "killed" line's own
-    exit code, so both read as the same kind of non-completion.
-    """
-    for line in reversed(lines):
-        if line.startswith("— exit") and line.endswith("—"):
-            try:
-                return int(line.strip("— ").split()[-1])
-            except ValueError:
-                return -1
-    return -1
 
 
 def _flatten(text: str) -> str:
@@ -2461,7 +2434,7 @@ class CactusApp(App[int]):
         — same reason `_finish_output` spills and persists a review row's
         result (q20), but that path stops short of recording an answer.
         """
-        from .shell import spill
+        from .shell import parse_exit_code as _parse_exit_code, spill
 
         lines = self.run_output.get(key) or []
         exit_code = _parse_exit_code(lines)
@@ -2498,7 +2471,7 @@ class CactusApp(App[int]):
         the asking agent's `get --json`/`feed` to read it back, so it is
         spilled and recorded exactly like a `run` row's.
         """
-        from .shell import spill
+        from .shell import parse_exit_code as _parse_exit_code, spill
 
         lines = self.run_output.get(key) or []
         exit_code = _parse_exit_code(lines)

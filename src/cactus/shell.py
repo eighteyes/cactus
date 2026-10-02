@@ -4,6 +4,7 @@ shell.py — clipboard and command execution for the answering surface.
 Responsibilities:
 - Copy a command to the system clipboard, naming the tool it used.
 - Run a command in a recorded directory, yielding output line by line.
+- Read the exit code back out of a run's captured lines.
 - Spill a full capture to a file when it is too long to read in a card.
 - Preview (`view`) or edit (`edit`) a row's attached file in the human's
   own pager/editor, resolved from CACTUS_PAGER/CACTUS_EDITOR or the usual
@@ -89,6 +90,22 @@ def run(command: str, *, cwd: str | None = None, timeout: float = 600.0) -> Iter
             yield f"— killed after {timeout:g}s —"
             code = -1
         yield f"— exit {code} —"
+
+
+def parse_exit_code(lines: list[str]) -> int:
+    """The exit code shell.run recorded as its last "— exit N —" line.
+
+    -1 if the command never got that far — killed, or a start-up failure that
+    raised before a shell was ever spawned — matching the "killed" line's own
+    exit code, so both read as the same kind of non-completion.
+    """
+    for line in reversed(lines):
+        if line.startswith("— exit") and line.endswith("—"):
+            try:
+                return int(line.strip("— ").split()[-1])
+            except ValueError:
+                return -1
+    return -1
 
 
 def spill(lines: list[str], *, key: str) -> Path:

@@ -3,7 +3,8 @@ cli.py — command-line surface for cactus, covering both the agent and human mo
 
 Responsibilities:
 - Parse the agent-facing verbs (ask, get, list, answer, edit, clear, purge,
-  threads, projects).
+  threads, projects) and the human verbs the TUI also has (answer, elaborate,
+  undo, exec), none of them ownership-gated.
 - Resolve project scope from the working directory for every invocation.
 - Render results as human text or JSON, and implement --wait blocking.
 - Dispatch the human-facing --tui and --watch modes, and the agent --monitor stream.
@@ -22,7 +23,7 @@ from typing import Any, Sequence
 from . import __version__, tradeoffs
 from .scope import project_display, resolve_project
 from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
-                    DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
+                    DECOMPOSE_INSTRUCTION, DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
                     Question, Store, default_db_path)
 
 EXIT_OK = 0
@@ -100,6 +101,9 @@ SYNOPSIS
   cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X] [-f PATH]... [--agent ID]
   cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N] [-f PATH]... [--agent ID]
   cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
+  cactus elaborate KEY [HINT] [--decompose | --withdraw]   human verb, no --agent
+  cactus undo KEY                    human verb: withdraw the latest answer/verdict
+  cactus exec KEY                    human verb: run the row's command, record the result
   cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]... [-f PATH]...
                              (-f replaces the whole file list; omit to keep it)
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
@@ -712,6 +716,151 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     except PokeError as exc:
         print(f"cactus: answer saved; webhook poke failed: {_msg(exc)}", file=sys.stderr)
     _emit_one(q, as_json=args.json)
+    return EXIT_OK
+
+
+def _human_ref(args: argparse.Namespace, store: Store, project: str) -> tuple[str, str] | int:
+    """Resolve a human verb's KEY, or return the exit code after printing why."""
+    try:
+        return store.resolve_ref(args.key, project)
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+def cmd_elaborate(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Ask the owner to rewrite a row (TUI `e`), split it (`D`), or take it back (`u`).
+
+    A human verb like `answer`: no --agent, no ownership gate.
+    """
+    if args.decompose and args.hint:
+        print("cactus: --decompose takes no HINT", file=sys.stderr)
+        return EXIT_ERROR
+    if args.withdraw and args.hint:
+        print("cactus: --withdraw takes no HINT", file=sys.stderr)
+        return EXIT_ERROR
+    ref = _human_ref(args, store, project)
+    if isinstance(ref, int):
+        return ref
+    rproj, rkey = ref
+    try:
+        if args.withdraw:
+            q = store.unelaborate(rkey, project=rproj)
+        else:
+            hint = args.hint
+            if args.decompose:
+                hint = DECOMPOSE_INSTRUCTION.format(key=rkey)
+            q = store.elaborate_request(rkey, hint=hint or None, project=rproj)
+    except KeyError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_EMPTY
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    _emit_one(q, as_json=args.json)
+    return EXIT_OK
+
+
+def cmd_undo(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Withdraw the latest answer or verdict on an answered or live row (TUI `u`).
+
+    A human verb: no ownership gate. It cannot recall an answer an agent
+    already read. A cleared row restores through `reopen`, which is gated.
+    """
+    ref = _human_ref(args, store, project)
+    if isinstance(ref, int):
+        return ref
+    rproj, rkey = ref
+    q = store.get(rkey, project=rproj)
+    if q is None:
+        print(f"cactus: no such question: {args.key}", file=sys.stderr)
+        return EXIT_EMPTY
+    if q.status == "cleared":
+        print(f"cactus: {q.key} is cleared; restore it with `cactus reopen {q.key} --agent ID`",
+              file=sys.stderr)
+        return EXIT_ERROR
+    if q.status not in ("answered", "live") or q.answer is None:
+        print(f"cactus: {q.key} has no answer to undo", file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        q = store.reopen(rkey, project=rproj)
+    except KeyError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_EMPTY
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    _emit_one(q, as_json=args.json)
+    return EXIT_OK
+
+
+def cmd_exec(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Run a row's command in its own directory and record the result (TUI `R`).
+
+    A `run` row also records `approve` and pokes a webhook-mapped owner, as
+    approving in the TUI does; a review row gets the result only, its verdict
+    stays the human's. Exit 0 once the result is recorded, whatever the
+    command's own exit code. Under --json the live output goes to stderr so
+    stdout stays one document.
+    """
+    from .shell import ShellError, parse_exit_code, run, spill
+
+    ref = _human_ref(args, store, project)
+    if isinstance(ref, int):
+        return ref
+    rproj, rkey = ref
+    q = store.get(rkey, project=rproj)
+    if q is None:
+        print(f"cactus: no such question: {args.key}", file=sys.stderr)
+        return EXIT_EMPTY
+    command = q.review.run_cmd if q.review is not None else None
+    if not command:
+        print(f"cactus: {q.key} carries no command", file=sys.stderr)
+        return EXIT_ERROR
+    if q.act not in ("run", "review"):
+        print(f"cactus: {q.key} is act={q.act!r}, not 'run' or 'review'", file=sys.stderr)
+        return EXIT_ERROR
+    if q.status == "cleared":
+        print(f"cactus: {q.key} is cleared; restore it with `cactus reopen {q.key} --agent ID`",
+              file=sys.stderr)
+        return EXIT_ERROR
+
+    out = sys.stderr if args.json else sys.stdout
+    lines: list[str] = []
+    try:
+        for line in run(command, cwd=q.cwd):
+            lines.append(line)
+            print(line, file=out, flush=True)
+    except ShellError as exc:
+        lines.append(f"— {exc} —")
+        print(lines[-1], file=out, flush=True)
+    exit_code = parse_exit_code(lines)
+    try:
+        log_path = spill(lines, key=q.key)
+        q = store.set_run_result(
+            rkey, project=rproj, exit_code=exit_code, tail=lines[-50:], log=str(log_path)
+        )
+        if q.act == "run":
+            q = store.answer(rkey, project=rproj, selected=["approve"], text=None)
+    except AlreadyAnswered as exc:
+        print(f"cactus: result saved; {_msg(exc)}", file=sys.stderr)
+        q = store.get(rkey, project=rproj) or q
+    except (KeyError, ValueError, OSError) as exc:
+        print(f"cactus: result not recorded: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    else:
+        if q.act == "run":
+            try:
+                from .poke import poke_webhook_if_mapped, PokeError
+
+                woke = poke_webhook_if_mapped(q.agent)
+                if woke and not args.json:
+                    print(f"auto-poke: {woke}", file=sys.stderr)
+            except PokeError as exc:
+                print(f"cactus: answer saved; webhook poke failed: {_msg(exc)}", file=sys.stderr)
+    if args.json:
+        json.dump(q.as_dict(), sys.stdout, indent=2)
+        sys.stdout.write("\n")
     return EXIT_OK
 
 
@@ -1535,6 +1684,24 @@ def build_parser() -> argparse.ArgumentParser:
     skip_grp.add_argument("--dismiss", action="store_true",
                           help="dismiss a notify row without choosing (alias of --skip)")
     ans.set_defaults(fn=cmd_answer)
+
+    el = verb("elaborate", help="ask the owner to rewrite a row, or withdraw the request")
+    el.add_argument("key")
+    el.add_argument("hint", nargs="?", help="what to rewrite")
+    el_grp = el.add_mutually_exclusive_group()
+    el_grp.add_argument("--decompose", action="store_true",
+                        help="ask the owner to split the row into smaller questions (TUI D)")
+    el_grp.add_argument("--withdraw", action="store_true",
+                        help="take back a pending request (TUI u)")
+    el.set_defaults(fn=cmd_elaborate)
+
+    ud = verb("undo", help="withdraw the latest answer or verdict on a row")
+    ud.add_argument("key")
+    ud.set_defaults(fn=cmd_undo)
+
+    ex = verb("exec", help="run a row's command, record the result (a run row also approves)")
+    ex.add_argument("key")
+    ex.set_defaults(fn=cmd_exec)
 
     ed = verb("edit", help="replace fields on a row; also answers an elaborate request")
     ed.add_argument("key")
