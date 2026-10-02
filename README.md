@@ -26,6 +26,23 @@ A command the agent is not allowed to run becomes an approve / deny row. Approve
 ### inputs
 Free-text input is on by default, alongside any pick.
 
+### tradeoffs
+A choice's description can carry `+ pro` / `- con` lines; the card shows them
+as green ✓ and red ✗ under the option.
+
+```sh
+cactus ask "Which auth?" --agent ID -c $'oidc: existing IdP\n+ tenant exists\n- IdP uptime'
+```
+
+### auto-decider
+A background worker proposes a pick on low-stakes rows; the card shows
+`[..] label - reason` and `A` accepts it. It never answers on its own.
+`CACTUS_DECIDE=off` turns it off.
+
+### garden
+Every answer drops a seed through the sky strip and lands on a shared pile.
+`~` hides it, `T` tunes the sky.
+
 ### elaborate
 Kick the question back with an optional take; the agent rewrites it.
 
@@ -146,6 +163,7 @@ cactus review q9 --look-at "login form" --run "echo OK" --pass "prints OK" --fai
 cactus ask "Fix this file?" -f src/app.py -f README.md --agent ID   # attach files
 cactus clear q7 --agent ID                             # once acted on
 cactus --monitor --json --agent ID --once              # plain CLI surface: exits on the first event
+cactus --version
 ```
 
 `f`/`F` in the TUI preview (pager) / edit (editor) a row's attached file; a
@@ -155,9 +173,10 @@ Full reference: `cactus --agent-help`.
 
 ### Skills / MCP / Subagent
 
-An agentic runtime needs durable rows and a next-turn frontier. On Claude
-Code a blocking ask runs as one backgrounded command, and its exit wakes the
-agent, even from idle. Rows posted `--no-wait` come back through the frontier
+A blocking ask or run waits for the answer by default. On Claude Code the
+agent posts it as one backgrounded command, and its exit wakes the agent,
+even from idle; steers and review/plan rows are collected with one
+backgrounded `cactus get KEY... --wait`. Rows posted `--no-wait` come back through the frontier
 on the next turn. Codex has no idle wake-up, so it posts `--no-wait` and
 collects on the next turn. MCP for Desktop wraps the same verbs in
 `server/cactus-mcp`.
