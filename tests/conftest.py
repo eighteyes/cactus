@@ -43,6 +43,7 @@ def scratch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, st
     env = {
         "CACTUS_DB": str(tmp_path / "cactus.db"),
         "CACTUS_POKE": "true {agent} {message}",
+        "CACTUS_POKE_WEBHOOKS": str(tmp_path / "poke-webhooks.json"),
         "CACTUS_VISIT": "true {pane}",
         "CACTUS_PAGER": "true {path}",
         "CACTUS_EDITOR": "true {path}",

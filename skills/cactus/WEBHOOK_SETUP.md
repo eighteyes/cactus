@@ -1,11 +1,25 @@
-# Webhook poke setup
+# Delivery setup (webhook or herdr)
+
+Declare how answers reach an agent. The agent's own client does it:
+
+```bash
+cactus deliver herdr --agent ID          # answer prompts the row's herdr pane
+cactus deliver webhook URL --agent ID    # answer POSTs the URL
+cactus deliver --agent ID                # show the entry (exit 3 if none)
+cactus deliver off --agent ID            # remove it (exit 3 if none)
+```
+
+Entries live in the map below: `{"herdr": true}` or the webhook shapes. The
+Codex plugin's session-start hook runs `deliver herdr` itself inside herdr.
+A herdr entry on a row with no pane stamp is skipped. `CACTUS_POKE`
+overrides the herdr transport (not the webhook POST).
 
 Poke nudges the **row's owning agent** (`--agent` on that question). It does
 not follow the TUI process environment, and it is not the same as answering.
 
 | Action | What it does | Wakes the agent? |
 |--------|--------------|------------------|
-| Answer in TUI / `cactus answer` | Writes the answer into SQLite | **Yes, if** the row's agent is in the webhook map (auto-poke). Unmapped (herdr) agents: no — they wake on their own backgrounded wait. |
+| Answer in TUI / `cactus answer` | Writes the answer into SQLite | **Yes, if** the row's agent is in the webhook map (auto-poke). Agents with no entry: no — they wake on their own backgrounded wait. A `{"herdr": true}` entry prompts the row's pane. |
 | `p` in TUI / `cactus poke` | Runs the poke transport for that row's agent | Yes, if transport succeeds (manual; still useful) |
 | `cactus --monitor` | Streams inbox events while the process runs | Only while monitor is alive; plain CLI surface, not the agent wake (q430) |
 
@@ -61,8 +75,8 @@ Do not commit this file. `chmod 600` is appropriate.
 - Mapped agent → HTTP POST (no herdr required; pane/session may be null).
 - Unmapped agent → herdr (needs a real herdr agent id).
 - After `cactus answer` / TUI answer (including skip, run-approve, plan note):
-  if the owner is webhook-mapped, cactus auto-POSTs that webhook. Herdr owners
-  are not auto-poked.
+  a webhook-mapped owner is auto-POSTed; a `{"herdr": true}` owner is prompted
+  at the row's pane. Owners with no entry are not auto-poked.
 - Auto-poke ignores `CACTUS_POKE` (explicit poke / tests only).
 - TUI offers `p` whenever the row has an `--agent`, including webhook-only
   agents. Restart the TUI after upgrading cactus so answer auto-poke and

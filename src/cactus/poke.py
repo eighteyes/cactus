@@ -6,7 +6,9 @@ Responsibilities:
 - Default to herdr's agent prompt verb.
 - If that agent is listed in the webhook map, POST the wake URL instead.
 - CACTUS_POKE still overrides everything (tests / one-shot transports).
-- After an answer, auto-poke only webhook-mapped agents (never herdr).
+- After an answer, deliver to agents that declared a delivery entry: a webhook
+  or `{"herdr": true}` (`cactus deliver`). Unregistered agents are never poked.
+- Read and write that per-agent delivery map (atomic write, other entries kept).
 - Report a usable failure when a row has no owner or the transport is absent.
 - Visit: focus the herdr pane a row was asked from ($CACTUS_VISIT overrides).
 - Pin herdr to the row's own session (`herdr --session S`): a pane id only
@@ -31,6 +33,12 @@ from typing import Any
 DEFAULT_MESSAGE = (
     "cactus: your inbox moved — re-read it with `cactus feed --json "
     "--agent {agent}` and act on what changed."
+)
+
+# What a herdr-registered agent is told after an answer.
+ANSWERED_MESSAGE = (
+    "cactus: a row was answered — read it with `cactus feed --json "
+    "--agent {agent}`."
 )
 
 # herdr resolves a prompt target by pane id (`w3B:p3`), never by the
@@ -91,8 +99,8 @@ def load_webhooks() -> dict[str, Any]:
     return data
 
 
-def webhook_entry(agent: str) -> dict[str, Any] | None:
-    """Webhook config for `agent`, or None when unmapped."""
+def delivery_entry(agent: str) -> dict[str, Any] | None:
+    """The raw delivery-map entry for `agent` (webhook or herdr), or None."""
     entry = load_webhooks().get(agent)
     if entry is None:
         return None
@@ -101,28 +109,78 @@ def webhook_entry(agent: str) -> dict[str, Any] | None:
     return entry
 
 
-def poke_webhook_if_mapped(
+def is_herdr_entry(entry: dict[str, Any] | None) -> bool:
+    """A `{"herdr": true}` entry: deliver by prompting the row's herdr pane."""
+    return bool(entry) and entry.get("herdr") is True and "url" not in entry
+
+
+def webhook_entry(agent: str) -> dict[str, Any] | None:
+    """Webhook config for `agent`, or None when unmapped or herdr-registered."""
+    entry = delivery_entry(agent)
+    if entry is None or is_herdr_entry(entry):
+        return None
+    return entry
+
+
+def write_delivery(agent: str, entry: dict[str, Any] | None) -> None:
+    """Set (or, with None, remove) one agent's entry in the delivery map.
+
+    Other agents' entries and unknown keys are kept. The file is replaced
+    atomically (temp file in the same directory, then rename) and its parent
+    directory is created.
+    """
+    path = webhooks_path()
+    data = load_webhooks()
+    if entry is None:
+        data.pop(agent, None)
+    else:
+        data[agent] = entry
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        tmp.chmod(0o600)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def deliver_if_mapped(
     agent: str | None,
     *,
+    pane: str | None = None,
+    session: str | None = None,
     message: str | None = None,
     timeout: float = 5.0,
 ) -> str | None:
-    """Wake a webhook-mapped agent only.
+    """Deliver an answer to an agent that declared a delivery entry.
 
-    Used after an answer so external owners (Grok Bot, etc.) re-read the feed
-    without requiring a separate `p`. Unmapped agents return None and are not
-    poked — herdr / Claude agents wake on their own backgrounded wait.
+    A webhook entry POSTs as before. A `{"herdr": true}` entry prompts the
+    row's `pane` through the normal poke transport (CACTUS_POKE overrides it);
+    with no pane there is nothing to prompt and it is skipped silently.
+    Unregistered agents return None and are not poked.
 
-    Ignores CACTUS_POKE: that override is for explicit `cactus poke` / tests,
-    not for silently replacing herdr on every answer.
+    The webhook branch ignores CACTUS_POKE: that override is for explicit
+    `cactus poke` / tests, not for silently replacing the webhook.
     """
     if not agent:
         return None
-    entry = webhook_entry(agent)
+    entry = delivery_entry(agent)
     if entry is None:
         return None
+    if is_herdr_entry(entry):
+        if not pane:
+            return None
+        body = message or ANSWERED_MESSAGE.format(agent=agent)
+        return poke(agent, pane=pane, session=session, message=body,
+                    timeout=timeout, webhook=False)
     body = message or DEFAULT_MESSAGE.format(agent=agent)
     return _post_webhook(agent, body, entry, timeout)
+
+
+# Kept so callers and tests written against the webhook-only name still work.
+poke_webhook_if_mapped = deliver_if_mapped
 
 
 def poke_command() -> list[str]:

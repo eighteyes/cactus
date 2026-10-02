@@ -15,6 +15,12 @@ if [ "${enabled:-true}" != "true" ]; then
   exit 0
 fi
 
+if [ -n "${HERDR_PANE_ID:-}" ]; then
+  if cactus deliver herdr --agent "$agent" >/dev/null 2>&1; then
+    printf '%s\n' "Cactus registered herdr delivery for $agent: answers prompt this pane."
+  fi
+fi
+
 open=$(cactus list -s open --agent "$agent" 2>/dev/null || true)
 printf '%s\n' "Cactus is available. Use --agent $agent for every Cactus row."
 printf '%s\n' "Codex has no wake-up from idle: answers reach you on your next turn through the frontier hook. Do not arm a background monitor. Asks and runs wait for the human by default, which blocks Codex: post with --no-wait. When the next step needs an answer now, block in the foreground: cactus get KEY --wait --timeout 300 --json"

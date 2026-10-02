@@ -447,3 +447,17 @@ def test_stop_hook_is_silent_while_the_agent_has_an_open_row(hook_env, project, 
 
     cli("answer", key, "-s", "a", cwd=project)
     assert json.loads(run_hook(script, mine, hook_env, project).stdout)["decision"] == "block"
+
+
+def test_codex_session_start_registers_herdr_only_inside_herdr(cli, hook_env, project, scratch_env):
+    cli("project", "activate", cwd=project)
+    map_path = Path(scratch_env["CACTUS_POKE_WEBHOOKS"])
+
+    out = run_hook(CODEX_HOOKS / "session-start.sh", {"session_id": "cx-1", "cwd": project}, hook_env, project)
+    assert "herdr delivery" not in out.stdout
+    assert not map_path.exists()
+
+    env = {**hook_env, "HERDR_PANE_ID": "w1:p1"}
+    out = run_hook(CODEX_HOOKS / "session-start.sh", {"session_id": "cx-1", "cwd": project}, env, project)
+    assert "registered herdr delivery for cx-1" in out.stdout
+    assert json.loads(map_path.read_text()) == {"cx-1": {"herdr": True}}

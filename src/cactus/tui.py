@@ -2447,7 +2447,7 @@ class CactusApp(App[int]):
                 key, project=project, exit_code=exit_code, tail=lines[-50:], log=str(log_path)
             )
             answered = self.store.answer(key, project=project, selected=["approve"], text=None)
-            self._auto_poke_webhook(answered.agent)
+            self._auto_poke_webhook(answered.agent, answered.pane, answered.session)
         except Exception as exc:
             self.flash = f"{key}: result not recorded: {exc}"
         if self.focused_key == key:
@@ -2626,12 +2626,14 @@ class CactusApp(App[int]):
             return
         await self._submit_answer(q, selected=[], text=None, skipped=True, label="dismissed", key="d")
 
-    def _auto_poke_webhook(self, agent: str | None) -> None:
-        """After an answer, wake webhook-mapped agents only (never herdr)."""
-        from .poke import poke_webhook_if_mapped, PokeError
+    def _auto_poke_webhook(
+        self, agent: str | None, pane: str | None = None, session: str | None = None
+    ) -> None:
+        """After an answer, deliver to agents with a delivery entry (webhook or herdr)."""
+        from .poke import deliver_if_mapped, PokeError
 
         try:
-            woke = poke_webhook_if_mapped(agent, timeout=5.0)
+            woke = deliver_if_mapped(agent, pane=pane, session=session, timeout=5.0)
         except PokeError as exc:
             self.flash = f"answered; webhook poke failed: {exc}"
             return
@@ -3490,7 +3492,7 @@ class CactusApp(App[int]):
         except (KeyError, ValueError) as exc:
             await self._refuse(exc)
             return
-        self._auto_poke_webhook(q.agent)
+        self._auto_poke_webhook(q.agent, q.pane, q.session)
         self._push_undo(q.key, "noted", [], text, project=q.project)
         self._field_drop("enter")
         self.pending_text = ""
@@ -3521,7 +3523,7 @@ class CactusApp(App[int]):
         except (KeyError, ValueError) as exc:
             await self._refuse(exc)
             return
-        self._auto_poke_webhook(q.agent)
+        self._auto_poke_webhook(q.agent, q.pane, q.session)
         self._push_undo(q.key, "noted", [], text, project=q.project)
         self._field_drop("enter")
         self.pending_text = ""
@@ -3545,7 +3547,7 @@ class CactusApp(App[int]):
             except (KeyError, ValueError) as exc:
                 await self._refuse(exc)
                 return
-            self._auto_poke_webhook(q.agent)
+            self._auto_poke_webhook(q.agent, q.pane, q.session)
             self._push_undo(q.key, "noted", [], text, project=q.project)
             self._field_drop("1")
             self.pending_text = ""
@@ -3624,7 +3626,7 @@ class CactusApp(App[int]):
         except (AlreadyAnswered, ValueError) as exc:
             await self._refuse(exc)
             return
-        self._auto_poke_webhook(q.agent)
+        self._auto_poke_webhook(q.agent, q.pane, q.session)
         self._push_undo(q.key, label or ("skipped" if skipped else "answered"), selected, text,
                         project=q.project)
         self._field_drop(key)

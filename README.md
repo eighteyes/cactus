@@ -135,7 +135,7 @@ Or register the server by absolute path in `claude_desktop_config.json`:
 ```
 hook               host          does
 SessionStart       Claude Code   resolve identity; rehome rows after /clear; open rows
-                   Codex         session id as identity; no wake-up from idle, answers surface next turn
+                   Codex         session id as identity; inside herdr registers `cactus deliver herdr`, so an answer prompts the pane; else answers surface next turn
 UserPromptSubmit   both          inject open and answered-but-unacted rows
 Stop               Claude Code   hold a turn that posted no ask, edit, plan or review
                    Codex         no-op
@@ -188,10 +188,11 @@ on the next turn. Codex has no idle wake-up, so it posts `--no-wait` and
 collects on the next turn. MCP for Desktop wraps the same verbs in
 `server/cactus-mcp`.
 
-### Webhooks
+### Delivery
 
-For agents using webhook delivery, map the agent id to a URL in
-`~/.config/cactus/poke-webhooks.json`; answering a row POSTs a wake. Schema
+An agent declares how answers reach it: `cactus deliver herdr --agent ID`
+(answer prompts the row's herdr pane) or `cactus deliver webhook URL --agent ID`
+(answer POSTs a wake). Stored in `~/.config/cactus/poke-webhooks.json`. Schema
 and smoke test: [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md)
 
 ## Contributions

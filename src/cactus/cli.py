@@ -112,6 +112,9 @@ SYNOPSIS
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
   cactus reopen KEY... --agent ID
   cactus poke KEY | --agent ID
+  cactus deliver [herdr | webhook URL | off] --agent ID [--json]
+                             how answers reach this agent (herdr pane prompt or webhook);
+                             bare prints the entry, exit 3 if none
   cactus rehome --agent NEW [--json]
   cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
   cactus --monitor --json --agent ID [--once]  plain event stream; --once exits on the first event
@@ -178,7 +181,7 @@ FILES
 ENVIRONMENT
   CACTUS_DB       database path
   CACTUS_POKE     override poke transport for every agent; {agent} {message}
-  CACTUS_POKE_WEBHOOKS  agent→webhook JSON map (default ~/.config/cactus/poke-webhooks.json)
+  CACTUS_POKE_WEBHOOKS  agent→delivery JSON map, webhook or herdr (default ~/.config/cactus/poke-webhooks.json)
   CACTUS_AGENT    default --by
   CACTUS_RECORDS  0 disables records
   HERDR_*         scope stamps; see STAMPS
@@ -717,9 +720,9 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
         return EXIT_ERROR
     # Webhook-mapped owners need a wake; other agents wake on their own backgrounded wait.
     try:
-        from .poke import poke_webhook_if_mapped, PokeError
+        from .poke import deliver_if_mapped, PokeError
 
-        woke = poke_webhook_if_mapped(q.agent)
+        woke = deliver_if_mapped(q.agent, pane=q.pane, session=q.session)
         if woke and not args.json:
             print(f"auto-poke: {woke}", file=sys.stderr)
     except PokeError as exc:
@@ -860,9 +863,9 @@ def cmd_exec(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     else:
         if q.act == "run":
             try:
-                from .poke import poke_webhook_if_mapped, PokeError
+                from .poke import deliver_if_mapped, PokeError
 
-                woke = poke_webhook_if_mapped(q.agent)
+                woke = deliver_if_mapped(q.agent, pane=q.pane, session=q.session)
                 if woke and not args.json:
                     print(f"auto-poke: {woke}", file=sys.stderr)
             except PokeError as exc:
@@ -1263,6 +1266,52 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         sys.stdout.write("\n")
     else:
         print(f"poked {agent}")
+    return EXIT_OK
+
+
+def cmd_deliver(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Declare (or read, or drop) how answers reach `--agent`: a herdr pane
+    prompt or a webhook, in the per-agent delivery map. No database change."""
+    from .poke import PokeError, delivery_entry, write_delivery
+
+    agent = args.agent.strip()
+    if not agent:
+        print("cactus: deliver needs a non-empty --agent", file=sys.stderr)
+        return EXIT_ERROR
+    mode, url = args.mode, args.url
+    if url is not None and mode != "webhook":
+        print("cactus: URL only goes with `deliver webhook`", file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        if mode is None:
+            entry = delivery_entry(agent)
+        elif mode == "off":
+            if delivery_entry(agent) is None:
+                return _no_match()
+            write_delivery(agent, None)
+            entry = None
+        else:
+            if mode == "webhook":
+                if not url or not url.strip():
+                    print("cactus: deliver webhook needs a URL", file=sys.stderr)
+                    return EXIT_ERROR
+                entry = {"url": url.strip()}
+            else:
+                entry = {"herdr": True}
+            write_delivery(agent, entry)
+    except (PokeError, OSError) as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    if mode is None and entry is None:
+        return _no_match()
+    if args.json:
+        json.dump(entry, sys.stdout)
+        sys.stdout.write("\n")
+    elif mode == "off":
+        print(f"{agent}: delivery off")
+    else:
+        what = "herdr" if entry.get("herdr") else f"webhook {entry.get('url', '?')}"
+        print(f"{agent}: {what}")
     return EXIT_OK
 
 
@@ -1765,6 +1814,14 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("--agent", help="poke this agent/pane directly instead")
     pk.add_argument("-m", "--message", help="override the nudge text")
     pk.set_defaults(fn=cmd_poke)
+
+    dl = verb("deliver", parents=[common],
+              help="declare how answers reach an agent: herdr, webhook URL, or off")
+    dl.add_argument("mode", nargs="?", choices=["herdr", "webhook", "off"],
+                    help="omit to print the agent's current entry")
+    dl.add_argument("url", nargs="?", help="webhook URL (webhook mode only)")
+    dl.add_argument("--agent", required=True, help="the agent id whose entry to set")
+    dl.set_defaults(fn=cmd_deliver)
 
     rh = verb("rehome", parents=[common],
               help="move this session's rows from a prior identity onto --agent")

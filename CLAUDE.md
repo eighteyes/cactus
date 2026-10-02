@@ -433,7 +433,7 @@ scope.
   and wait. `hooks/pretooluse-wait.sh` refuses the foreground form. The
   automatic poke on an answer (`poke_webhook_if_mapped`; `cli.cmd_answer`,
   `www`, the TUI) reaches webhook-mapped agents only and ignores
-  `CACTUS_POKE`; herdr agents are not auto-poked (`p` still pokes by hand).
+  `CACTUS_POKE`; herdr agents are not auto-poked unless their entry is `{"herdr": true}` (`cactus deliver herdr`); `p` still pokes by hand.
   The MCP `cactus_ask`/`cactus_run` pass `--no-wait` unless `wait` is set,
   and the Codex session-start hook tells Codex to post `--no-wait`. The
   courier agent stays deleted (q412); `poke.wake_owner` was removed (q430).
@@ -450,6 +450,21 @@ scope.
   answers. Exit 0 once the result is recorded, whatever the command's own
   code; no command exits 1. Missing key exits 3 on all three.
   `shell.parse_exit_code` is shared with the TUI.
+- `cactus deliver {herdr,webhook URL,off} --agent ID` (push-delivery, q462)
+  writes the caller's own entry in the delivery map
+  (`poke-webhooks.json`, `CACTUS_POKE_WEBHOOKS`): `{"herdr": true}` or
+  `{"url": URL}`. `--agent` required (exit 1); bare prints the entry; `off`
+  or a bare read with no entry is `no match`, exit 3. Atomic write (temp +
+  rename), parent dir created, other agents' entries and unknown keys kept;
+  no database change. `poke.deliver_if_mapped` (alias
+  `poke_webhook_if_mapped`) runs after every answer: webhook entries POST
+  (ignoring `CACTUS_POKE`); herdr entries run `poke.poke(webhook=False)` at
+  the row's `pane`/`session`, so `CACTUS_POKE` overrides that branch, and a
+  row with no pane is skipped silently. Every caller (`cli.cmd_answer`,
+  `cmd_exec`, `www`, `tui._auto_poke_webhook`) passes the row's pane.
+  `webhook_entry` returns None for a herdr entry, so `poke` never POSTs it.
+  The Codex session-start hook runs `cactus deliver herdr` when
+  `HERDR_PANE_ID` is set; mod sessions register nothing.
 - `Store.set_steps`, `Store.set_step_done`, and `Store.set_review` all refuse
   a `cleared` row with the same message `Store.answer` uses — pointing at
   `cactus reopen KEY --agent ID` — so a retired plan/review row is frozen for
