@@ -58,7 +58,7 @@ ACTIONABLE = ("open", "live", "elaborate")
 ACTS = ("ask", "steer", "run", "notify", "review", "plan", "data")
 
 # Acts whose rows stay answerable. They are created `live`, never transition on
-# their own, and `wait_for_answer` refuses them.
+# their own, and `wait_for_answer` watches them for a change instead.
 PERSISTENT_ACTS = ("review", "plan", "data")
 
 # Whether a row blocks is the AGENT's call, stored per row in `blocked`, not a
@@ -1947,7 +1947,13 @@ class Store:
         timeout: float | None = None,
         poll: float = 0.4,
     ) -> Question | None:
-        """Block until `key` leaves `open`. Returns None on timeout.
+        """Block until `key` settles. Returns None on timeout.
+
+        A blocking row settles when its status leaves `open`/`elaborate`. A
+        non-blocking row (steer, notify, `--no-block`, and the persistent
+        review/plan/data rows) never leaves `open`/`live` on its own, so it
+        settles when its (status, answer count) differs from the snapshot
+        taken as the wait starts: a new verdict, a tap, a clear.
 
         A cleared question returns too — the agent asked, the human declined to
         answer, and that is an outcome rather than a hang.
@@ -1956,20 +1962,20 @@ class Store:
         if first is None:
             raise KeyError(f"no such question: {key}")
         # The row's own flag decides, because the agent that wrote it decided.
-        if not first.blocked:
-            raise ValueError(
-                f"{key} was posted with blocked=false — watch the monitor "
-                f"stream for its disposition instead of waiting on it"
-            )
+        watch = not first.blocked
+        snap = (first.status, len(first.answers))
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             q = self._get_by_id(first.id)
             if q is None:
                 raise KeyError(f"no such question: {key}")
+            if watch:
+                if (q.status, len(q.answers)) != snap:
+                    return q
             # `elaborate` is a detour, not an exit: the row is still waiting
             # on this same agent, just for a rewrite before it can be
             # answered, so a blocking ask keeps parking here through it.
-            if q.status not in ("open", "elaborate"):
+            elif q.status not in ("open", "elaborate"):
                 return q
             if deadline is not None and time.monotonic() >= deadline:
                 return None

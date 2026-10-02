@@ -14,6 +14,8 @@ Responsibilities:
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -465,3 +467,60 @@ def test_auto_columns_survive_key_rebuild(store: Store, project: str) -> None:
         store._drop_key_uniqueness()
     got = store.get(q.key, project=project)
     assert (got.auto_pick, got.auto_confidence, got.auto_reason) == ("b", 0.7, "r")
+
+
+# --- wait_for_answer (q459) -------------------------------------------------
+
+
+def _later(db: str, delay: float, fn) -> "threading.Thread":
+    """Run fn(Store) on its own connection after `delay` seconds."""
+
+    def run() -> None:
+        time.sleep(delay)
+        s = Store(db)
+        try:
+            fn(s)
+        finally:
+            s.close()
+
+    t = threading.Thread(target=run)
+    t.start()
+    return t
+
+
+def test_wait_returns_on_new_verdict_for_live_review(store: Store, project: str) -> None:
+    q = store.ask("check", project=project, cwd=project, agent=AGENT, act="review",
+                  kind="confirm", choices=[Choice("pass"), Choice("fail")])
+    t = _later(store.path, 0.3, lambda s: s.answer(q.key, project=project, selected=["pass"]))
+    got = store.wait_for_answer(q.key, project=project, timeout=10, poll=0.05)
+    t.join()
+    assert got is not None and got.status == "live" and len(got.answers) == 1
+
+
+def test_wait_non_blocking_times_out_when_nothing_changes(store: Store, project: str) -> None:
+    q = store.ask("fyi", project=project, cwd=project, agent=AGENT, act="notify")
+    assert store.wait_for_answer(q.key, project=project, timeout=0.3, poll=0.05) is None
+
+
+def test_wait_non_blocking_returns_on_clear(store: Store, project: str) -> None:
+    q = store.ask("fyi", project=project, cwd=project, agent=AGENT, act="notify")
+    t = _later(store.path, 0.3, lambda s: s.clear(keys=[q.key], project=project))
+    got = store.wait_for_answer(q.key, project=project, timeout=10, poll=0.05)
+    t.join()
+    assert got is not None and got.status == "cleared"
+
+
+def test_wait_snapshot_ignores_verdicts_before_the_wait(store: Store, project: str) -> None:
+    q = store.ask("check", project=project, cwd=project, agent=AGENT, act="review",
+                  kind="confirm", choices=[Choice("pass"), Choice("fail")])
+    store.answer(q.key, project=project, selected=["pass"])
+    assert store.wait_for_answer(q.key, project=project, timeout=0.3, poll=0.05) is None
+
+
+def test_edit_does_not_end_wait_on_open_blocking_row(store: Store, project: str) -> None:
+    q = store.ask("pick", project=project, cwd=project, agent=AGENT,
+                  choices=[Choice("a"), Choice("b")])
+    t = _later(store.path, 0.2, lambda s: s.edit(q.key, agent=AGENT, project=project, context="more"))
+    assert store.wait_for_answer(q.key, project=project, timeout=1.0, poll=0.05) is None
+    t.join()
+    assert store.get(q.key, project=project).context == "more"

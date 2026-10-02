@@ -688,3 +688,107 @@ def test_exec_refusals_and_missing_key(cli):
     assert no_cmd.returncode == 1 and "no command" in no_cmd.stderr
     miss = cli("exec", "q99")
     assert miss.returncode == 3 and len(miss.stderr.strip().splitlines()) == 1
+
+
+# --- get --wait on non-blocking rows (q459) ---------------------------------
+
+
+def _after(delay, fn, *args):
+    """Run fn(*args) on a thread after `delay` seconds; returns the started thread."""
+    import threading
+    import time
+
+    def run():
+        time.sleep(delay)
+        fn(*args)
+
+    t = threading.Thread(target=run)
+    t.start()
+    return t
+
+
+def test_get_wait_live_review_returns_on_new_verdict(cli):
+    cli("ask", "check", "--act", "review", "--agent", AGENT_A)
+    t = _after(0.8, cli, "answer", "q1", "-s", "pass")
+    r = cli("get", "q1", "--wait", "--timeout", "20", "--json", timeout=40)
+    t.join()
+    assert r.returncode == 0, r.stderr
+    assert len(json.loads(r.stdout)[0]["answers"]) == 1
+
+
+def test_get_wait_steer_returns_on_tap(cli):
+    cli("ask", "which way", "--act", "steer", "--chosen", "a",
+        "-c", "a", "-c", "b", "--agent", AGENT_A)
+    t = _after(0.8, cli, "answer", "q1", "-s", "b")
+    r = cli("get", "q1", "--wait", "--timeout", "20", "--json", timeout=40)
+    t.join()
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)[0]["status"] == "answered"
+
+
+def test_get_wait_notify_returns_on_dismiss(cli):
+    cli("ask", "fyi", "--act", "notify", "--agent", AGENT_A)
+    t = _after(0.8, cli, "answer", "q1", "--dismiss")
+    r = cli("get", "q1", "--wait", "--timeout", "20", "--json", timeout=40)
+    t.join()
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)[0]["status"] != "open"
+
+
+def test_get_wait_notify_returns_on_clear(cli):
+    cli("ask", "fyi", "--act", "notify", "--agent", AGENT_A)
+    t = _after(0.8, cli, "clear", "q1", "--agent", AGENT_A)
+    r = cli("get", "q1", "--wait", "--timeout", "20", "--json", timeout=40)
+    t.join()
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)[0]["status"] == "cleared"
+
+
+def test_get_wait_non_blocking_times_out_exit_2(cli):
+    cli("ask", "fyi", "--act", "notify", "--agent", AGENT_A)
+    r = cli("get", "q1", "--wait", "--timeout", "1")
+    assert r.returncode == 2
+    assert "timed out waiting for q1" in r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def test_get_wait_mixed_blocking_and_review_keys(cli):
+    cli("ask", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A, "--no-wait")
+    cli("ask", "check", "--act", "review", "--agent", AGENT_A)
+    t1 = _after(0.8, cli, "answer", "q1", "-s", "a")
+    t2 = _after(1.5, cli, "answer", "q2", "-s", "pass")
+    r = cli("get", "q1", "q2", "--wait", "--timeout", "20", "--json", timeout=40)
+    t1.join()
+    t2.join()
+    assert r.returncode == 0, r.stderr
+    rows = json.loads(r.stdout)
+    assert rows[0]["status"] == "answered" and len(rows[1]["answers"]) == 1
+
+
+def test_get_wait_edit_does_not_end_wait_on_open_blocking_row(cli):
+    cli("ask", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A, "--no-wait")
+    t = _after(0.8, cli, "edit", "q1", "--agent", AGENT_A, "--context", "more")
+    r = cli("get", "q1", "--wait", "--timeout", "3", "--json")
+    t.join()
+    assert r.returncode == 2
+    assert "Traceback" not in r.stderr
+
+
+def test_get_wait_error_is_one_line_not_a_traceback(cli, monkeypatch, project):
+    from cactus.store import Store
+
+    def boom(self, *a, **k):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(Store, "wait_for_answer", boom)
+    from cactus import cli as cli_mod
+
+    # In-process: the subprocess fixture cannot see the monkeypatch.
+    cli("ask", "x", "--act", "notify", "--agent", AGENT_A)
+    import io, contextlib
+    monkeypatch.chdir(project)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        code = cli_mod.main(["get", "q1", "--wait", "--timeout", "1"])
+    assert code == 1
+    assert err.getvalue().strip() == "cactus: boom"

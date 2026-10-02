@@ -117,7 +117,9 @@ up in the same thread with `-p KEY` when an answer opens a new question. A set
 of taps is cheaper for the human than a drip of interrupts across an afternoon.
 
 When work blocks on the batch, wait on all of it with one backgrounded call;
-it exits once every key has left `open`, and that exit is your wake-up:
+it exits once every key has settled (a blocking row leaves `open`; a
+review/plan/data/steer/notify row gets a new verdict, tap, or clear), and that
+exit is your wake-up:
 
     cactus get q7 q8 q9 --wait --agent "$AGENT" --json
 
@@ -301,8 +303,9 @@ for nothing.
 
     0  ok      1  error      2  --wait timed out      3  nothing matched
 
-`--wait` on a row you posted with `--no-block`, or on a `steer`, `notify`,
-`review`, `plan`, or `data`, is exit 1: nothing will ever arrive.
+`cactus ask --wait` on a `--no-block` row, `steer`, `notify`, `review`,
+`plan`, or `data` is exit 1. `cactus get KEY --wait` on one returns on the next
+change: a new verdict, a tap, a clear.
 
 ## Webhook owners
 

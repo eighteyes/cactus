@@ -77,8 +77,11 @@ WORKFLOW (required)
   2  a blocking ask (ask, run) waits for the human by default. Run it as ONE
      backgrounded command (Bash run_in_background); its exit is your wake-up.
      Do the rest of the work meanwhile. --no-wait posts and returns.
-     Steers and persistent rows (review/plan/data) never wait: collect them
-     with one backgrounded cactus get KEY... --wait.
+     Steers and persistent rows (review/plan/data) never wait at ask time:
+     collect them with one backgrounded cactus get KEY... --wait (returns on
+     the next verdict, tap, or clear).
+     A fresh review/plan is cactus ask --act review|plan; cactus review KEY /
+     cactus plan KEY only update an existing row.
   3  on each wake, read the row with cactus get KEY (answered, elaborate,
      reopened, cleared)
      review/plan verdict: read it with cactus get KEY --agent ID (that
@@ -617,16 +620,22 @@ def cmd_get(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
 
     if args.wait:
         timed_out_key = None
-        for raw, rproj, rkey in refs:
-            if store.wait_for_answer(rkey, project=rproj, timeout=args.timeout) is None:
-                timed_out_key = raw
-                break
+        settled_keys: list[tuple[str, str]] = []
+        try:
+            for raw, rproj, rkey in refs:
+                if store.wait_for_answer(rkey, project=rproj, timeout=args.timeout) is None:
+                    timed_out_key = raw
+                    break
+                settled_keys.append((rproj, rkey))
+        except (KeyError, ValueError) as exc:
+            print(f"cactus: {_msg(exc)}", file=sys.stderr)
+            return EXIT_ERROR
         if timed_out_key is not None:
-            # Print whatever already resolved before the miss, so a caller
+            # Print whatever already settled before the miss, so a caller
             # waiting on several keys is not left with nothing at all.
             settled = [
-                q for q in (store.get(rkey, project=rproj) for _, rproj, rkey in refs)
-                if q is not None and q.status != "open"
+                q for q in (store.get(rkey, project=rproj) for rproj, rkey in settled_keys)
+                if q is not None
             ]
             if settled:
                 _print_questions(settled, as_json=args.json, show_project=args.all)
@@ -1652,7 +1661,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     get = verb("get", help="read questions by key")
     get.add_argument("keys", nargs="+")
-    get.add_argument("-w", "--wait", action="store_true", help="block until answered")
+    get.add_argument("-w", "--wait", action="store_true", help="block until answered (non-blocking rows: until the next change)")
     get.add_argument("--timeout", type=float)
     get.add_argument("--answered-only", action="store_true",
                      help="drop anything still open or cleared")

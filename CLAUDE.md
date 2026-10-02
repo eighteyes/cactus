@@ -110,9 +110,11 @@ scope.
 - Choice strings split on the *first* colon into label and description; `-c`
   values are taken verbatim and never split on commas.
 - Exit codes are part of the contract: 0 ok, 1 error, 2 `--wait` timeout, 3 no
-  match. `--wait` on an act that never blocks is an error, not a hang — and
-  `cmd_ask` rejects it before calling `Store.ask`, so a doomed `--wait` never
-  leaves an orphan row behind.
+  match. Ask-time `--wait` on a row that
+  never blocks (steer, notify, review, plan, data, `--no-block`) is an error,
+  not a hang — `cmd_ask` rejects it before calling `Store.ask`, so a doomed
+  `--wait` never leaves an orphan row behind. `get --wait` on such a row is
+  fine (q459): it returns on the next change.
 - argparse usage errors (`cactus: error: ...`) exit 1, not argparse's default
   2 — `_ArgumentParser.error` overrides it, on the main parser and every
   subparser alike, because 2 is reserved for `--wait` timeout everywhere else.
@@ -344,8 +346,10 @@ scope.
 - `elaborate` (q212) is a status, not a rebuild: `status` has no CHECK
   constraint, so the new value needs only the additive `elaborate`/
   `elaborate_at` columns. `Store.answer` refuses it like `cleared`, exit 1.
-  `wait_for_answer` keeps blocking through it — only `open`/`elaborate` keep
-  it waiting, any other status returns.
+  `wait_for_answer` on a blocking row keeps waiting through it — only
+  `open`/`elaborate` keep it waiting, any other status returns. A
+  non-blocking row (q459) returns when its (status, answer count) differs
+  from the snapshot taken as the wait began; `edit` changes neither.
 - `Store.edit` is `cactus edit`'s mechanism, gated open/live/elaborate only;
   ownership is the CLI's job, same split as `clear`/`reopen`. `-c` replaces
   the whole choice list and drops any `recommend` (plus its confidence/why)
@@ -408,8 +412,9 @@ scope.
   (`ask` with act ask, and `run`) wait by default
   (`DEFAULT_WAIT_TIMEOUT` 3600s, `--timeout` overrides, exit 2 on timeout);
   `--no-wait` opts out, `-w/--wait` is a back-compat no-op. steer/notify/
-  review/plan/data and `--no-block` rows never wait; an agent collects those
-  with one backgrounded `cactus get KEY... --wait`. The waiting command
+  review/plan/data and `--no-block` rows never wait at ask time; an agent
+  collects those with one backgrounded `cactus get KEY... --wait`, which
+  returns on a new verdict, a tap, or a clear (q459). The waiting command
   prints the key at once (stderr under `--json`), then the answer like
   `get --wait`. An agent posts each blocking ask as one backgrounded command
   (Bash `run_in_background`): it waits, its exit is the wake-up (the q339
