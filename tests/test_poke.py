@@ -131,6 +131,27 @@ def test_visit_focuses_the_pane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert ran.endswith(" agent focus w3B:p3")
 
 
+def test_visit_and_poke_pin_herdr_to_the_rows_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pane id names a pane inside one herdr session; run from a TUI
+    outside it (or in another session), herdr answers agent_not_found
+    unless `--session` names the row's own."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_transport(bin_dir)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin:/bin")
+    monkeypatch.delenv("CACTUS_VISIT", raising=False)
+    monkeypatch.delenv("CACTUS_POKE", raising=False)
+    monkeypatch.setenv("CACTUS_POKE_WEBHOOKS", str(tmp_path / "none.json"))
+
+    assert poke_mod.visit("w3B:p3", session="estate").endswith(" --session estate agent focus w3B:p3")
+    assert poke_mod.visit("w3B:p3").endswith("herdr agent focus w3B:p3")
+    ran = poke_mod.poke("a1", pane="w3B:p3", session="estate", message="hi")
+    assert ran.endswith(" --session estate agent prompt w3B:p3 hi")
+
+    monkeypatch.setenv("CACTUS_VISIT", "true {session} {pane}")
+    assert poke_mod.visit("w3B:p3", session="estate") == "/usr/bin/true estate w3B:p3"
+
+
 def test_visit_refuses_without_a_pane() -> None:
     with pytest.raises(poke_mod.PokeError) as err:
         poke_mod.visit(None)

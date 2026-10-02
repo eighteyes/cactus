@@ -300,22 +300,24 @@ def test_set_files_replaces_and_refuses_cleared_row(store: Store, project: str) 
 
 
 def test_project_panes_distinct_status_filtered_and_skipped(store: Store, project: str) -> None:
-    def ask(agent: str, pane: str | None) -> str:
+    def ask(agent: str, pane: str | None, session: str | None = "s1") -> str:
         return store.ask("q", project=project, cwd=project, agent=agent, kind="text",
-                         act="ask", pane=pane).key
+                         act="ask", pane=pane, session=session).key
 
     ask("a1", "w1:p1")
     ask("a1b", "w1:p1")          # same pane again: newest agent wins, one entry
     ask("a2", "w1:p2")
     ask("a3", None)              # unstamped: counted, not reachable
+    ask("a5", "w1:p2", "s2")     # same pane id, other herdr session: its own entry
     gone = ask("a4", "w1:p4")
     store.clear(keys=[gone], project=project)  # cleared rows do not count
 
     reach = store.project_panes(project)
 
     assert reach["panes"] == [
-        {"pane": "w1:p1", "agent": "a1b"},
-        {"pane": "w1:p2", "agent": "a2"},
+        {"pane": "w1:p1", "session": "s1", "agent": "a1b"},
+        {"pane": "w1:p2", "session": "s1", "agent": "a2"},
+        {"pane": "w1:p2", "session": "s2", "agent": "a5"},
     ]
     assert reach["skipped"] == 1
 

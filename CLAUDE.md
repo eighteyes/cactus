@@ -171,6 +171,13 @@ scope.
   tests set it inert). No owner or webhook fallback: without a pane there is
   no conversation on screen to jump to, so the footer omits it and `on_key`
   flashes why, same as `p`.
+- A pane id only names a pane inside one herdr session, so `visit` and the
+  default `poke` transport run `herdr --session {row.session} ...`
+  (`poke._herdr_argv`); every caller passes `session=q.session`. Without it
+  herdr picks `HERDR_SOCKET_PATH` or its default session, and a TUI outside
+  herdr (or in another session) gets `agent_not_found`. `{session}`
+  substitutes in `CACTUS_VISIT`/`CACTUS_POKE` templates;
+  `Store.project_panes` is distinct per `(pane, session)`.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.

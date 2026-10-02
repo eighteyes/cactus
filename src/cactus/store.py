@@ -1805,25 +1805,27 @@ class Store:
         Distinct non-null `pane` stamps over the project's `open`/`live`/
         `elaborate` rows, each with the `agent` of that pane's newest row,
         plus `skipped`: how many of those rows carry no pane and so cannot
-        be prompted. Returns `{"panes": [{"pane", "agent"}], "skipped": N}`.
+        be prompted. A pane id names a pane inside one herdr session, so
+        panes are distinct per `(session, pane)`. Returns
+        `{"panes": [{"pane", "session", "agent"}], "skipped": N}`.
         """
         rows = self.conn.execute(
             """
-            SELECT pane, agent FROM questions
+            SELECT pane, session, agent FROM questions
             WHERE project = ? AND status IN ('open', 'live', 'elaborate')
             ORDER BY id
             """,
             (project,),
         ).fetchall()
-        latest: dict[str, str | None] = {}
+        latest: dict[tuple[str, str | None], str | None] = {}
         skipped = 0
         for r in rows:
             if r["pane"]:
-                latest[r["pane"]] = r["agent"]
+                latest[(r["pane"], r["session"])] = r["agent"]
             else:
                 skipped += 1
         return {
-            "panes": [{"pane": p, "agent": a} for p, a in latest.items()],
+            "panes": [{"pane": p, "session": s, "agent": a} for (p, s), a in latest.items()],
             "skipped": skipped,
         }
 

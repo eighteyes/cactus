@@ -2658,7 +2658,7 @@ class CactusApp(App[int]):
             return
         else:
             try:
-                poke(q.agent, pane=q.pane, timeout=5.0)
+                poke(q.agent, pane=q.pane, session=q.session, timeout=5.0)
             except PokeError as exc:
                 self.flash = f"poke failed: {exc}"
             else:
@@ -2685,7 +2685,7 @@ class CactusApp(App[int]):
             failed = 0
             for entry in panes:
                 try:
-                    poke(entry["agent"], pane=entry["pane"], message=PROJECT_POKE_MESSAGE,
+                    poke(entry["agent"], pane=entry["pane"], session=entry["session"], message=PROJECT_POKE_MESSAGE,
                          timeout=5.0, webhook=False)
                 except PokeError:
                     failed += 1
@@ -2704,7 +2704,7 @@ class CactusApp(App[int]):
             # check_action keeps the binding off here; on_key owns the flash.
             return
         try:
-            visit(q.pane)
+            visit(q.pane, session=q.session)
         except PokeError as exc:
             self.flash = f"visit failed: {exc}"
         else:

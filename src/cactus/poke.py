@@ -9,6 +9,8 @@ Responsibilities:
 - After an answer, auto-poke only webhook-mapped agents (never herdr).
 - Report a usable failure when a row has no owner or the transport is absent.
 - Visit: focus the herdr pane a row was asked from ($CACTUS_VISIT overrides).
+- Pin herdr to the row's own session (`herdr --session S`): a pane id only
+  names a pane inside one session.
 """
 
 from __future__ import annotations
@@ -41,6 +43,18 @@ DEFAULT_COMMAND = "herdr agent prompt {target} {message}"
 # valid `herdr agent` targets. CACTUS_VISIT overrides it, with `{pane}`
 # substituted per argument, so tests can point it somewhere inert.
 DEFAULT_VISIT_COMMAND = "herdr agent focus {pane}"
+
+
+def _herdr_argv(command: str, session: str | None) -> list[str]:
+    """Split a default herdr command, pinned to `session` when the row has
+    one. A pane id is only unique inside its session, and herdr's own pick
+    (`HERDR_SOCKET_PATH`, else its default session) is whatever the caller
+    happens to run under: a TUI outside herdr, or in another session, gets
+    `agent_not_found`. `--session` beats both."""
+    argv = shlex.split(command)
+    if session and argv and argv[0] == "herdr":
+        argv[1:1] = ["--session", session]
+    return argv
 
 DEFAULT_WEBHOOKS_PATH = Path("~/.config/cactus/poke-webhooks.json").expanduser()
 
@@ -212,6 +226,7 @@ def poke(
     agent: str | None,
     *,
     pane: str | None = None,
+    session: str | None = None,
     message: str | None = None,
     timeout: float = 10.0,
     webhook: bool = True,
@@ -227,7 +242,8 @@ def poke(
     1. CACTUS_POKE override (tests / forced transport) — same for every agent
     2. Webhook map entry for this agent id (CACTUS_POKE_WEBHOOKS /
        ~/.config/cactus/poke-webhooks.json)
-    3. Default herdr agent prompt, targeting the row's pane stamp
+    3. Default herdr agent prompt, targeting the row's pane stamp in its
+       herdr `session` (`{session}` in an override template)
 
     `webhook=False` skips step 2 (a project-wide poke is herdr only).
     """
@@ -239,7 +255,8 @@ def poke(
 
     def fill(template: list[str]) -> list[str]:
         return [
-            part.replace("{agent}", agent).replace("{target}", target).replace("{message}", body)
+            part.replace("{agent}", agent).replace("{target}", target)
+            .replace("{session}", session or "").replace("{message}", body)
             for part in template
         ]
 
@@ -255,7 +272,7 @@ def poke(
             f"herdr prompts a pane and {agent} has no pane stamp; poke by KEY so "
             "the row's pane is used, or map the agent to a webhook"
         )
-    return _run_argv(fill(shlex.split(DEFAULT_COMMAND)), timeout)
+    return _run_argv(fill(_herdr_argv(DEFAULT_COMMAND, session)), timeout)
 
 
 def reachable(agent: str | None, pane: str | None) -> bool:
@@ -270,15 +287,19 @@ def reachable(agent: str | None, pane: str | None) -> bool:
     return webhook_entry(agent) is not None
 
 
-def visit(pane: str | None, *, timeout: float = 5.0) -> str:
+def visit(pane: str | None, *, session: str | None = None, timeout: float = 5.0) -> str:
     """Focus the herdr pane a row was asked from. Returns what ran.
 
     Only a pane stamp can be visited: a row posted outside herdr has no
     conversation on screen to jump to, so it raises rather than guessing.
+    `session` pins herdr to the row's own session (`{session}` in a
+    CACTUS_VISIT template).
     """
     if not pane:
         raise PokeError("posted outside herdr; no pane to visit")
-    template = shlex.split(os.environ.get("CACTUS_VISIT") or DEFAULT_VISIT_COMMAND)
+    override = os.environ.get("CACTUS_VISIT")
+    template = shlex.split(override) if override else _herdr_argv(DEFAULT_VISIT_COMMAND, session)
     return _run_argv(
-        [part.replace("{pane}", pane) for part in template], timeout, "CACTUS_VISIT"
+        [part.replace("{pane}", pane).replace("{session}", session or "") for part in template],
+        timeout, "CACTUS_VISIT",
     )
