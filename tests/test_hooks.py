@@ -431,3 +431,19 @@ def test_session_start_waits_on_the_denied_row_instead_of_reposting(hook_env, pr
 def test_hooks_spell_project_status_one_way():
     for script in [*ROOT_HOOKS.glob("*.sh"), *CODEX_HOOKS.glob("*.sh")]:
         assert "cactus project status" not in script.read_text(), script.name
+
+
+def test_stop_hook_is_silent_while_the_agent_has_an_open_row(hook_env, project, tmp_path, cli):
+    # q469: a fork already waiting on the human is the fork; nothing to post.
+    script = ROOT_HOOKS / "stop-fork.sh"
+    transcript = _transcript(tmp_path, {"type": "text", "text": "done"})
+    mine = {"cwd": project, "session_id": "s1", "transcript_path": transcript}
+    other = {"cwd": project, "session_id": "s2", "transcript_path": transcript}
+    assert json.loads(run_hook(script, mine, hook_env, project).stdout)["decision"] == "block"
+
+    key = cli("ask", "pick one", "-c", "a", "-c", "b", "--no-wait", "--agent", "s1", cwd=project).stdout.strip()
+    assert run_hook(script, mine, hook_env, project).stdout.strip() == ""
+    assert json.loads(run_hook(script, other, hook_env, project).stdout)["decision"] == "block"
+
+    cli("answer", key, "-s", "a", cwd=project)
+    assert json.loads(run_hook(script, mine, hook_env, project).stdout)["decision"] == "block"

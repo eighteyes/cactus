@@ -10,6 +10,10 @@
 #     markers along the way
 #   - exempt turns opened by a task-notification or cross-session message,
 #     since those are background events, not a human handing off a decision
+#   - stay silent while the agent already has an `open` row in this project
+#     (q469): a fork is waiting on the human, so there is nothing to post.
+#     `live` and `elaborate` do not count: a standing plan/review would mute
+#     the hook for good, and an elaborate row waits on the agent, not the human
 #   - block (exit 0, emit {"decision":"block","reason":...}) unless the turn
 #     already contains a Bash `cactus ask|edit|plan|review` (or `cac`) invocation or an
 #     AskUserQuestion tool_use
@@ -25,6 +29,15 @@ input=$(cat)
 enabled=$(cactus project-status --json 2>/dev/null \
   | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
 [ "${enabled:-true}" = "true" ] || exit 0
+
+# Read first: identity.sh takes the session id from this payload.
+# shellcheck source=identity.sh
+. "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
+agent=$(cactus_resolve_agent)
+if [ -n "$agent" ]; then
+  open=$(cactus list -s open --agent "$agent" --json 2>/dev/null | jq 'length' 2>/dev/null)
+  [ "${open:-0}" -gt 0 ] && exit 0
+fi
 
 python3 - "$input" <<'PYEOF'
 import json

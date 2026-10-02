@@ -339,7 +339,11 @@ scope.
   on by default (q411): they exit 0 before reading stdin only when
   `CACTUS_STOP_HOOK=0`. The Claude hook holds a turn opened by a human prompt
   that posted none of `cactus ask`, `edit`, `plan`, `review` or
-  AskUserQuestion; the Codex hook never blocks.
+  AskUserQuestion; the Codex hook never blocks. The Claude hook also stays
+  silent while the agent (`identity.sh`) has an `open` row in the project
+  (q469): that fork is already waiting on the human. `live` and `elaborate`
+  do not count — a standing plan/review would mute it for good, and an
+  elaborate row waits on the agent.
 - `cactus rehome --agent NEW` (q208) is gated to rows stamped with the
   caller's own `HERDR_PANE_ID`/`HERDR_SESSION` — missing either refuses (exit
   1) rather than guessing which rows are "mine". Scoped to the current
