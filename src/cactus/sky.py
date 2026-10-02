@@ -343,6 +343,9 @@ _SHARED_COMMENTS = {
     "ground_lines": "how many faint perspective lines cross the ground band (0 disables)",
     "deck_altitude_px": "the deck's world y — how far above the horizon its top peeks through",
     "fps": "how often the TUI samples and redraws the field, per second",
+    "show_sky": "root toggle: 'off' stops the clouds and draws no sky; every sky lever hides",
+    "show_birds": "root toggle: 'off' grounds every flock; the birds levers hide",
+    "show_cactus": "root toggle: 'off' draws no falling seeds and no pile; the seed and pile levers hide",
     "sky_engine": "which sky renderer runs: 'fluid' (cellular automaton), 'texture' (cheaper baked noise), or 'puffs' (individual clouds, no whole-sky scroll)",
     "cloud_style": "puffs engine look: 'drift' (each cloud wanders its own way), 'bloom' (near-still clouds unfold and recede), 'streaks' (long thin bands), 'bands' (planetary layers: full-width lanes, neighbours flowing opposite ways)",
     "cloud_count": "puffs engine population scale: 1.0 is one cloud per band per ~40 columns (bands style: lane count, ignored while band_height > 0)",
@@ -433,6 +436,12 @@ class SkyConfig:
     # elapsed wall time, so raising or lowering `fps` only changes how often
     # a frame is drawn, never how fast the sky or a falling seed moves.
     fps: int = field(default=6, metadata={"step": 1, "lo": 1, "hi": 30})
+    # Root toggles: whole layers of the field on or off. `field.py` reads
+    # them off `World.sky.config`; `tuning_visible` hides an off layer's
+    # levers.
+    show_sky: str = field(default="on", metadata={"choices": ("on", "off")})
+    show_birds: str = field(default="on", metadata={"choices": ("on", "off")})
+    show_cactus: str = field(default="on", metadata={"choices": ("on", "off")})
     # Which sky renderer runs: "fluid" is the cellular-automaton `Sky` above,
     # "texture" is the cheaper v5 baked-noise `TextureSky` (same interface),
     # restored as a lever rather than a replacement (v6f, q384).
@@ -638,6 +647,7 @@ def tuning_fields() -> list[TuneField]:
 # `flat_*` are listed nowhere: the strokes they governed left the renderer
 # (braille only, v8); the keys stay so an older sky.toml still loads.
 _TUNE_ALWAYS = frozenset((
+    "show_sky", "show_birds", "show_cactus",
     "sky_engine", "fps", "pile_style", "stick_distance", "seed_wind", "gust_speed", "gust_period",
     "birds", "bird_rate", "bird_max", "seed_mass", "accrete_spin", "accrete_count", "accrete_shape", "pile_settle", "pile_shades", "pile_age_span", "dot_latch", "cloud_fade",
     "tone_exp", "haze_depth_weight", "haze_row_weight", "haze_clamp",
@@ -657,7 +667,10 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
     the projection levers only while `perspective == "on"`; `shear_base`
     alone under texture (its camera drift); the `cloud_*` levers only
     under puffs (`cloud_altitude` only off bands). `_TUNE_ALWAYS` shows
-    everywhere."""
+    everywhere, unless a root toggle (`show_*`) turned its layer off
+    (`_tune_layer_off`)."""
+    if _tune_layer_off(row, cfg):
+        return False
     engine = cfg.sky_engine
     if row.group != "shared":
         return engine == "fluid"
@@ -672,12 +685,32 @@ def tuning_visible(row: TuneField, cfg: SkyConfig) -> bool:
     return engine == "fluid" and cfg.perspective == "on" and row.name in _TUNE_PERSPECTIVE
 
 
+# Root toggles: the panels (and stray keys) each `show_*` lever hides while
+# off. `fps` lives in the engine panel but steers the whole field, so it stays.
+_TUNE_SKY_PANELS = frozenset(("engine", "clouds", "projection", "wind", "tone", "far", "mid", "near"))
+_TUNE_SKY_KEEP = frozenset(("fps", "seed_wind"))
+_TUNE_CACTUS_PANELS = frozenset(("seeds", "pile"))
+
+
+def _tune_layer_off(row: TuneField, cfg: SkyConfig) -> bool:
+    """Whether a root toggle hides `row`: `show_sky` off hides every sky
+    panel but `fps` and `seed_wind`, `show_birds` off the birds panel,
+    `show_cactus` off the seeds and pile panels and `seed_wind`."""
+    panel = tuning_panel_of(row)
+    if cfg.show_sky == "off" and panel in _TUNE_SKY_PANELS and row.name not in _TUNE_SKY_KEEP:
+        return True
+    if cfg.show_birds == "off" and panel == "birds":
+        return True
+    return cfg.show_cactus == "off" and (panel in _TUNE_CACTUS_PANELS or row.name == "seed_wind")
+
+
 # The `T` overlay's panels, in page order: shared keys by what they steer,
 # then one panel per fluid grid (a grid group names its own panel). A shared
 # key listed nowhere lands in `other`, after the named ones, so a new lever
 # never vanishes from the overlay; `edge_*`/`flat_*` go there too but
 # `tuning_visible` hides them everywhere.
 TUNE_PANELS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("show", ("show_sky", "show_birds", "show_cactus")),
     ("engine", ("sky_engine", "perspective", "fps", "cloud_fade")),
     ("clouds", ("cloud_style", "cloud_count", "cloud_drift", "cloud_life", "cloud_altitude",
                 "band_gap", "band_flow", "band_height", "band_edge", "band_belts", "band_evolve")),

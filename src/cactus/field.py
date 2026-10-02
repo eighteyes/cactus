@@ -449,7 +449,8 @@ class World:
     def advance(self, dt: float) -> None:
         self._frame_dt += dt
         self._advance_wind(dt)
-        self.sky.advance(dt, self.wind)
+        if self.sky.config.show_sky != "off":
+            self.sky.advance(dt, self.wind)
         self._advance_birds(dt)
         self._advance_seeds(dt)
 
@@ -462,6 +463,10 @@ class World:
 
     def _advance_birds(self, dt: float) -> None:
         cfg = self.sky.config
+        if cfg.show_birds == "off":
+            self._flocks = []
+            self.birds = []
+            return
         if len(self._flocks) < cfg.bird_max and self.rng.random() < cfg.bird_rate * dt:
             self._spawn_flock()
         alive_flocks = []
@@ -1405,16 +1410,16 @@ class World:
         """
         if pile_only or not self._perf_cache:
             return self._render_cells(pile_only)
+        cactus = self.sky.config.show_cactus != "off"
         bird_cells = self._bird_cells()
-        seed_canvas, seed_cells = self._seed_splat_canvas()
+        seed_canvas, seed_cells = self._seed_splat_canvas() if cactus else ({}, set())
         pile_canvas, pile_cells = (
-            self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else ({}, set())
+            self._pile_splat_canvas() if cactus and self.sky.config.pile_style == "dots" else ({}, set())
         )
-        ground_line_cells = self._ground_line_cells()
-        sky_grid = self.sky.render_cells()
-        self._sky_cells = sky_grid
-        sky_grid = self._fade_sky(sky_grid)
+        ground_line_cells, sky_grid = self._sky_layer()
         layer, speck = self._static_layer(pile_canvas, pile_cells)
+        if not cactus:
+            layer = {}
         seed_colour = self.palette.seed
         blank = (" ", None)
         parts: list[str] = []
@@ -1498,6 +1503,17 @@ class World:
         self._static_memo = (key, self.structure, (layer, speck))
         return layer, speck
 
+    def _sky_layer(self) -> tuple[dict[tuple[int, int], tuple[str, str]], list[list[tuple[str, str | None]]]]:
+        """The ground lines and faded sky grid for this frame, both empty
+        while `show_sky` is off — then `_sky_cells` is `None`, so no seed
+        reads a cloud."""
+        if self.sky.config.show_sky == "off":
+            self._sky_cells = None
+            return {}, []
+        sky_grid = self.sky.render_cells()
+        self._sky_cells = sky_grid
+        return self._ground_line_cells(), self._fade_sky(sky_grid)
+
     def _render_cells(self, pile_only: bool = False) -> Text:
         """`render`'s original path: one `_sample_cell` per cell, one
         `Text.append` per run. Serves `pile_only` and `_perf_cache = False`."""
@@ -1508,15 +1524,13 @@ class World:
             ground_line_cells: dict[tuple[int, int], tuple[str, str]] = {}
             sky_grid: list[list[tuple[str, str | None]]] = []
         else:
+            cactus = self.sky.config.show_cactus != "off"
             bird_cells = self._bird_cells()
-            seed_canvas, seed_cells = self._seed_splat_canvas()
+            seed_canvas, seed_cells = self._seed_splat_canvas() if cactus else ({}, set())
             pile_canvas, pile_cells = (
-                self._pile_splat_canvas() if self.sky.config.pile_style == "dots" else ({}, set())
+                self._pile_splat_canvas() if cactus and self.sky.config.pile_style == "dots" else ({}, set())
             )
-            ground_line_cells = self._ground_line_cells()
-            sky_grid = self.sky.render_cells()
-            self._sky_cells = sky_grid
-            sky_grid = self._fade_sky(sky_grid)
+            ground_line_cells, sky_grid = self._sky_layer()
         text = Text()
         for r in range(self.rows):
             cy = self.rows - 1 - r
@@ -1558,7 +1572,9 @@ class World:
             if block is not None:
                 return _ordered_dither(block), self.palette.seed
 
-        pile = self._pile_cell(cx, cy, pile_canvas, pile_cells)
+        pile = (
+            self._pile_cell(cx, cy, pile_canvas, pile_cells) if self.sky.config.show_cactus != "off" else None
+        )
         if pile is not None:
             return pile
 

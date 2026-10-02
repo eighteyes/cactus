@@ -1453,3 +1453,54 @@ def test_pile_levers_round_trip_through_sky_toml_and_show_on_the_t_page(tmp_path
     for engine in ("fluid", "texture", "puffs"):
         names = {f.name for f in sky_module.tuning_fields_for(SkyConfig(sky_engine=engine))}
         assert {"pile_shades", "pile_age_span"} <= names
+
+
+def test_root_toggles_blank_their_layer_on_both_render_paths() -> None:
+    """`show_sky`/`show_birds`/`show_cactus` off: no cloud glyph, no bird,
+    no pile or seed cell — on the cached path and `_render_cells` alike."""
+    cfg = SkyConfig(sky_engine="puffs", bird_rate=1.0, bird_max=6, cloud_count=12.0)
+    world = World(cols=40, rows=14, rng=random.Random(4), sky_config=cfg)
+    world.structure[(4, 0)] = 0
+    world.structure_version += 1
+    world.drop(20)
+    for _ in range(20):
+        world.advance(0.5)
+    assert world.birds and world.render().plain.strip()
+
+    cfg.show_sky = cfg.show_birds = cfg.show_cactus = "off"
+    world.apply_sky_config(cfg)
+    world.drop(10)
+    world.advance(0.5)
+    assert not world.birds and not world._flocks
+    for perf in (True, False):
+        world._perf_cache = perf
+        plain = world.render().plain
+        assert world._sky_cells is None
+        assert not set(plain) - set(" \n.·'`,:")  # ground speckle only
+        assert not world.cloud_at(5, 5)
+
+
+def test_sky_off_freezes_the_sky_engine() -> None:
+    cfg = SkyConfig(sky_engine="puffs", show_sky="off")
+    world = World(cols=30, rows=10, rng=random.Random(2), sky_config=cfg)
+    with patch.object(world.sky, "advance") as adv:
+        world.advance(0.5)
+    adv.assert_not_called()
+
+
+def test_root_toggles_hide_their_layers_levers_on_the_t_page() -> None:
+    def names(**kw):
+        return {(f.group, f.name) for f in sky_module.tuning_fields_for(SkyConfig(sky_engine="fluid", **kw))}
+
+    full = names()
+    assert {("shared", "show_sky"), ("shared", "show_birds"), ("shared", "show_cactus")} <= full
+    no_sky = names(show_sky="off")
+    assert not {n for g, n in no_sky if g != "shared"}
+    assert not {"sky_engine", "cloud_fade", "tone_exp", "shear_base", "horizon"} & {n for _, n in no_sky}
+    assert {("shared", "fps"), ("shared", "seed_wind"), ("shared", "bird_rate")} <= no_sky
+    assert not {"birds", "bird_rate", "bird_max"} & {n for _, n in names(show_birds="off")}
+    no_cactus = {n for _, n in names(show_cactus="off")}
+    assert not {"seed_mass", "gust_speed", "pile_style", "pile_shades", "seed_wind"} & no_cactus
+    assert {"show_sky", "show_birds", "show_cactus", "fps"} <= {
+        n for _, n in names(show_sky="off", show_birds="off", show_cactus="off")
+    }

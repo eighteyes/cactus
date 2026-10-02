@@ -1999,7 +1999,7 @@ async def test_tuning_panels_filter_by_engine(
         await pilot.pause()
         await _open_tuning_under(pilot, app, sky_engine="puffs", cloud_style="bands")
         names = _tuning_panel_names(app)
-        assert names[0] == "engine" and "clouds" in names
+        assert names[:2] == ["show", "engine"] and "clouds" in names
         assert not {"projection", "far", "mid", "near"} & set(names)
         await pilot.press("T")
         await pilot.pause()
@@ -2643,7 +2643,8 @@ async def test_process_mode_app_paints_child_frames_and_stops_the_child(store: S
         assert isinstance(app.field, ProcessField) and app.field.alive()
         widget = app.query_one("#field", FieldView)
         deadline = time.monotonic() + 20
-        while not widget._rows and time.monotonic() < deadline:
+        # The first frame can land before layout settles; wait for one at the final size.
+        while len(widget._rows) != widget.size.height and time.monotonic() < deadline:
             await pilot.pause(0.1)
         assert len(widget._rows) == widget.size.height
         assert app.field.cols == widget.size.width

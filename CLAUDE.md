@@ -693,6 +693,15 @@ scope.
   `bird_rate` the spawns per second, `bird_max` how many flocks fly at once
   (0 grounds them). `FLOCK_SPAWN_P`/`FLOCK_MAX_ALIVE` are only the defaults'
   documentation now. The glyph set per depth stays `field.DEPTH_GLYPHS`.
+- Root toggles on `SkyConfig`: `show_sky`, `show_birds`, `show_cactus`
+  (`on`/`off`), the `show` panel first on the T page. `show_sky` off skips
+  `sky.advance` and draws no sky or ground lines (`World._sky_layer`;
+  `_sky_cells` is `None`, so no seed reads a cloud); `show_birds` off clears
+  every flock and spawns none; `show_cactus` off draws no falling seed and no
+  pile on both render paths. `sky._tune_layer_off` hides an off layer's
+  panels: sky hides engine/clouds/projection/wind/tone and the grids but
+  keeps `fps` and `seed_wind`; birds hides `birds`; cactus hides seeds,
+  pile and `seed_wind`.
 - Pile age ramp on `SkyConfig`: `pile_shades` (3..64, default 32) and
   `pile_age_span` (10..1000 drops, default 100). `World._age_colour` blends
   `cactus_new` -> `cactus_mid` -> `cactus_old` piecewise-linearly over
@@ -711,6 +720,13 @@ scope.
   puts a shelf cell directly on the ground or a block and no target cell
   is taken — otherwise it lands as hit, so an overhang never slides down a
   pile's side; a lone block keeps its perch; `keep`: lands as it hit).
+  `drop` also guarantees no floating piece: after every landing,
+  `World._drop_floating` finds the landed cells' component (8-connected, x
+  wrapped) and, when no cell of it is at `cy == 0`, drops it rigidly a row
+  at a time until a cell reaches the ground or sits directly on another
+  component, ages kept, to a fixed point. `World.drop_floaters()` sweeps the
+  whole pile: `garden.load_into` calls it, and so does `apply_sky_config`
+  on a switch to `drop`. `keep` never sweeps.
   Both always show on the T page. Under `pile_style = "dots"` a seed latches
   within `dot_latch` sub-cells (default 3.5, a dot's visible reach) of a
   pile cell at its height or below, then `World._snap` shifts the clump by
@@ -719,13 +735,6 @@ scope.
 - Seed wind: `SkyConfig.seed_wind` is in columns (0-30, default 3), the
   mean drift over a full fall at typical wind; gusts carry ~3x further.
   `World.seed_wind()` is world wind x `seed_wind / SEED_WIND_COLS_PER_UNIT`
-  `drop` also guarantees no floating piece: after every landing,
-  `World._drop_floating` finds the landed cells' component (8-connected, x
-  wrapped) and, when no cell of it is at `cy == 0`, drops it rigidly a row
-  at a time until a cell reaches the ground or sits directly on another
-  component, ages kept, to a fixed point. `World.drop_floaters()` sweeps the
-  whole pile: `garden.load_into` calls it, and so does `apply_sky_config`
-  on a switch to `drop`. `keep` never sweeps.
   (0.55, measured over the 12 s fall at 120x30 with random gusts off:
   drift is linear in the multiplier), never a deck's
   `wind_scale` (puffs ignores wind, texture reads only `shear_base`, so
