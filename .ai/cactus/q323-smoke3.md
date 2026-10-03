@@ -1,23 +1,31 @@
-# q254 — Smoke test round 3 — pick one; I’ll ping this chat when I see it.
+# q323 — Where did the poke fail with 'herdr is not on PATH'?
 
 status: answered
 act: ask
 kind: choice
-agent: 33082afe-4a84-42e6-9e62-f15e8c46e3e6
-asked by: Grok Bot
+thread: poke
+agent: 83155dd4-270a-444a-bf43-8d9e8a6dfa37
 cwd: .
-asked at: 2026-09-24T15:36:43.737389+00:00
+asked at: 2026-09-26T06:00:44.613461+00:00
+
+## Context
+
+herdr resolves to ~/.local/bin/herdr in this shell. poke.py refuses with that
+message when shutil.which fails, so the failing process had a stripped PATH.
+launchd apps get /usr/bin:/bin:/usr/sbin:/sbin only.
 
 ## Options
 
-- Got it  (★●)
-- Still broken
+- mac — the menu-bar app; fix its PATH when it shells out to cactus  (★◐)
+- tui-www — TUI or web board started outside a login shell; poke.py falls back to ~/.local/bin and /opt/homebrew/bin
+- cli — cactus poke in a terminal; PATH itself is broken there
 
 ## Recommendation
 
-Got it — high
+mac — med
+newest surface, launchd PATH matches the symptom
 
 ## Answer
 
-Got it
-answered at: 2026-09-24T15:36:51.034969+00:00
+tui-www
+answered at: 2026-09-26T06:19:09.727411+00:00

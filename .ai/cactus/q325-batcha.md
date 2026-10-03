@@ -1,20 +1,28 @@
-# q255 — Batch A — favorite color for the test?
+# q325 — Commit the hint-row work, or leave it in the tree?
 
 status: answered
 act: ask
 kind: choice
-agent: 33082afe-4a84-42e6-9e62-f15e8c46e3e6
-asked by: Grok Bot
+agent: orc2-patches
 cwd: .
-asked at: 2026-09-24T15:52:19.448781+00:00
+asked at: 2026-09-26T06:16:30.530725+00:00
+
+## Context
+
+Branch cactus-v1 already has someone else's work in flight: store.py staged, cli.py staged+dirty. My change is tui.py only. Committing tui.py alone leaves their staged store.py untouched but interleaves history.
 
 ## Options
 
-- Red
-- Blue
-- Green
+- commit tui.py only — leave their staged work alone
+- leave it dirty — you or the other agent commits it  (★◐)
+- new branch — branch off and commit there
+
+## Recommendation
+
+leave it dirty — med
+another agent is mid-work on this branch; interleaving is their call not mine
 
 ## Answer
 
-Red
-answered at: 2026-09-24T15:52:58.566707+00:00
+leave it dirty
+answered at: 2026-09-26T06:19:25.436715+00:00
