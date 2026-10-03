@@ -251,6 +251,13 @@ function renderCard() {
   if (q.context) {
     html += '<div class="field"><div class="label">context</div><pre>' + esc(q.context) + "</pre></div>";
   }
+  if (q.site) {
+    const href = esc(q.site).replace(/"/g, "&quot;");
+    html += '<div class="field"><div class="label">site</div>' +
+      (/^https?:\\/\\//i.test(q.site)
+        ? '<a href="' + href + '" target="_blank" rel="noopener">' + esc(q.site) + "</a>"
+        : esc(q.site)) + "</div>";
+  }
   if (q.act === "run" && q.review && q.review.run_cmd) {
     html += '<div class="field"><div class="label">command</div><pre>' + esc(q.review.run_cmd) + "</pre></div>";
   }

@@ -319,6 +319,9 @@ def _card_lines(
         for i, path in enumerate(q.files, start=1):
             label = "files" if i == 1 else ""
             lines.append(f"  {label:<8}{i} {path}")
+    if q.site:
+        lines.append("")
+        lines.append(f"site: {q.site}")
     if preview:
         lines.append("")
         lines.extend(f"  {row}" for row in preview)
@@ -433,6 +436,8 @@ def _card_lines(
             extras.append(("p", "poke"))
         if q.pane:
             extras.append(("v", "visit"))
+        if q.site:
+            extras.append(("w", "site"))
     else:
         if q.kind == "confirm":
             pairs = _confirm_pairs(q)
@@ -449,6 +454,8 @@ def _card_lines(
             extras.append(("p", "poke"))
         if q.pane:
             extras.append(("v", "visit"))
+        if q.site:
+            extras.append(("w", "site"))
         if q.act == "plan" and q.steps:
             # Past 9 steps the digits buffer briefly, so "1" then "2" reaches
             # step 12; the hint names the whole reachable range.
@@ -830,6 +837,7 @@ class CactusApp(App[int]):
         Binding("T", "open_tuning", "Tune"),
         Binding("p", "poke", "Poke", show=False),
         Binding("v", "visit", "Visit", show=False),
+        Binding("w", "open_site", "Site", show=False),
         Binding("C", "copy_command", "Copy", show=False),
         Binding("R", "run_command", "Run", show=False),
         Binding("O", "open_output", "Output", show=False),
@@ -2075,6 +2083,8 @@ class CactusApp(App[int]):
                 items.append(("p", "poke"))
             if self.check_action("visit", ()):
                 items.append(("v", "visit"))
+            if self.check_action("open_site", ()):
+                items.append(("w", "site"))
             items.append(("`", "seed"))
             return items
 
@@ -2143,6 +2153,8 @@ class CactusApp(App[int]):
             items.append(("p", "poke"))
         if self.check_action("visit", ()):
             items.append(("v", "visit"))
+        if self.check_action("open_site", ()):
+            items.append(("w", "site"))
         if self.check_action("undo", ()):
             items.append(("u", "undo"))
         items.append(("`", "seed"))
@@ -2270,6 +2282,8 @@ class CactusApp(App[int]):
             # poking the owning agent still mean anything here.
             if action in ("view_file", "edit_file", "toggle_preview"):
                 return bool(q.files)
+            if action == "open_site":
+                return bool(q.site)
             if action == "select_choice":
                 return self.file_pending is not None
             return action in (
@@ -2304,6 +2318,8 @@ class CactusApp(App[int]):
             return _pokeable(q)
         if action == "visit":
             return bool(q.pane)
+        if action == "open_site":
+            return bool(q.site)
         if action == "undo":
             return bool(self.undo_stack)
         if action in ("elaborate", "decompose"):
@@ -2713,6 +2729,22 @@ class CactusApp(App[int]):
             self.flash = f"visited {q.pane}"
         self._rebuild_status_bar()
 
+    def action_open_site(self) -> None:
+        """Open the focused row's site URL in the platform opener."""
+        from .shell import open_url, ShellError
+
+        q = self._current_question()
+        if q is None or not q.site:
+            # check_action keeps the binding off here; on_key owns the flash.
+            return
+        try:
+            open_url(q.site)
+        except ShellError as exc:
+            self.flash = f"open failed: {exc}"
+        else:
+            self.flash = f"opened {q.site}"
+        self._rebuild_status_bar()
+
     def _rebuild_status_bar(self) -> None:
         bar = self.query_one("#status-bar", Static)
         rows = self.store.projects()
@@ -3025,6 +3057,13 @@ class CactusApp(App[int]):
             q = self._current_question()
             if q is not None and not q.pane:
                 self.flash = f"{q.key} was posted outside herdr; nothing to visit"
+                self._rebuild_status_bar()
+                event.stop()
+        if event.key == "w":
+            # open_site only binds on a row with a site (check_action).
+            q = self._current_question()
+            if q is not None and not q.site:
+                self.flash = f"{q.key} has no site"
                 self._rebuild_status_bar()
                 event.stop()
         if event.key == "x":

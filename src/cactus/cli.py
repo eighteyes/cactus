@@ -19,6 +19,7 @@ import os
 import sys
 import textwrap
 from typing import Any, Sequence
+from urllib.parse import urlparse
 
 from . import __version__, tradeoffs
 from .scope import project_display, resolve_project
@@ -96,7 +97,7 @@ WORKFLOW (required)
   elaborate event -> cactus edit KEY --agent ID
 
 SYNOPSIS
-  cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [-f PATH]... [options]
+  cactus ask TEXT --agent ID [-c LABEL[: DESC]]... [-f PATH]... [--site URL] [options]
   cactus run CMD --agent ID [--cwd DIR] [--why X] [-t T] [--no-wait] [--timeout S]
              [--recommend approve|deny --confidence L]
   cactus get KEY... [-w] [--timeout S] [--agent ID]
@@ -107,8 +108,9 @@ SYNOPSIS
   cactus elaborate KEY [HINT] [--decompose | --withdraw]   human verb, no --agent
   cactus undo KEY                    human verb: withdraw the latest answer/verdict
   cactus exec KEY                    human verb: run the row's command, record the result
-  cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]... [-f PATH]...
-                             (-f replaces the whole file list; omit to keep it)
+  cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]... [-f PATH]... [--site URL]
+                             (-f replaces the whole file list; omit to keep it;
+                              --site "" clears the site)
   cactus clear KEY... | -t THREAD | --here | --all  [--purge] --agent ID
   cactus reopen KEY... --agent ID
   cactus poke KEY | --agent ID
@@ -221,6 +223,8 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         print(f"{head}{indent}{q.text}")
         for p in q.files:
             print(f"\t\t{indent}  {'file':<8}{p}")
+        if q.site:
+            print(f"\t\t{indent}  site: {q.site}")
         if q.choices and q.status == "open":
             labels = " | ".join(c.label for c in q.choices)
             print(f"\t\t{indent}  choices: {labels}")
@@ -315,6 +319,20 @@ def _resolve_files(raw: Sequence[str] | None, *, cwd: str) -> list[str]:
             raise ValueError(f"duplicate file: {path}")
         resolved.append(path)
     return resolved
+
+
+def _check_site(raw: str | None) -> str | None:
+    """Refuse a `--site` value whose scheme is not http or https.
+
+    Raises ValueError, caught by every caller like a bad ask(). An empty
+    string passes through: on `edit` it clears the site.
+    """
+    if not raw:
+        return raw
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"--site must be an http or https URL: {raw}")
+    return raw
 
 
 def _emit_one(q: Question, *, as_json: bool) -> None:
@@ -465,6 +483,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
 
     try:
         files = _resolve_files(args.file, cwd=cwd)
+        site = _check_site(args.site)
         # -p accepts a bare key (this project), LABEL:qN, or /abs/path:qN
         # (q166); ambiguous labels and missing parents both raise here and
         # are reported the same way as any other bad ask().
@@ -497,6 +516,7 @@ def cmd_ask(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             context=context,
             asked_by=args.by or os.environ.get("CACTUS_AGENT"),
             files=files,
+            site=site,
         )
     except (KeyError, ValueError) as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
@@ -927,9 +947,11 @@ def cmd_edit(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     try:
         if args.file is not None:
             files = _resolve_files(args.file, cwd=cwd)
+        site = _check_site(args.site)
         result = store.edit(
             rkey, agent=args.agent, project=rproj,
             text=text, context=context, choices=choices, files=files,
+            site=site,
         )
     except KeyError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
@@ -1691,6 +1713,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--by", help="who is asking (default: $CACTUS_AGENT)")
     ask.add_argument("-f", "--file", action="append",
                      help="a file the human may preview or edit; repeat for more")
+    ask.add_argument("--site", help="an http(s) URL the human opens with w")
     _add_wait_flags(ask)
     ask.set_defaults(fn=cmd_ask)
 
@@ -1773,6 +1796,7 @@ def build_parser() -> argparse.ArgumentParser:
     ed.add_argument("-f", "--file", action="append",
                     help="a file the human may preview or edit; repeat. Replaces "
                          "the whole list")
+    ed.add_argument("--site", help="replacement site URL; \"\" clears it")
     ed.set_defaults(fn=cmd_edit)
 
     clr = verb("clear", help="retire questions from the inbox")

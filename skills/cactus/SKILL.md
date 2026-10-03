@@ -166,6 +166,9 @@ with `o` (a diff vs git HEAD when changed). Repeat for more;
 `edit -f` replaces the list. A row about a file with no `-f` is a row the
 human answers blind.
 
+`--site URL` (http or https) gives the human a `w` key that opens the URL.
+`edit --site ""` clears it.
+
 ## Steer: proceed, invite a veto
 
     cactus ask "Using the staging tenant for the migration dry run" \

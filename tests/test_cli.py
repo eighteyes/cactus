@@ -792,3 +792,32 @@ def test_get_wait_error_is_one_line_not_a_traceback(cli, monkeypatch, project):
         code = cli_mod.main(["get", "q1", "--wait", "--timeout", "1"])
     assert code == 1
     assert err.getvalue().strip() == "cactus: boom"
+
+
+def test_ask_site_refuses_non_http_schemes(cli):
+    for bad in ("ftp://example.com/x", "javascript:alert(1)"):
+        r = cli("ask", "--no-wait", "x", "--agent", AGENT_A, "--site", bad)
+        assert r.returncode == 1
+        assert r.stderr.startswith("cactus: --site must be an http or https URL")
+    assert cli("list").returncode == 3
+
+
+def test_ask_site_accepts_https_and_get_json_carries_it(cli):
+    r = cli("ask", "--no-wait", "x", "--agent", AGENT_A, "--site", "https://example.com/a", "--json")
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["site"] == "https://example.com/a"
+    doc = json.loads(cli("get", "q1", "--json").stdout)
+    doc = doc[0] if isinstance(doc, list) else doc
+    assert doc["site"] == "https://example.com/a"
+    assert "site: https://example.com/a" in cli("get", "q1").stdout
+
+
+def test_edit_site_replaces_refuses_bad_and_empty_clears(cli):
+    cli("ask", "--no-wait", "x", "--agent", AGENT_A, "--site", "https://a.example")
+    r = cli("edit", "q1", "--agent", AGENT_A, "--site", "ftp://b.example")
+    assert r.returncode == 1
+    r = cli("edit", "q1", "--agent", AGENT_A, "--site", "https://b.example", "--json")
+    assert json.loads(r.stdout)["site"] == "https://b.example"
+    r = cli("edit", "q1", "--agent", AGENT_A, "--site", "", "--json")
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["site"] is None
