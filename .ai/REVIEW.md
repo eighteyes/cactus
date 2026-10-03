@@ -137,3 +137,40 @@ Same setup and env as above.
 ## Teardown
 
     rm -rf "$(dirname "$CACTUS_DB")"
+
+---
+
+# 2026-10-02 — mod delivery, CLI parity, push delivery, Codex substitute, branch census
+
+Trunk `cactus-v1` at 50938fc (no merges this session; session e76df619).
+Commits: 559811d CLI verbs, 0f81725 Stop hook, 185e58d push delivery,
+26988ab records, 50938fc Codex substitute. Mod: ~/ai 4c9fa13..ceaf57b.
+Branches deleted (merged): macapp, worktree-agent-a5db895c3a84322cc,
+wait-default. Kept (conflict, need a merge session): cactus-v1-next and the
+three it contains: worktree-root, newest-first, revised-marker.
+
+## Verify
+
+    export CACTUS_DB=$(mktemp -d)/s.db CACTUS_POKE=true CACTUS_RECORDS=0
+    ./.venv/bin/python -m pytest -p no:cacheprovider -q --junitxml=/tmp/j.xml; grep -o 'failures="[0-9]*"' /tmp/j.xml
+    k=$(cactus ask "probe" -c a -c b --no-wait --agent t); cactus elaborate $k "why"; cactus get $k --json | jq -r '.[0].status'
+    cactus deliver herdr --agent t --json; cactus deliver off --agent t
+    bash plugins/cactus/tests/test-hooks.sh && echo codex-hooks-ok
+    claude plugin test ~/ai/mods/cactus-pane
+
+## Pass
+
+- failures="0"; status prints `elaborate`; deliver prints `{"herdr": true}` then removes it.
+- codex-hooks-ok; the mod's 16 tests pass.
+- In a new Claude session, /cactus-pane opens with no setup; answering one of
+  its rows starts a turn carrying the full answer and "(cleared)".
+
+## Fail
+
+- A wake that says "declined" for a row the agent cleared itself.
+- The Stop hook blocking while the agent has an `open` row.
+- A sixth answered row cleared by the Codex frontier before it was printed.
+
+## Teardown
+
+    rm -rf "$(dirname "$CACTUS_DB")"
