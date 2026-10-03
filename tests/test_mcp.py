@@ -44,3 +44,11 @@ def test_cactus_ask_and_run_pass_no_wait_unless_wait_is_set() -> None:
     assert "--no-wait" in _argv_for("cactus_run", {"command": "ls", "agent": "a"})
     waiting = _argv_for("cactus_ask", {"text": "q", "agent": "a", "wait": True, "timeout": 5})
     assert "--no-wait" not in waiting and "--wait" in waiting
+
+
+def test_cactus_ask_and_edit_site_map_to_dash_dash_site() -> None:
+    ask = _argv_for("cactus_ask", {"text": "look", "agent": "a", "site": "https://x.example"})
+    assert ask[ask.index("--site") + 1] == "https://x.example"
+    edit = _argv_for("cactus_edit", {"key": "q1", "agent": "a", "site": ""})
+    assert edit[edit.index("--site") + 1] == ""
+    assert "--site" not in _argv_for("cactus_ask", {"text": "look", "agent": "a"})

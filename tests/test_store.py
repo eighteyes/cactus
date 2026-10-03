@@ -526,3 +526,32 @@ def test_edit_does_not_end_wait_on_open_blocking_row(store: Store, project: str)
     assert store.wait_for_answer(q.key, project=project, timeout=1.0, poll=0.05) is None
     t.join()
     assert store.get(q.key, project=project).context == "more"
+
+
+def test_ask_with_site_roundtrips(store: Store, project: str) -> None:
+    q = store.ask("look", project=project, cwd=project, agent=AGENT, site="https://example.com/x")
+    assert q.site == "https://example.com/x"
+    got = store.get(q.key, project=project)
+    assert got.site == "https://example.com/x"
+    assert got.as_dict()["site"] == "https://example.com/x"
+
+
+def test_ask_without_site_is_none(store: Store, project: str) -> None:
+    q = store.ask("no site", project=project, cwd=project, agent=AGENT)
+    assert q.site is None
+    assert q.as_dict()["site"] is None
+
+
+def test_edit_site_replace_keep_and_clear(store: Store, project: str) -> None:
+    q = store.ask(
+        "editable", project=project, cwd=project, agent=AGENT,
+        site="https://a.example",
+    )
+    kept = store.edit(q.key, agent=AGENT, project=project, text="editable now")
+    assert kept.site == "https://a.example"
+
+    replaced = store.edit(q.key, agent=AGENT, project=project, site="https://b.example")
+    assert replaced.site == "https://b.example"
+
+    cleared = store.edit(q.key, agent=AGENT, project=project, site="")
+    assert cleared.site is None

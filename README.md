@@ -57,6 +57,14 @@ header; it falls back to plain text when `figlet` is not installed.
 
 It's honestly not that complicated, but it's replaced a number of my AI interactions.
 
+## Mods
+
+**cactus-pane** (Claude Code mod): the inbox as a live pane in the session. Not in this repo yet.
+- `/cactus-pane` opens it; it also opens at session start. A rail plus a card, answered in place with the TUI's keys.
+- When one of the session's rows moves, it starts a turn carrying the answer in full and clears the row. No backgrounded waits: `cactus ask`/`run` get `--no-wait`.
+
+**Codex mod mode**: Codex can't host a pane or start a turn, so the plugin's hooks stand in. Post `--no-wait`; each prompt injects the inbox (first five rows, full answers) and clears the answered one-shot rows. Inside herdr, `cactus deliver herdr` lets an answer prompt the pane. More: [docs/codex-mod-mode.md](docs/codex-mod-mode.md)
+
 ## Manual Installation
 
 ```sh
@@ -137,7 +145,8 @@ hook               host          does
 SessionStart       Claude Code   resolve identity; rehome rows after /clear; open rows
                    Codex         session id as identity; inside herdr registers `cactus deliver herdr`, so an answer prompts the pane; else answers surface next turn
 UserPromptSubmit   both          inject open and answered-but-unacted rows
-Stop               Claude Code   hold a turn that posted no ask, edit, plan or review
+                   Codex         first five rows only; clears the answered one-shot rows it printed
+Stop               Claude Code   hold a turn that posted no ask, edit, plan or review, unless the agent has an open row
                    Codex         no-op
 PermissionDenied   Claude Code   post the denied command as a `cactus run` row
 PermissionRequest  Codex         post the requested command as a `cactus run` row, decline the transient prompt
@@ -192,7 +201,8 @@ collects on the next turn. MCP for Desktop wraps the same verbs in
 
 An agent declares how answers reach it: `cactus deliver herdr --agent ID`
 (answer prompts the row's herdr pane) or `cactus deliver webhook URL --agent ID`
-(answer POSTs a wake). Stored in `~/.config/cactus/poke-webhooks.json`. Schema
+(answer POSTs a wake). Stored in `~/.config/cactus/poke-webhooks.json`;
+`deliver` replaces the agent's whole entry, so re-add `authorization` after. Schema
 and smoke test: [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md)
 
 ## Contributions

@@ -9,6 +9,8 @@ Responsibilities:
 - Preview (`view`) or edit (`edit`) a row's attached file in the human's
   own pager/editor, resolved from CACTUS_PAGER/CACTUS_EDITOR or the usual
   PAGER/VISUAL/EDITOR fallbacks.
+- Open a row's site URL in the platform opener (`open_url`), overridable
+  with CACTUS_OPEN.
 - Build an inline preview of an attached file: a diff against HEAD when the
   file changed in its repository, else the head of its content.
 """
@@ -164,6 +166,39 @@ def edit(path: str) -> str:
         or "vi"
     )
     return _run_program(template, path)
+
+
+def open_url(url: str) -> str:
+    """Open `url` with the platform opener: `open` on macOS, else `xdg-open`.
+
+    CACTUS_OPEN overrides it, a template split with shlex and `{url}`
+    substituted per argument (the URL is appended when none carries it).
+    Never through a shell. Returns a short description of what ran.
+    """
+    override = os.environ.get("CACTUS_OPEN")
+    if override:
+        argv = shlex.split(override)
+    else:
+        argv = ["open" if sys.platform == "darwin" else "xdg-open", "{url}"]
+    if not argv:
+        raise ShellError("no program configured")
+    if any("{url}" in part for part in argv):
+        argv = [part.replace("{url}", url) for part in argv]
+    else:
+        argv = [*argv, url]
+    try:
+        done = subprocess.run(
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        raise ShellError(f"{argv[0]}: not found") from None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ShellError(f"{argv[0]}: {exc}") from exc
+    if done.returncode != 0:
+        detail = (done.stderr or "").strip().splitlines()
+        raise ShellError(f"{argv[0]}: {detail[-1] if detail else f'exit {done.returncode}'}")
+    return f"{argv[0]} {url}"
 
 
 def _vcs(directory: str, *args: str) -> subprocess.CompletedProcess[str] | None:

@@ -131,6 +131,9 @@ CREATE TABLE IF NOT EXISTS questions (
     -- Absolute paths a human may preview (`f`) or edit (`F`) from the TUI,
     -- JSON list. Additive, like `run_tail`.
     files        TEXT,
+    -- A URL the human may open (`w`) from the TUI, http(s) only (the CLI
+    -- refuses other schemes). Additive, like `files`.
+    site         TEXT,
     -- Heard / responded stamps (q404-q406), review and plan rows only: when
     -- the owning agent last read the row (`get --agent`) and last wrote to
     -- it (`plan`/`review`/`edit --agent`). Compared against the latest
@@ -357,6 +360,7 @@ class Question:
     run_tail: list[str] = field(default_factory=list)
     run_log: str | None = None
     files: list[str] = field(default_factory=list)
+    site: str | None = None
     heard_at: str | None = None
     responded_at: str | None = None
     auto_pick: str | None = None
@@ -432,6 +436,7 @@ class Question:
                 if self.run_exit is not None else None
             ),
             "files": self.files,
+            "site": self.site,
             "auto": (
                 {
                     "pick": self.auto_pick, "confidence": self.auto_confidence,
@@ -560,6 +565,9 @@ class Store:
         # `run_tail` above.
         if "files" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN files TEXT")
+        # A row's site URL: additive like `files`.
+        if "site" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN site TEXT")
         # Heard / responded stamps (q404-q406): additive like `files`.
         if "heard_at" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN heard_at TEXT")
@@ -705,6 +713,7 @@ class Store:
                     auto_confidence REAL,
                     auto_reason     TEXT,
                     auto_at         TEXT,
+                    site            TEXT,
                     UNIQUE(project, key)
                 )""",
                 """INSERT INTO questions_new
@@ -715,7 +724,8 @@ class Store:
                           created_at, updated_at, run_exit, run_tail, run_log,
                           elaborate, elaborate_at, last_change, files,
                           heard_at, responded_at,
-                          auto_pick, auto_confidence, auto_reason, auto_at
+                          auto_pick, auto_confidence, auto_reason, auto_at,
+                          site
                    FROM questions""",
                 "DROP TABLE questions",
                 "ALTER TABLE questions_new RENAME TO questions",
@@ -791,6 +801,7 @@ class Store:
         context: str | None = None,
         asked_by: str | None = None,
         files: Sequence[str] | None = None,
+        site: str | None = None,
     ) -> Question:
         """Insert one question and return it, with its assigned key.
 
@@ -901,8 +912,8 @@ class Store:
                     (key, num, project, cwd, thread, parent_id, text, kind, act, agent,
                      word, workspace, tab, pane, session, title, chosen, blocked, source,
                      choices, allow_free, recommend, confidence, recommend_why,
-                     context, asked_by, status, created_at, updated_at, files)
-                VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     context, asked_by, status, created_at, updated_at, files, site)
+                VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     num, project, cwd, thread, parent_id, text, kind, act, agent, word,
@@ -914,6 +925,7 @@ class Store:
                     confidence, recommend_why,
                     context, asked_by, status, now, now,
                     json.dumps(list(files)) if files else None,
+                    site or None,
                 ),
             )
             rowid = int(cur.lastrowid)
@@ -950,6 +962,9 @@ class Store:
         q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
+        # Hit by an old database opened without `cactus migrate --yes` or
+        # CACTUS_MIGRATE=1. RuntimeError, not ValueError: cmd_answer does not
+        # catch it, so the CLI ends in a traceback carrying this text.
         if self.needs_rebuild():
             raise RuntimeError(
                 "this database still has UNIQUE(question_id) on answers, which "
@@ -964,6 +979,9 @@ class Store:
             raise ValueError(
                 f"{key} is awaiting elaboration; cactus edit {key} --agent ID first"
             )
+        # Two surfaces (TUI, www, `cactus answer`) raced on one row; the CLI
+        # maps this to exit 3. Checked before label validation, so a stale
+        # tap reports the race, not an off-menu label.
         if not q.persistent and q.status == "answered":
             raise AlreadyAnswered(
                 f"{key} was already answered "
@@ -1453,6 +1471,7 @@ class Store:
         context: str | None = None,
         choices: Sequence[Choice] | None = None,
         files: Sequence[str] | None = None,
+        site: str | None = None,
     ) -> Question:
         """Replace the given fields on an open/live/elaborate row, in place.
 
@@ -1483,6 +1502,8 @@ class Store:
             raise ValueError("edit would leave the question text empty")
         new_context = q.context if context is None else context
         new_files = q.files if files is None else list(files)
+        # `site`: None keeps, "" clears, a string replaces (like `run` in set_review).
+        new_site = q.site if site is None else (site or None)
 
         if choices is not None:
             if q.kind in ("choice", "multi", "confirm") and not choices:
@@ -1525,7 +1546,7 @@ class Store:
             UPDATE questions
             SET text = ?, context = ?, choices = ?, recommend = ?, confidence = ?,
                 recommend_why = ?, status = ?, elaborate = NULL, elaborate_at = NULL,
-                last_change = ?, updated_at = ?, files = ?
+                last_change = ?, updated_at = ?, files = ?, site = ?
             WHERE id = ?
             """,
             (
@@ -1535,6 +1556,7 @@ class Store:
                 new_confidence, new_recommend_why,
                 new_status, new_last_change, now,
                 json.dumps(new_files) if new_files else None,
+                new_site,
                 q.id,
             ),
         )
@@ -1971,6 +1993,8 @@ class Store:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             q = self._get_by_id(first.id)
+            # Purged mid-wait (`clear --purge` from another process): the
+            # waiter gets "no such question" (`get --wait` exits 1), not a hang.
             if q is None:
                 raise KeyError(f"no such question: {key}")
             if watch:
@@ -2141,6 +2165,7 @@ class Store:
             run_tail=json.loads(row["run_tail"]) if row["run_tail"] else [],
             run_log=row["run_log"],
             files=json.loads(row["files"]) if row["files"] else [],
+            site=row["site"],
             heard_at=row["heard_at"],
             responded_at=row["responded_at"],
             auto_pick=row["auto_pick"],

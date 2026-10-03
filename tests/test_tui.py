@@ -2820,3 +2820,41 @@ async def test_brackets_do_not_rotate_while_pinned(store: Store, tmp_path: Path)
         await pilot.press("[")
         await pilot.pause()
         assert app.current_project == a
+
+
+async def test_open_site_binds_only_on_a_row_with_a_site(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_OPEN", f"{script} {{url}}")
+    store.ask("has site", project=project, cwd=project, agent=AGENT, site="https://example.com/a")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "w" in keybar_keys(app)
+        assert "w" not in footer_keys(app)
+        assert "site: https://example.com/a" in str(app.query_one("#card-text", Static).content)
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.flash == "opened https://example.com/a"
+
+    assert log.read_text().strip() == "https://example.com/a"
+
+
+async def test_open_site_flashes_on_a_row_without_one(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_OPEN", f"{script} {{url}}")
+    q = store.ask("no site", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "w" not in keybar_keys(app)
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.flash == f"{q.key} has no site"
+
+    assert not log.exists()

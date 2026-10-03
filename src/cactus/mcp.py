@@ -176,6 +176,7 @@ TOOLS: list[dict[str, Any]] = [
             "text": _prop("string", "The question, plainly."),
             "choices": {**_STR_LIST, "description": "Choices as 'label: description'; split on the first colon. Omit for a free-text question."},
             "files": {**_STR_LIST, "description": "File paths the human may preview or edit from the TUI."},
+            "site": _prop("string", "An http(s) URL the human opens from the TUI with w."),
             "act": _prop("string", "What is being asked for.", enum=["ask", "steer", "notify", "review", "plan", "data"]),
             "kind": _prop("string", "Answer shape override; inferred from choices and flags otherwise.", enum=["choice", "multi", "text", "confirm"]),
             "multi": _prop("boolean", "Allow selecting several choices."),
@@ -267,6 +268,7 @@ TOOLS: list[dict[str, Any]] = [
             "context": _prop("string", "New context."),
             "choices": {**_STR_LIST, "description": "Replacement choices as 'label: description'."},
             "files": {**_STR_LIST, "description": "Replacement file paths; replaces the whole list."},
+            "site": _prop("string", "Replacement http(s) URL; empty string clears it; omit to keep it."),
             "agent": _AGENT,
         },
         ["key"],
@@ -365,6 +367,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         argv = ["ask", a["text"], "--agent", a.get("agent") or _default_agent()]
         _repeat(argv, "-c", a.get("choices"))
         _repeat(argv, "-f", a.get("files"))
+        _flag(argv, "--site", a.get("site"))
         _flag(argv, "--act", a.get("act"))
         _flag(argv, "--kind", a.get("kind"))
         _flag(argv, "--multi", a.get("multi"))
@@ -428,6 +431,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         _flag(argv, "--context", a.get("context"))
         _repeat(argv, "-c", a.get("choices"))
         _repeat(argv, "-f", a.get("files"))
+        _flag(argv, "--site", a.get("site"))
     elif name == "cactus_review":
         argv = ["review", a["key"]]
         _flag(argv, "--look-at", a.get("look_at"))

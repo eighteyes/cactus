@@ -74,6 +74,7 @@ def _signature(q: Question) -> tuple[Any, ...]:
         q.confidence,
         q.recommend_why,
         tuple(q.files),
+        q.site,
         # withdrawn vs edited (q228): which action last moved this row out
         # of `elaborate`. Kept ahead of the last two slots below.
         q.last_change,
@@ -126,14 +127,14 @@ def _transition_event(before: tuple[Any, ...], q: Question) -> str:
         # `last_change` (q228), stamped by whichever of the two ran, tells
         # them apart.
         return "withdrawn" if q.last_change == "withdrawn" else "edited"
-    edited_fields = (before[1], before[6], before[7], before[8], before[11])
+    edited_fields = (before[1], before[6], before[7], before[8], before[11], before[12])
     after_fields = (
         q.text, tuple(c.label for c in q.choices), q.context, tuple(q.recommend),
-        tuple(q.files),
+        tuple(q.files), q.site,
     )
     if was_status == q.status and edited_fields != after_fields:
         # A plain in-place `edit` on a row that never went through
-        # `elaborate` — text/context/choices/recommend/files are the only
+        # `elaborate` — text/context/choices/recommend/files/site are the only
         # fields `edit` ever touches, and nothing else changes them after
         # `ask` (review/plan -f go through the same files slot).
         return "edited"

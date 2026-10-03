@@ -2,7 +2,8 @@
 # identity.sh
 # Resolve the cactus --agent value for the current pane; sourced by every hook.
 # Responsibilities:
-#   - prefer the pane's claude session token via c100-identity, then herdr agent get
+#   - prefer the hook payload's session_id (from the caller's `input`)
+#   - then the pane's claude session token via c100-identity, else herdr agent get
 #   - fall back to CACTUS_AGENT
 #   - print nothing when no identity resolves, so callers can test emptiness
 
@@ -15,6 +16,11 @@
 # yet, so herdr still answers with the previous conversation's id (q327) and
 # every row of the new session lands under a dead owner. Callers set `input`
 # from stdin before sourcing this file.
+#
+# Wrong-owner / dead-owner rows trace here. Check: did the hook read stdin into
+# `input` before sourcing (else tier 1 is skipped silently)? Is jq on PATH
+# (same)? Is HERDR_PANE_ID set? Does CACTUS_AGENT hold a stale id? Fix a
+# session already posting under a dead id with `cactus rehome --agent NEW`.
 cactus_resolve_agent() {
   local agent=""
   if [ -n "${input:-}" ] && command -v jq >/dev/null 2>&1; then

@@ -117,11 +117,15 @@ env='([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
 re="${sep}${env}cactus([[:space:]]+-[^[:space:]]+)*[[:space:]]+(ask|run)([[:space:]]|\$)"
 [[ $code =~ $re ]] || exit 0
 
-# Rows that do not wait.
+# Rows that do not wait. These match the raw $cmd, not $code: one of these
+# flags anywhere in the call, even in a quoted string or a second command,
+# lets the whole call through. Check here first when a waiting ask slipped by.
 [[ $cmd =~ (^|[[:space:]])--no-wait([[:space:]=]|$) ]] && exit 0
 [[ $cmd =~ (^|[[:space:]])--no-block([[:space:]]|$) ]] && exit 0
 act_re='--act[[:space:]=]+(steer|notify|review|plan|data)([[:space:]]|$)'
 [[ $cmd =~ $act_re ]] && exit 0
 
+# Exit 2 is Claude Code's PreToolUse block: the call never runs and stderr
+# reaches the agent as the reason.
 echo "cactus ask/run waits for the human by default; rerun with run_in_background: true. Its exit wakes you." >&2
 exit 2

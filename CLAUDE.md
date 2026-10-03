@@ -522,6 +522,16 @@ scope.
   (untracked, unchanged, no repo), capped at 40 lines per file — and git
   failure or a 2s timeout falls back to the head. `preview_open` resets on
   a row move and the block is recomputed only while open; markup stays off.
+- `site` is an additive nullable `questions` column (also in the key-rebuild
+  copy); `ask`/`edit --site URL` take http or https only — `cli._check_site`
+  refuses any other scheme, exit 1, before the store is touched. `Store.edit`
+  `site`: `None` keeps, `""` clears, a string replaces; `monitor._signature`
+  carries it beside `files`. The TUI's `w` (`open_site`) binds only on a row
+  with a site (`check_action`, keybar `w site`, `on_key` flashes `has no
+  site`) and calls `shell.open_url` — `open`/`xdg-open`, or `CACTUS_OPEN`
+  with `{url}` per argument, never a shell; tests set it inert. The card
+  prints `site: URL` (markup off); `www` renders an http(s) link with
+  `target=_blank rel=noopener`, attribute-escaped. MCP ask/edit pass `site`.
 - `Store.projects()`'s `due_count` is `open + elaborate` (q351) — `live` is
   re-answerable but never blocks anyone, so it stays out of "due"; the
   projects page and the projects pane both rank by it, `due_count DESC,
