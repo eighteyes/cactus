@@ -137,7 +137,8 @@ hook               host          does
 SessionStart       Claude Code   resolve identity; rehome rows after /clear; open rows
                    Codex         session id as identity; inside herdr registers `cactus deliver herdr`, so an answer prompts the pane; else answers surface next turn
 UserPromptSubmit   both          inject open and answered-but-unacted rows
-Stop               Claude Code   hold a turn that posted no ask, edit, plan or review
+                   Codex         first five rows only; clears the answered one-shot rows it printed
+Stop               Claude Code   hold a turn that posted no ask, edit, plan or review, unless the agent has an open row
                    Codex         no-op
 PermissionDenied   Claude Code   post the denied command as a `cactus run` row
 PermissionRequest  Codex         post the requested command as a `cactus run` row, decline the transient prompt
@@ -192,7 +193,8 @@ collects on the next turn. MCP for Desktop wraps the same verbs in
 
 An agent declares how answers reach it: `cactus deliver herdr --agent ID`
 (answer prompts the row's herdr pane) or `cactus deliver webhook URL --agent ID`
-(answer POSTs a wake). Stored in `~/.config/cactus/poke-webhooks.json`. Schema
+(answer POSTs a wake). Stored in `~/.config/cactus/poke-webhooks.json`;
+`deliver` replaces the agent's whole entry, so re-add `authorization` after. Schema
 and smoke test: [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md)
 
 ## Contributions
