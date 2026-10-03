@@ -8,6 +8,8 @@ All your agents have lots of questions for you. Juggling agent windows and inges
 
 Conversational chat has been the dominant human<>AI surface for 50 years (ELIZA). `cactus` is a decision queue for humans working with conversational agents.
 
+Deciding from a queue greatly reduces the amount of prose one has to parse by using structured information. Cactus has become my primary AI interaction surface. 
+
 ## Features
 
 ### async asks
@@ -30,32 +32,17 @@ Free-text input is on by default, alongside any pick.
 A choice's description can carry `+ pro` / `- con` lines; the card shows them
 as green ✓ and red ✗ under the option.
 
-```sh
-cactus ask "Which auth?" --agent ID -c $'oidc: existing IdP\n+ tenant exists\n- IdP uptime'
-```
-
-### auto-decider
-A background worker proposes a pick on low-stakes rows; the card shows
-`[..] label - reason` and `A` accepts it. It never answers on its own.
-`CACTUS_DECIDE=off` turns it off.
-
 ### garden
-Every answer drops a seed through the sky strip and lands on a shared pile.
-Off by default: `~` or settings `7` shows it, `T` tunes the sky.
+Every answer drops a seed.
+Off by default: `~`, `T` for tuning.
 
 ### elaborate
-Kick the question back with an optional take; the agent rewrites it.
+`e` - Kick the question back with an optional take; the agent rewrites it.
 
-Press `D` to use that same workflow to decompose a complex question into
-smaller follow-up questions. The agent posts the replacements, then retires
-the original.
+### deconstruct
+Press `d` to decompose a complex question into smaller follow-up questions. 
 
-### view settings
-Press `?` in the TUI to choose the question rail's layout: left of the detail
-card, or underneath it. The same screen toggles a Figlet `cybermedium` project
-header; it falls back to plain text when `figlet` is not installed.
-
-It's honestly not that complicated, but it's replaced a number of my AI interactions.
+While simple, it has replaced a number of my AI interactions and helped isolate my context load and enforce project boundaries. I don't have metrics, but I feel more effective at the end of the day, and I'm less fatigued by reading LLM babble. Hopefully you can find some benefit from this. 
 
 ## Mods
 
