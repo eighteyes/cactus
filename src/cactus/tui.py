@@ -419,7 +419,7 @@ def _card_lines(
                     Text(f"      {'✓' if is_pro else '✗'} {text}", style="green" if is_pro else "red")
                 )
         if several:
-            lines.append("  pick several (m to go back)")
+            lines.append("  multiple choice (m for single choice)")
         if q.recommend_why:
             lines.append(f"  recommend: {', '.join(q.recommend)} — {q.recommend_why}")
         if q.auto_pick:
@@ -2188,7 +2188,7 @@ class CactusApp(App[int]):
             if q.allow_free:
                 items.append(("i", "type"))
             if self.check_action("toggle_several", ()):
-                items.append(("m", "one" if flipped else "several"))
+                items.append(("m", "single choice" if flipped else "multiple choice"))
 
         if self.check_action("activate_project", ()):
             items.append(("A", "auto"))

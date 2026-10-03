@@ -2900,8 +2900,8 @@ async def test_m_flips_digits_to_toggle_and_enter_stores_both(store: Store, proj
         await pilot.pause()
         await pilot.press("m")
         await pilot.pause()
-        assert keybar_keys(app)["m"] == "one"
-        assert "pick several (m to go back)" in str(app.query_one("#card-text", Static).content)
+        assert keybar_keys(app)["m"] == "single choice"
+        assert "multiple choice (m for single choice)" in str(app.query_one("#card-text", Static).content)
         await pilot.press("1", "3")
         await pilot.pause()
         assert store.get(q.key, project=project).status == "open"
@@ -2924,7 +2924,7 @@ async def test_m_twice_returns_to_single_pick(store: Store, project: str) -> Non
         await pilot.press("m")
         await pilot.pause()
         assert app.multi_selected == set()
-        assert keybar_keys(app)["m"] == "several"
+        assert keybar_keys(app)["m"] == "multiple choice"
         await pilot.press("2")
         await pilot.pause()
     assert store.get(q.key, project=project).answer.selected == ["b"]
