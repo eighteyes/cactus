@@ -19,19 +19,20 @@ not follow the TUI process environment, and it is not the same as answering.
 
 | Action | What it does | Wakes the agent? |
 |--------|--------------|------------------|
-| Answer in TUI / `cactus answer` | Writes the answer into SQLite | **Yes, if** the row's agent is in the webhook map (auto-poke). Agents with no entry: no — they wake on their own backgrounded wait. A `{"herdr": true}` entry prompts the row's pane. |
+| Answer in TUI / `cactus answer` | Writes the answer into SQLite | **Yes, if** the row's agent has an entry (auto-poke): webhook POSTs, `{"herdr": true}` prompts the row's pane. No entry: no. |
 | `p` in TUI / `cactus poke` | Runs the poke transport for that row's agent | Yes, if transport succeeds (manual; still useful) |
 | `cactus --monitor` | Streams inbox events while the process runs | Only while monitor is alive; plain CLI surface, not the agent wake (q430) |
 
-For webhook-mapped agents, answering **auto-pokes** (HTTP POST only; never
-herdr). You do not need a separate `p` after the answer. Manual `p` remains
-for “nudge without answering” or a failed auto-poke retry.
+For agents with an entry, answering **auto-pokes** (webhook POST, or herdr
+prompt at the row's pane). You do not need a separate `p` after the answer.
+Manual `p` remains for “nudge without answering” or a failed auto-poke retry.
 
 ## Resolution order
 
 1. `CACTUS_POKE` — if set, used for **every** agent (tests / forced override)
 2. Webhook map entry for that agent id
-3. Default: `herdr agent prompt {agent} {message}`
+3. Default: `herdr --session S agent prompt {target} {message}` — `{target}`
+   is the row's pane, `S` its herdr session. No pane stamp: `PokeError`.
 
 Do **not** set a global `CACTUS_POKE` in your shell profile for day-to-day use.
 That steals poke from herdr agents. Prefer the per-agent map.
@@ -73,13 +74,13 @@ Do not commit this file. `chmod 600` is appropriate.
 
 - `cactus poke KEY` and TUI `p` call `poke(row.agent)`.
 - Mapped agent → HTTP POST (no herdr required; pane/session may be null).
-- Unmapped agent → herdr (needs a real herdr agent id).
+- Unmapped agent → herdr (needs the row's pane stamp, never an agent id).
 - After `cactus answer` / TUI answer (including skip, run-approve, plan note):
   a webhook-mapped owner is auto-POSTed; a `{"herdr": true}` owner is prompted
   at the row's pane. Owners with no entry are not auto-poked.
-- Auto-poke ignores `CACTUS_POKE` (explicit poke / tests only).
-- TUI offers `p` whenever the row has an `--agent`, including webhook-only
-  agents. Restart the TUI after upgrading cactus so answer auto-poke and
+- Webhook auto-poke ignores `CACTUS_POKE`. A herdr-entry auto-poke honors it.
+- TUI binds `p` only when `poke.reachable` passes: an owner plus one of
+  `CACTUS_POKE`, a pane stamp, or a webhook entry. Restart the TUI after upgrading cactus so answer auto-poke and
   `_pokeable` pick up.
 
 ## Checklist: wake an external agent (e.g. Grok Bot)
@@ -90,13 +91,14 @@ Do not commit this file. `chmod 600` is appropriate.
    that runs when its webhook is POSTed. The routine should re-read the cactus
    feed for that agent id, act on answered/elaborate rows, clear when done,
    and report in chat.
-3. **Map entry** — put that agent's `url` + `authorization` under its id in
-   `~/.config/cactus/poke-webhooks.json`.
+3. **Map entry** — run `cactus deliver webhook URL --agent ID` first. It
+   writes exactly `{"url": URL}`, replacing the whole entry. Then add
+   `authorization` by hand under the id in
+   `~/.config/cactus/poke-webhooks.json`. Re-running `deliver` drops it.
 4. **CLI on PATH** — `command -v cactus` on the machine where asks/pokes run
    (human TUI and any agent shells that post rows).
 5. **Human loop** — open `cactus --tui` and answer the row. Webhook agents
-   are auto-poked on answer; herdr agents are not (they wake on their own backgrounded wait).
-   Press **`p`** only for a manual nudge.
+   and agents with a herdr entry are auto-poked on answer. Press **`p`** only for a manual nudge.
 
 Repeat steps 2–3 for each additional Grok Bot (or other webhook agent). Herdr
 agents need no map entry.
@@ -133,8 +135,8 @@ will correctly report “still open.”
 
 - **Answer should auto-wake webhook agents.** If chat never updates after you
   pick a choice for a mapped agent, check the map, HTTP status, and TUI flash
-  (`answered; auto-poked …` or `webhook poke failed`). Unmapped agents never
-  auto-poke — that is intentional: herdr agents wake on their backgrounded wait (q430).
+  (`answered; auto-poked …` or `webhook poke failed`). Agents with no entry never
+  auto-poke; register one with `cactus deliver herdr --agent ID`.
 - **“I don’t see qN.”** Status is already `answered` or `cleared`. Use
   `cactus get cactus:qN --json` or filter by status; the TUI open list hides
   them.

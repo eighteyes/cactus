@@ -17,5 +17,6 @@ row with `cactus get KEY --agent "$AGENT"` before acting.
 
 The Claude plugin's `UserPromptSubmit` and `PermissionDenied` hooks surface
 the frontier and turn a denied Bash command into a `cactus run` row. The
-`Stop` hook holds a turn that posted no ask, edit, plan or review;
+`Stop` hook holds a turn that posted no ask, edit, plan or review, and
+stays silent while the agent already has an `open` row in the project;
 `CACTUS_STOP_HOOK=0` turns it off. Clear rows after acting.
