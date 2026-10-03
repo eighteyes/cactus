@@ -2228,6 +2228,9 @@ class CactusApp(App[int]):
         no command is a promise the row cannot keep, and finding that out by
         pressing it is worse than never seeing it.
         """
+        # Textual re-asks this only on `refresh_bindings()` (`_rebuild_card`,
+        # `_rebuild_status_bar`), so a state flip that skips both leaves the
+        # footer stale. A key hidden here never fires; `on_key` owns its flash.
         # The tuning overlay (v6c) gates off everything but quit — closing it
         # (`escape`/`T`) and its own j/k/h/l/H/L/r keys all go through
         # on_key instead, the same way settings' escape does.
@@ -2648,9 +2651,17 @@ class CactusApp(App[int]):
         """After an answer, deliver to agents with a delivery entry (webhook or herdr)."""
         from .poke import deliver_if_mapped, PokeError
 
+        # Runs on the event loop after the answer is committed: a slow
+        # transport freezes the TUI up to `timeout`, and a failure never
+        # rolls the answer back. Only agents with an entry in the delivery
+        # map (`cactus deliver`) are reached; a herdr entry on a row with no
+        # pane stamp is skipped silently, so "answered" with no "auto-poked"
+        # means check `cactus deliver --agent ID` and the row's pane.
         try:
             woke = deliver_if_mapped(agent, pane=pane, session=session, timeout=5.0)
         except PokeError as exc:
+            # Flash says "webhook" for herdr entries too: the herdr prompt
+            # failed (pane gone, herdr not running) when the entry is herdr.
             self.flash = f"answered; webhook poke failed: {exc}"
             return
         if woke:
@@ -3658,9 +3669,14 @@ class CactusApp(App[int]):
         label: str | None = None,
         key: str = "i",
     ) -> None:
+        # The one-shot human answer path (digits, enter, y/n, skip, dismiss).
+        # Persistent-row verdicts and run approval (`_run_and_record`) call
+        # `store.answer` themselves. Order: store commit, delivery, undo
+        # entry, seed, advance; a refusal stops before any of them.
         try:
             self.store.answer(q.key, project=q.project, selected=selected, text=text, skipped=skipped)
         except KeyError:
+            # Row purged by another surface between polls; the next poll drops it.
             return
         except (AlreadyAnswered, ValueError) as exc:
             await self._refuse(exc)

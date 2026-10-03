@@ -962,6 +962,9 @@ class Store:
         q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
+        # Hit by an old database opened without `cactus migrate --yes` or
+        # CACTUS_MIGRATE=1. RuntimeError, not ValueError: cmd_answer does not
+        # catch it, so the CLI ends in a traceback carrying this text.
         if self.needs_rebuild():
             raise RuntimeError(
                 "this database still has UNIQUE(question_id) on answers, which "
@@ -976,6 +979,9 @@ class Store:
             raise ValueError(
                 f"{key} is awaiting elaboration; cactus edit {key} --agent ID first"
             )
+        # Two surfaces (TUI, www, `cactus answer`) raced on one row; the CLI
+        # maps this to exit 3. Checked before label validation, so a stale
+        # tap reports the race, not an off-menu label.
         if not q.persistent and q.status == "answered":
             raise AlreadyAnswered(
                 f"{key} was already answered "
@@ -1985,6 +1991,8 @@ class Store:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             q = self._get_by_id(first.id)
+            # Purged mid-wait (`clear --purge` from another process): the
+            # waiter gets "no such question" (`get --wait` exits 1), not a hang.
             if q is None:
                 raise KeyError(f"no such question: {key}")
             if watch:

@@ -91,6 +91,9 @@ def load_webhooks() -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
+        # Usually a hand edit (trailing comma). Every answer path (CLI, TUI,
+        # www) then warns "webhook poke failed" on any agent, and `cactus
+        # deliver` refuses to write until the file parses again.
         raise PokeError(f"cannot read webhook map {path}: {exc}") from exc
     if data is None:
         return {}
@@ -111,6 +114,8 @@ def delivery_entry(agent: str) -> dict[str, Any] | None:
 
 def is_herdr_entry(entry: dict[str, Any] | None) -> bool:
     """A `{"herdr": true}` entry: deliver by prompting the row's herdr pane."""
+    # An entry carrying both is a webhook: `url` wins, so a stale herdr flag
+    # left beside a URL never reroutes delivery to a pane.
     return bool(entry) and entry.get("herdr") is True and "url" not in entry
 
 
@@ -136,6 +141,9 @@ def write_delivery(agent: str, entry: dict[str, Any] | None) -> None:
     else:
         data[agent] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
+    # pid-suffixed temp + os.replace: a reader never sees a half-written map.
+    # Not locked: two concurrent writers race and the last rename wins.
+    # 0600 because an entry may carry an Authorization header.
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -170,9 +178,13 @@ def deliver_if_mapped(
     if entry is None:
         return None
     if is_herdr_entry(entry):
+        # A row posted outside herdr has no pane; herdr cannot prompt an
+        # agent id (see DEFAULT_COMMAND), so skip rather than fail the answer.
         if not pane:
             return None
         body = message or ANSWERED_MESSAGE.format(agent=agent)
+        # webhook=False: this entry has no url, so poke's webhook step must
+        # not see it; CACTUS_POKE still overrides, which keeps tests inert.
         return poke(agent, pane=pane, session=session, message=body,
                     timeout=timeout, webhook=False)
     body = message or DEFAULT_MESSAGE.format(agent=agent)
@@ -255,6 +267,9 @@ def resolve_executable(name: str) -> str | None:
 
 
 def _run_argv(argv: list[str], timeout: float, env_name: str = "CACTUS_POKE") -> str:
+    # Failures surface verbatim to the human (TUI flash, CLI stderr). A
+    # missing herdr under launchd means PATH is stripped and herdr lives
+    # outside FALLBACK_BIN_DIRS: set CACTUS_POKE/CACTUS_VISIT to its full path.
     if not argv:
         raise PokeError(f"{env_name} is empty")
     exe = resolve_executable(argv[0])
@@ -318,6 +333,8 @@ def poke(
             for part in template
         ]
 
+    # The override wins before the webhook map is read, so a malformed map
+    # cannot break a test or a forced transport.
     if os.environ.get("CACTUS_POKE"):
         return _run_argv(fill(poke_command()), timeout)
 

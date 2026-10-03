@@ -26,6 +26,8 @@ command -v cactus >/dev/null 2>&1 || exit 0
 
 input=$(cat)
 
+# No --cwd: the project is the hook process's cwd, which Claude Code sets to
+# the session's. A disabled project never blocks.
 enabled=$(cactus project-status --json 2>/dev/null \
   | jq -r 'if .enabled == false then "false" else "true" end' 2>/dev/null)
 [ "${enabled:-true}" = "true" ] || exit 0
@@ -34,6 +36,9 @@ enabled=$(cactus project-status --json 2>/dev/null \
 # shellcheck source=identity.sh
 . "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
 agent=$(cactus_resolve_agent)
+# q469 silence needs an identity. "Hook blocks although I have an open row":
+# check the resolved agent matches the row's owner (`cactus get KEY --json`),
+# and that the row is in this project; `list` scopes to the cwd's project.
 if [ -n "$agent" ]; then
   open=$(cactus list -s open --agent "$agent" --json 2>/dev/null | jq 'length' 2>/dev/null)
   [ "${open:-0}" -gt 0 ] && exit 0
@@ -49,6 +54,7 @@ try:
 except Exception:
     sys.exit(0)
 
+# Set when this Stop already blocked once; blocking again loops the turn.
 if hook_input.get("stop_hook_active"):
     sys.exit(0)
 
@@ -167,6 +173,9 @@ for idx in range(start, len(lines)):
             break
         if name == "Bash":
             command = item.get("input", {}).get("command", "")
+            # Substring match, not a parse: `cac` is the user's alias, and
+            # "cactus ask" anywhere (an echo, a heredoc) counts. MCP cactus_*
+            # tool calls do not count; that route blocks.
             if any(f"{b} {v}" in command for b in ("cactus", "cac") for v in ("ask", "edit", "plan", "review")):
                 has_ask = True
                 break
@@ -182,6 +191,8 @@ reason = (
     "is the default), `--agent` required, `--recommend` + `--confidence` "
     "when there is a pick; post it backgrounded, its exit wakes you (steer/notify/plan/review never wait); then stop"
 )
+# CONTRACT: the block is this JSON on stdout with exit 0; every other path
+# above exits 0 with no output, which lets the turn end.
 print(json.dumps({"decision": "block", "reason": reason}))
 sys.exit(0)
 PYEOF

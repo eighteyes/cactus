@@ -27,6 +27,8 @@ from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
                     DECOMPOSE_INSTRUCTION, DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
                     Question, Store, default_db_path)
 
+# Exit codes are contract: agents and hooks branch on them. 2 is reserved for
+# a --wait timeout, so argparse usage errors are forced to 1 (_ArgumentParser).
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_TIMEOUT = 2
@@ -738,7 +740,10 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     except ValueError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_ERROR
-    # Webhook-mapped owners need a wake; other agents wake on their own backgrounded wait.
+    # Agents with a delivery entry (`cactus deliver`: webhook or herdr) get a
+    # wake; the rest wake on their own backgrounded wait. The answer is already
+    # committed, so a failed delivery warns and still exits 0. The warning says
+    # "webhook" for a herdr entry too: check the map, then the row's pane stamp.
     try:
         from .poke import deliver_if_mapped, PokeError
 
@@ -882,6 +887,7 @@ def cmd_exec(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         return EXIT_ERROR
     else:
         if q.act == "run":
+            # Same delivery as cmd_answer: only a `run` row records an answer here.
             try:
                 from .poke import deliver_if_mapped, PokeError
 
@@ -1304,10 +1310,14 @@ def cmd_deliver(args: argparse.Namespace, store: Store, project: str, cwd: str) 
     if url is not None and mode != "webhook":
         print("cactus: URL only goes with `deliver webhook`", file=sys.stderr)
         return EXIT_ERROR
+    # A malformed map (hand-edited JSON) raises PokeError on every mode,
+    # writes included: the file is never overwritten until fixed by hand.
+    # Read-modify-write is unlocked; two concurrent `deliver` calls, last wins.
     try:
         if mode is None:
             entry = delivery_entry(agent)
         elif mode == "off":
+            # Nothing to drop is a miss (exit 3), same as reading an unmapped agent.
             if delivery_entry(agent) is None:
                 return _no_match()
             write_delivery(agent, None)
@@ -2022,6 +2032,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_OK
         return int(args.fn(args, store, project, cwd))
     except KeyboardInterrupt:
+        # 128 + SIGINT, the shell convention; outside the 0-3 contract on purpose.
         return 130
     finally:
         store.close()
