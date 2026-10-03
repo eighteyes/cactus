@@ -985,6 +985,7 @@ def cmd_edit(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     return EXIT_OK
 
 
+# CONVENTION: ownership is gated here in cli.py; Store stays mechanism.
 def _refuse_if_not_owner(action: str, key: str, q, agent: str | None) -> str | None:
     """Ownership message for a keyed verb, or None when it may proceed.
 

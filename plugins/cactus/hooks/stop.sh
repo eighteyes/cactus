@@ -3,6 +3,7 @@ set -u
 
 # On by default (q411); CACTUS_STOP_HOOK=0 opts out.
 [ "${CACTUS_STOP_HOOK:-1}" = "0" ] && exit 0
+# CONVENTION: read stdin into $input first; exit 0 when cactus/jq missing or project disabled.
 input=$(cat)
 command -v cactus >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0

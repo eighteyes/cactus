@@ -141,6 +141,7 @@ def write_delivery(agent: str, entry: dict[str, Any] | None) -> None:
     else:
         data[agent] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
+    # CONVENTION: shared config files are written temp-then-os.replace.
     # pid-suffixed temp + os.replace: a reader never sees a half-written map.
     # Not locked: two concurrent writers race and the last rename wins.
     # 0600 because an entry may carry an Authorization header.
