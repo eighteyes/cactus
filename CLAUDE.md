@@ -881,3 +881,32 @@ scope.
   command when the binary is missing and never installs, an up server exits
   0, `status`/`stop` exit 3 when down. `CACTUS_DECIDER_CMD` templates the
   launch command (`{backend}`, `{host}`, `{port}`) for tests.
+- A persistent row (review/plan) reads `revised` when `q.updated_at >
+  q.answers[-1].created_at` (q311) — `set_review`, `set_steps`/
+  `set_step_done`, and `edit` all bump `updated_at` via `_touch`, so an agent
+  changing the row after the human's latest verdict is visible without a diff.
+  `tui._revised`/`cli._revised` compute it independently (no store change);
+  the rail marks it `· revised`, the card adds a line under the verdicts
+  line, `_print_questions` matches it in text, and `CactusApp._load_questions`
+  stable-partitions revised top-level rows (with their subtree) to the end of
+  the rail so an unaddressed revision surfaces without hunting for it. It
+  shows alongside the sent/heard marks (q404-q406), never instead of them,
+  and the rail block stays a fixed 4 rows (q226); the partition runs inside
+  `_load_questions`, so it stays under `_reload_lock`.
+- `Store.projects()` carries `newest_open` — `MAX(created_at)` over each
+  project's `open`/`live`/`elaborate` rows, NULL when none — alongside
+  `due_count`. The projects page and pane keep ranking by `due_count DESC,
+  last_activity DESC` (q351) and the CLI's `cactus projects` order is
+  unaffected; `newest_open` only drives `[`/`]` rotation order.
+  `CactusApp._live_projects_rows` (q313) sorts its already-filtered
+  rows by `newest_open` descending, so one `]` from anywhere reaches whichever
+  project just got a new row, not whichever has been busiest overall.
+- `scope.resolve_project` (q314) maps a linked git worktree to its main
+  repository's toplevel via `git_main_toplevel` (`--git-common-dir` vs
+  `--git-dir`; differ means linked, and the project root is the common dir's
+  parent), so rows asked from `.claude/worktrees/X` or `.herdr/worktrees/X`
+  file under the parent project, share its qN numbering and LABEL:qN refs,
+  and are seen by a `cactus --monitor` started in the main checkout. `cwd`
+  still records the real directory the row was asked from. `git_toplevel`
+  keeps its old per-worktree meaning; `CACTUS_SCOPE=worktree` restores it as
+  the project root too. Existing rows are not rehomed by this change.

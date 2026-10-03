@@ -1788,6 +1788,8 @@ class Store:
                    SUM(CASE WHEN questions.status = 'answered' THEN 1 ELSE 0 END) AS answered_count,
                    COUNT(questions.id) AS total,
                    MAX(questions.updated_at) AS last_activity,
+                   MAX(CASE WHEN questions.status IN ('open', 'live', 'elaborate')
+                            THEN questions.created_at END) AS newest_open,
                    SUM(CASE WHEN questions.status IN ('open', 'elaborate') THEN 1 ELSE 0 END) AS due_count
             FROM known_projects
             LEFT JOIN project_settings ON project_settings.project = known_projects.project
