@@ -46,7 +46,7 @@ While simple, it has replaced a number of my AI interactions and helped isolate 
 
 ## Mods
 
-**cactus-pane** (Claude Code mod): the inbox as a live pane in the session. Not in this repo yet.
+**cactus-pane** (Claude Code mod, [mods/cactus-pane](mods/cactus-pane)): the inbox as a live pane in the session. Load it with `claude --plugin-dir mods/cactus-pane`.
 - `/cactus-pane` opens it; it also opens at session start. A rail plus a card, answered in place with the TUI's keys.
 - When one of the session's rows moves, it starts a turn carrying the answer in full and clears the row. No backgrounded waits: `cactus ask`/`run` get `--no-wait`.
 
