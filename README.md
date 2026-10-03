@@ -57,6 +57,14 @@ header; it falls back to plain text when `figlet` is not installed.
 
 It's honestly not that complicated, but it's replaced a number of my AI interactions.
 
+## Mods
+
+**cactus-pane** (Claude Code mod): the inbox as a live pane in the session. Not in this repo yet.
+- `/cactus-pane` opens it; it also opens at session start. A rail plus a card, answered in place with the TUI's keys.
+- When one of the session's rows moves, it starts a turn carrying the answer in full and clears the row. No backgrounded waits: `cactus ask`/`run` get `--no-wait`.
+
+**Codex mod mode**: Codex can't host a pane or start a turn, so the plugin's hooks stand in. Post `--no-wait`; each prompt injects the inbox (first five rows, full answers) and clears the answered one-shot rows. Inside herdr, `cactus deliver herdr` lets an answer prompt the pane. More: [docs/codex-mod-mode.md](docs/codex-mod-mode.md)
+
 ## Manual Installation
 
 ```sh
