@@ -572,7 +572,7 @@ def _keybar_centre_check(app: CactusApp) -> int:
     return col
 
 
-@pytest.mark.parametrize("orientation, width", [("bottom", 100), ("side", 200)])
+@pytest.mark.parametrize("orientation, width", [("bottom", 120), ("side", 200)])
 async def test_keybar_is_centred_and_a_seed_drops_under_the_key(
     store: Store, project: str, orientation: str, width: int,
 ) -> None:
@@ -656,10 +656,10 @@ async def test_keybar_recentres_on_resize(store: Store, project: str) -> None:
 
     app = CactusApp(store, project=project)
     app.tui_settings["orientation"] = "bottom"
-    async with app.run_test(size=(100, 40)) as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         await _settle(pilot)
         before = _keybar_centre_check(app)
-        await pilot.resize_terminal(140, 40)
+        await pilot.resize_terminal(160, 40)
         await _settle(pilot)
         assert _keybar_centre_check(app) > before
 
@@ -2858,3 +2858,86 @@ async def test_open_site_flashes_on_a_row_without_one(
         assert app.flash == f"{q.key} has no site"
 
     assert not log.exists()
+
+
+def _choice_row(store: Store, project: str, **kw):
+    return store.ask(
+        "pick", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b"), Choice("c")], **kw,
+    )
+
+
+async def test_m_binds_only_on_an_eligible_single_choice_row(store: Store, project: str) -> None:
+    q = _choice_row(store, project)
+    conf = store.ask("sure?", project=project, cwd=project, agent=AGENT,
+                     kind="confirm", act="ask", choices=[Choice("yes"), Choice("no")])
+    multi = store.ask("some", project=project, cwd=project, agent=AGENT,
+                      kind="multi", act="ask", choices=[Choice("a"), Choice("b")])
+    data = store.ask("chunks", project=project, cwd=project, agent=AGENT,
+                     kind="choice", act="data", choices=[Choice("a", "x"), Choice("b", "y")])
+    run = store.ask("go", project=project, cwd=project, agent=AGENT,
+                    kind="confirm", act="run",
+                    choices=[Choice("approve"), Choice("deny")])
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        seen = {}
+        for key in (q.key, conf.key, multi.key, data.key, run.key):
+            app.focused_key = key
+            seen[key] = bool(app.check_action("toggle_several", ()))
+        assert seen == {q.key: True, conf.key: False, multi.key: False,
+                        data.key: False, run.key: False}
+        app.focused_key = multi.key
+        await pilot.press("m")
+        await pilot.pause()
+        assert app.flash and multi.key not in app.several
+
+
+async def test_m_flips_digits_to_toggle_and_enter_stores_both(store: Store, project: str) -> None:
+    q = _choice_row(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("m")
+        await pilot.pause()
+        assert keybar_keys(app)["m"] == "one"
+        assert "pick several (m to go back)" in str(app.query_one("#card-text", Static).content)
+        await pilot.press("1", "3")
+        await pilot.pause()
+        assert store.get(q.key, project=project).status == "open"
+        await pilot.press("enter")
+        await pilot.pause()
+    fresh = store.get(q.key, project=project)
+    assert fresh.status == "answered"
+    assert fresh.kind == "choice"
+    assert fresh.answer.selected == ["a", "c"]
+    assert q.key not in app.several
+
+
+async def test_m_twice_returns_to_single_pick(store: Store, project: str) -> None:
+    q = _choice_row(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("m")
+        await pilot.press("1")
+        await pilot.press("m")
+        await pilot.pause()
+        assert app.multi_selected == set()
+        assert keybar_keys(app)["m"] == "several"
+        await pilot.press("2")
+        await pilot.pause()
+    assert store.get(q.key, project=project).answer.selected == ["b"]
+
+
+async def test_empty_flipped_submit_is_refused(store: Store, project: str) -> None:
+    q = _choice_row(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("m")
+        app.flash = ""
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.flash
+    assert store.get(q.key, project=project).status == "open"

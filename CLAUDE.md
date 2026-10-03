@@ -920,3 +920,12 @@ scope.
   still records the real directory the row was asked from. `git_toplevel`
   keeps its old per-worktree meaning; `CACTUS_SCOPE=worktree` restores it as
   the project root too. Existing rows are not rehomed by this change.
+- `m` (q506) flips an open single-choice row to pick-several for that one
+  answer: TUI-local (`CactusApp.several`, keys of flipped rows), no store
+  write. `check_action` binds it only on `kind == "choice"`, open, not
+  persistent, act not `data`/`run`, 2+ choices; `on_key` flashes why
+  elsewhere. Flipped, digits toggle through `multi_selected` (recommended
+  labels preselected), enter submits all toggled labels via `Store.answer`
+  (kind stays `choice`; an empty submit is refused like a multi's), the card
+  notes `pick several (m to go back)`, and the key bar reads `m one`. `m`
+  again drops the toggles. The flip ends on answer, skip, clear, or undo.

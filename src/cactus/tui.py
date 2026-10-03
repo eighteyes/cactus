@@ -304,8 +304,13 @@ def _card_lines(
     run_output: list[str] | None = None,
     run_state: str = "",
     preview: list[str] | None = None,
+    several: bool = False,
 ) -> Text:
-    """Full detail for the one question being answered."""
+    """Full detail for the one question being answered.
+
+    `several` is the TUI-local pick-several flip of a single-choice row (`m`):
+    it draws the checkboxes a multi row does, plus a one-line note.
+    """
     # LABEL:qN when spanning projects (q166) — the bare key alone can recur
     # across projects once keys number per project.
     meta = [f"{project_label(q.project)}:{q.key}" if show_project else q.key]
@@ -401,8 +406,9 @@ def _card_lines(
     elif q.kind in ("choice", "multi"):
         lines.append("")
         for i, choice in enumerate(q.choices, start=1):
-            mark = "[x] " if q.kind == "multi" and choice.label in selected else (
-                "[ ] " if q.kind == "multi" else ""
+            boxed = q.kind == "multi" or several
+            mark = "[x] " if boxed and choice.label in selected else (
+                "[ ] " if boxed else ""
             )
             rec = f" ★{CONFIDENCE_GLYPH.get(q.confidence, '')}" if choice.label in q.recommend else ""
             summary, marks = tradeoffs.split(choice.description)
@@ -412,6 +418,8 @@ def _card_lines(
                 lines.append(
                     Text(f"      {'✓' if is_pro else '✗'} {text}", style="green" if is_pro else "red")
                 )
+        if several:
+            lines.append("  pick several (m to go back)")
         if q.recommend_why:
             lines.append(f"  recommend: {', '.join(q.recommend)} — {q.recommend_why}")
         if q.auto_pick:
@@ -846,6 +854,7 @@ class CactusApp(App[int]):
         Binding("I", "ignore_project", "Ignore"),
         Binding("A", "activate_project", "Activate/auto"),
         Binding("u", "undo", "Undo", show=False),
+        Binding("m", "toggle_several", "Several", show=False),
         Binding("e", "elaborate", "Elaborate", show=False),
         Binding("D", "decompose", "Decompose", show=False),
         Binding("?", "open_settings", "Settings", key_display="?"),
@@ -895,6 +904,9 @@ class CactusApp(App[int]):
         self.questions: list[Question] = []
         self.focused_key: str | None = None
         self.multi_selected: set[str] = set()
+        # Keys of single-choice rows flipped to pick-several by `m`: TUI-local,
+        # no store write; ends on answer, skip, clear, or undo restoring it.
+        self.several: set[str] = set()
         self.drafts: dict[str, str] = {}
         self.undo_stack: list[dict[str, Any]] = []
         self.run_output = {}
@@ -2098,6 +2110,7 @@ class CactusApp(App[int]):
                 run_output=self.run_output.get(q.key),
                 run_state=self.run_state.get(q.key, ""),
                 preview=preview,
+                several=q.key in self.several,
             )
         )
         # check_action is a pure function of the focused question and its
@@ -2166,11 +2179,16 @@ class CactusApp(App[int]):
                 items.append(("i", "type"))
             items.append(("enter", "submit"))
         else:  # "choice"
+            flipped = q.key in self.several
             for i, choice in enumerate(q.choices[:9], start=1):
                 label = choice.label + ("*" if choice.label in q.recommend else "")
                 items.append((str(i), label))
+            if flipped:
+                items.append(("enter", "submit"))
             if q.allow_free:
                 items.append(("i", "type"))
+            if self.check_action("toggle_several", ()):
+                items.append(("m", "one" if flipped else "several"))
 
         if self.check_action("activate_project", ()):
             items.append(("A", "auto"))
@@ -2364,6 +2382,8 @@ class CactusApp(App[int]):
             return bool(q.files)
         if action == "dismiss":
             return q.act in ("notify", "data")
+        if action == "toggle_several":
+            return self._several_eligible(q)
         if action == "poke":
             return _pokeable(q)
         if action == "visit":
@@ -2838,9 +2858,43 @@ class CactusApp(App[int]):
         So enter alone submits it, and a tap still redirects to anything else.
         """
         q = next((x for x in self.questions if x.key == key), None)
-        if q is not None and q.kind == "multi" and q.recommend:
+        if q is not None and (q.kind == "multi" or q.key in self.several) and q.recommend:
             return set(q.recommend)
         return set()
+
+    @staticmethod
+    def _several_eligible(q: Question) -> bool:
+        """`m` applies to an open, answerable single-choice row with 2+ choices."""
+        return (
+            q.kind == "choice" and q.status == "open" and not q.persistent
+            and q.act not in ("data", "run") and len(q.choices) >= 2
+        )
+
+    @staticmethod
+    def _several_refusal(q: Question) -> str:
+        if q.kind != "choice":
+            return f"m only widens a single-choice row — {q.key} is kind='{q.kind}'"
+        if q.act in ("data", "run"):
+            return f"m only widens a single-choice row — {q.key} is act='{q.act}'"
+        if len(q.choices) < 2:
+            return f"{q.key} has fewer than 2 choices"
+        return f"{q.key} is not open"
+
+    def action_toggle_several(self) -> None:
+        """`m`: flip the focused single-choice row to pick-several, or back (drops toggles)."""
+        q = self._current_question()
+        if q is None or not self._several_eligible(q):
+            return
+        if q.key in self.several:
+            self.several.discard(q.key)
+            self.multi_selected = set()
+            self.flash = "pick one"
+        else:
+            self.several.add(q.key)
+            self.multi_selected = set(q.recommend)
+            self.flash = "pick several"
+        self._redraw_active()
+        self._rebuild_status_bar()
 
     def _redraw_active(self) -> None:
         self._rebuild_card()
@@ -3062,6 +3116,13 @@ class CactusApp(App[int]):
                 # The act, not the kind — "q1 is act='plan'" says what the row
                 # is for; "q1 is text" only names the shape of its answer.
                 self.flash = f"y/n only answer a confirm row — {q.key} is act='{q.act}'"
+                self._rebuild_status_bar()
+                event.stop()
+            return
+        if event.key == "m":
+            q = self._current_question()
+            if q is not None and not self._several_eligible(q):
+                self.flash = self._several_refusal(q)
                 self._rebuild_status_bar()
                 event.stop()
             return
@@ -3433,7 +3494,7 @@ class CactusApp(App[int]):
             self._rebuild_status_bar()
             return
         label = q.choices[n - 1].label
-        if q.kind == "choice":
+        if q.kind == "choice" and q.key not in self.several:
             await self._submit_answer(q, selected=[label], text=self.pending_text or None, key=str(n))
         else:
             if label in self.multi_selected:
@@ -3542,7 +3603,7 @@ class CactusApp(App[int]):
         if q.act == "data":
             await self._submit_data(q)
             return
-        if q.kind == "multi":
+        if q.kind == "multi" or q.key in self.several:
             if not self.multi_selected and not self.pending_text:
                 self.flash = "pick at least one, or s to skip"
                 self._rebuild_status_bar()
@@ -3751,6 +3812,7 @@ class CactusApp(App[int]):
                 old_index = i
                 break
         self.multi_selected = set()
+        self.several.discard(answered_key)
         self.drafts.pop(answered_key, None)
         self.free_text_mode = False
         self._hide_input()
@@ -4084,6 +4146,7 @@ class CactusApp(App[int]):
                 # entry down is still good.
                 continue
             if not is_step:
+                self.several.discard(entry["key"])
                 self.drafts[entry["key"]] = entry["text"]
                 if not entry["text"]:
                     self.drafts.pop(entry["key"], None)
