@@ -23,7 +23,7 @@ fi
 
 open=$(cactus list -s open --agent "$agent" 2>/dev/null || true)
 printf '%s\n' "Cactus is available. Use --agent $agent for every Cactus row."
-printf '%s\n' "Codex has no wake-up from idle: answers reach you on your next turn through the frontier hook. Do not arm a background monitor. Asks and runs wait for the human by default, which blocks Codex: post with --no-wait. When the next step needs an answer now, block in the foreground: cactus get KEY --wait --timeout 300 --json"
+printf '%s\n' "Cactus mod mode is active: post asks and runs with --no-wait; never arm a background monitor or waiter. Codex has no native live pane or idle-session wake. The frontier hook injects the current inbox on each user turn, including full answers, and auto-clears non-persistent answered/skipped rows. When the next step needs an answer now, block in the foreground: cactus get KEY --wait --timeout 300 --json"
 if [ -n "$open" ]; then
   printf '%s\n%s\n' "Open Cactus rows for this Codex session:" "$open"
 fi

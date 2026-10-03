@@ -9,16 +9,24 @@ Cactus is a durable SQLite inbox. Post a row, continue useful work, and act
 when the user answers. Read `cactus --agent-help` once per session for the
 full CLI reference.
 
-## Identity and waiting
+## Mod mode: identity and waiting
 
 The bundled hooks use Codex's hook-event `session_id` as the Cactus owner.
 Use the `AGENT` value injected at session start on every `ask`, `edit`, and
 `clear`; do not replace it with a terminal pane id.
 
-Codex has no wake-up from idle, and `cactus ask` and `cactus run` wait for
-the human by default, which blocks Codex. Post with `--no-wait`; answers
-reach you on the next turn through the frontier hook. When the very next
-step needs an answer, block in the foreground under Codex's shell limit:
+While this plugin is loaded, its hooks inject this workflow into each Codex
+turn. Codex has no native live plugin pane and no API for a hook to start an
+idle session. The nearest equivalent is the `UserPromptSubmit` frontier: it
+refreshes this session's inbox on the next user turn, includes each latest
+answer in full, and clears answered/skipped non-persistent rows. If the
+session is running in Herdr, the session-start hook also registers its
+optional Herdr delivery route, which can wake that external session.
+
+`cactus ask` and `cactus run` wait for the human by default, which blocks
+Codex. Post with `--no-wait`; never arm a background monitor or waiter. When
+the very next step needs an answer, block in the foreground under Codex's
+shell limit:
 
     cactus get KEY --wait --timeout 300 --json
 
