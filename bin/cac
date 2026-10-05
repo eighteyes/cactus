@@ -1,1 +1,3 @@
-cactus
+#!/bin/sh
+# cac: short alias for the cactus launcher beside it.
+exec "$(dirname "$0")/cactus" "$@"
