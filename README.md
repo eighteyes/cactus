@@ -1,14 +1,14 @@
 # cactus
 
+> `cactus` is a decision queue TUI for humans working with conversational agents. Agents post questions, humans answer from one inbox.
+
 "All the spines without the ouch"
 
 [![cactus demo](assets/cactus-demo.gif)](https://youtu.be/kobgaU4_Tn0)
 
-All your agents have lots of questions for you. Juggling agent windows and ingesting context is an OS-level user-interface concern. To bring order to it we need *primitives* and a *queue*: agents propose, users decide.
+Do you run multiple agents at once? They make lots of questions only you can answer. Recent LLM developments have [reportedly](https://tech-insider.org/anthropic-engineer-claude-writing-quality-worse-2026/) steer written prose to be read by machines and not humans, making reading AI output tedious and burdensome. To bring order to all this information across multiple agents we need *primitives* and a *queue*: agents propose, users decide.
 
-Conversational chat has been the dominant human<>AI surface for 50 years (ELIZA). `cactus` is a decision queue for humans working with conversational agents.
-
-Deciding from a queue greatly reduces the amount of prose one has to parse by using structured information. Cactus has become my primary AI interaction surface. 
+Cactus has become my primary AI interaction surface, I type into Claude when planning or when making precise suggestions. I don't have metrics, but I feel more effective and less mentally exhausted at the end of the day. Hopefully you too can find some benefit from this. 
 
 ## Features
 
@@ -20,6 +20,9 @@ Copy a row's command to the clipboard, or run it in the row's working directory;
 
 ### permissions
 A command the agent is not allowed to run becomes an approve / deny row. Approve runs it and hands the exit code and output back to the agent.
+
+### file preview / editor
+Files can be included with a question for additional context and review
 
 ### globally sliced
 - one project is a stream
@@ -42,15 +45,13 @@ Off by default: `~`, `T` for tuning.
 ### deconstruct
 Press `d` to decompose a complex question into smaller follow-up questions. 
 
-While simple, it has replaced a number of my AI interactions and helped isolate my context load and enforce project boundaries. I don't have metrics, but I feel more effective at the end of the day, and I'm less fatigued by reading LLM babble. Hopefully you can find some benefit from this. 
+## Claude Code Mods
 
-## Mods
+**cactus-pane** (Claude Code mod, [mods/cactus-pane](mods/cactus-pane)): the inbox as a live pane in the session.
+- `/cactus-pane` opens it; it also opens at session start.
 
-**cactus-pane** (Claude Code mod, [mods/cactus-pane](mods/cactus-pane)): the inbox as a live pane in the session. Load it with `claude --plugin-dir mods/cactus-pane`.
-- `/cactus-pane` opens it; it also opens at session start. A rail plus a card, answered in place with the TUI's keys.
-- When one of the session's rows moves, it starts a turn carrying the answer in full and clears the row. No backgrounded waits: `cactus ask`/`run` get `--no-wait`.
-
-**Codex mod mode**: Codex can't host a pane or start a turn, so the plugin's hooks stand in. Post `--no-wait`; each prompt injects the inbox (first five rows, full answers) and clears the answered one-shot rows. Inside herdr, `cactus deliver herdr` lets an answer prompt the pane. More: [docs/codex-mod-mode.md](docs/codex-mod-mode.md)
+## Enhancemenst
+[Herdr](https://herdr.dev/) allows users to poke, visit or inject into sessions, without relying on hooks. Claude Code and Codex achieve the same functionality via background processes. 
 
 ## Manual Installation
 
@@ -194,3 +195,5 @@ and smoke test: [skills/cactus/WEBHOOK_SETUP.md](skills/cactus/WEBHOOK_SETUP.md)
 
 ## Contributions
 Are welcome, I'm interested in seeing if this is useful! I've been thinking about out-of-band agentic communication for a while, and this is the approach that finally stuck.
+
+![Cactus action](assets/cactus-action.png)
