@@ -21,6 +21,7 @@ rm -f "$out"
 
 zip -q -r "$out" \
   .claude-plugin/plugin.json \
+  .claude-plugin/icon.png \
   .mcp.json \
   server \
   hooks \
