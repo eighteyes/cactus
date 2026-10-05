@@ -55,6 +55,8 @@ declare module 'claude-code' {
       undo: string[]
       modes: Record<string, 'elaborate'>
       flips: Record<string, true>
+      editing: string | null
+      drafts: Record<string, string>
     }
   }
 }

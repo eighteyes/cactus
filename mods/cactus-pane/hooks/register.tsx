@@ -23,6 +23,8 @@ const previews = atom({ plugin: 'cactus-pane', key: 'previews' } as const, {})
 const undo = atom({ plugin: 'cactus-pane', key: 'undo' } as const, [])
 const modes = atom({ plugin: 'cactus-pane', key: 'modes' } as const, {})
 const flips = atom({ plugin: 'cactus-pane', key: 'flips' } as const, {})
+const editing = atom({ plugin: 'cactus-pane', key: 'editing' } as const, null)
+const drafts = atom({ plugin: 'cactus-pane', key: 'drafts' } as const, {})
 const DRAFT_ROWS = 3
 const UNDO_DEPTH = 20
 const RUN_TIMEOUT_MS = 600_000
@@ -299,13 +301,52 @@ async function setFlip($: EngineInterface, key: string, on: boolean): Promise<vo
   })
 }
 
-// Per-row send count: a new `reset` prop tells the editor to clear its draft.
-const resets = new Map<string, number>()
+// The draft is the hooks module's: the editor box and the line input both
+// write it. `revs` bumps when the hooks module changes it (a line appended, a
+// send clearing it), which tells the editor to adopt the new text.
+const revs = new Map<string, number>()
 
-function editorProps(key: string, label: string, isEditor: boolean) {
-  const keys = isEditor ? 'enter newline · ctrl+s send · esc leave' : 'enter sends'
-  const what = label === 'hint' ? 'what should the rewrite say?' : label === 'note' ? 'optional note' : 'type'
-  return { label, placeholder: `${what} (${keys})`, reset: resets.get(key) ?? 0, rows: DRAFT_ROWS }
+function editorProps(key: string, label: string, text: string, active = false) {
+  const what = label === 'hint' ? 'what should the rewrite say?' : label === 'note' ? 'optional note' : 'click to edit'
+  return {
+    label,
+    placeholder: `${what} · enter newline · ctrl+s send · ctrl+x leave`,
+    rev: revs.get(key) ?? 0,
+    text,
+    rows: DRAFT_ROWS,
+    active,
+  }
+}
+
+async function setDraft($: EngineInterface, key: string, text: string, bump: boolean): Promise<void> {
+  if (bump) revs.set(key, (revs.get(key) ?? 0) + 1)
+  await update($, drafts, all => {
+    const { [key]: _gone, ...rest } = all
+    return text === '' ? rest : { ...rest, [key]: text }
+  })
+}
+
+// The line input: a line appends to the draft; an empty line sends the draft.
+async function submitLine($: EngineInterface, key: string, line: string): Promise<void> {
+  const draft = (await read($, drafts))[key] ?? ''
+  if (line.trim() === '') {
+    if (await submitText($, key, draft)) await setDraft($, key, '', true)
+    return
+  }
+  await setDraft($, key, draft === '' ? line : `${draft}\n${line}`, true)
+  await showDraft($, key)
+}
+
+// The draft lives in the editor box above the line input; a box scrolled out
+// of view makes appended lines look lost, so bring it (and the line) in.
+async function showDraft($: EngineInterface, key: string): Promise<void> {
+  await $.ui.scroll({ to: { key: `${key}:editbox` }, block: 'nearest' }).catch(() => undefined)
+  await $.ui.scroll({ to: { key: `${key}:line` }, block: 'nearest' }).catch(() => undefined)
+}
+
+async function leaveEditor($: EngineInterface, key: string): Promise<void> {
+  await update($, editing, () => null)
+  await $.ui.focus({ requestId: PANE, key: `${key}:sel` }).catch(() => undefined)
 }
 
 // One send path for the editor and the single-line fallback.
@@ -425,15 +466,26 @@ export const register: Register = on => {
     return next({ ...e, command: noWait(e.command) })
   })
 
-  // The editor posts { submit } on ctrl+s; a sent draft clears via `reset`.
+  // The editor posts { active } when it takes keys, { leave } on ctrl+x and
+  // { submit } on ctrl+s. Esc is unreliable in a pane, so leaving and sending
+  // move the ring back to the question header from here; a send also bumps
+  // `reset`, which clears the draft on the next draw.
   on('ui.message', async ($, e, next) => {
-    const data = e.data as { submit?: unknown } | null
-    if (e.requestId !== PANE || typeof data?.submit !== 'string') return next(e)
+    if (e.requestId !== PANE || !e.element.endsWith(':editor')) return next(e)
     const key = e.element.split(':')[0] ?? ''
-    if (!(await submitText($, key, data.submit))) return {}
-    resets.set(key, (resets.get(key) ?? 0) + 1)
-    const label = (e.element.endsWith(':editor') && (await read($, modes))[key] === 'elaborate') ? 'hint' : 'answer'
-    return { props: editorProps(key, label, true) }
+    const data = (e.data ?? {}) as { submit?: unknown; leave?: unknown; active?: unknown; text?: unknown }
+    if (data.active === true) {
+      await update($, editing, () => key)
+    } else if (data.leave === true) {
+      await leaveEditor($, key)
+    } else if (typeof data.submit === 'string') {
+      if (await submitText($, key, data.submit)) {
+        await setDraft($, key, '', true)
+        await leaveEditor($, key)
+      }
+    }
+    if (typeof data.text === 'string') await setDraft($, key, data.text, false)
+    return {}
   })
 
   // Up/down arrive as a one-row scroll with no pointer; they move the
@@ -450,7 +502,11 @@ export const register: Register = on => {
   // question instead. Options are picked by their keys; `i` (a plugin focus)
   // still reaches the text box.
   on('ui.focus', async ($, e, next) => {
-    if (e.requestId !== PANE || e.element === undefined) return next(e)
+    if (e.requestId !== PANE) return next(e)
+    // The ring landing anywhere but the active editor means it was left.
+    const ed = await read($, editing)
+    if (ed !== null && e.element !== `${ed}:editor`) await update($, editing, () => null)
+    if (e.element === undefined) return next(e)
     const [key, part] = e.element.split(':')
     if (key === undefined || key === '') return next(e)
     if (e.origin.kind === 'person' && part !== undefined && part !== 'sel') {
@@ -477,6 +533,8 @@ export const register: Register = on => {
     const stack = await read($, undo)
     const modeOf = await read($, modes)
     const flipped = await read($, flips)
+    const editingKey = await read($, editing)
+    const drafted = await read($, drafts)
     const current = list.find(r => r.key === wanted) ?? list[0]
 
     const card = (row: Row) => {
@@ -661,16 +719,25 @@ export const register: Register = on => {
 
           {hasInput && Client !== undefined && (
             <Box key={`${row.key}:editbox`} marginTop={1}>
-              <Client key={`${row.key}:editor`} module="./editor.tsx" props={editorProps(row.key, inputLabel, true)} />
+              <Client
+                key={`${row.key}:editor`}
+                module="./editor.tsx"
+                props={editorProps(row.key, inputLabel, drafted[row.key] ?? '', editingKey === row.key)}
+              />
             </Box>
           )}
-          {hasInput && Client === undefined && Input !== undefined && (
+          {hasInput && Client === undefined && (drafted[row.key] ?? '') !== '' && (
+            <Box key={`${row.key}:draft`} borderStyle="single" paddingX={1} marginTop={1}>
+              <Text wrap="wrap">{drafted[row.key]}</Text>
+            </Box>
+          )}
+          {hasInput && Input !== undefined && (
             <Input
-              key={`${row.key}:text`}
-              label={inputLabel}
-              placeholder={editorProps(row.key, inputLabel, false).placeholder}
-              submitLabel="send"
-              onSubmit={(value: string) => void submitText($, row.key, value)}
+              key={`${row.key}:line`}
+              label="line"
+              placeholder="i to type · enter adds the line · enter on an empty line sends"
+              submitLabel="add"
+              onSubmit={(value: string) => void submitLine($, row.key, value)}
             />
           )}
 
@@ -705,8 +772,9 @@ export const register: Register = on => {
                 plain
                 onPress={() =>
                   void $.ui
-                    .focus({ requestId: PANE, key: `${row.key}:${Client !== undefined ? 'editor' : 'text'}` })
+                    .focus({ requestId: PANE, key: `${row.key}:line` })
                     .catch(() => undefined)
+                    .then(() => showDraft($, row.key))
                 }
               />
             )}
@@ -753,7 +821,7 @@ export const register: Register = on => {
                   plain
                   onPress={() => {
                     void setMode($, row.key, isHinting ? null : 'elaborate')
-                    if (!isHinting) void $.ui.focus({ requestId: PANE, key: `${row.key}:${Client !== undefined ? "editor" : "text"}` }).catch(() => undefined)
+                    if (!isHinting) void $.ui.focus({ requestId: PANE, key: `${row.key}:line` }).catch(() => undefined)
                   }}
                 />
                 <Button

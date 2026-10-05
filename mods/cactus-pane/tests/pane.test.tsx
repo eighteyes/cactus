@@ -292,3 +292,33 @@ test('m turns a single-choice row into pick-several for one answer', async ($, o
   await ui.press({ key: 'q7:send' })
   expect(calls).toContainEqual(['cactus', 'answer', 'q7', '-s', 'oidc', '-s', 'local'])
 })
+
+test('ctrl+x leaves the editor without sending; typing marks it active', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await typeIn(ui, 'q7', 'a b')
+  expect((await ui.find({ text: /editing · ctrl\+s send · ctrl\+x leave/, in: 'q7:editor' }))).toBeDefined()
+  await ui.key({ key: 'x', ctrl: true, in: 'q7:editor' })
+  expect(calls.some(c => c[1] === 'answer')).toBe(false)
+  expect((await ui.find({ text: /i or click to edit/, in: 'q7:editor' }))).toBeDefined()
+})
+
+test('the space key types a space', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.key({ key: 'a', in: 'q7:editor' })
+  await ui.key({ key: 'space', in: 'q7:editor' })
+  await ui.key({ key: 'b', in: 'q7:editor' })
+  await ui.key({ key: 's', ctrl: true, in: 'q7:editor' })
+  expect(calls).toContainEqual(['cactus', 'answer', 'q7', 'a b'])
+})
+
+test('the line input builds a multi-line draft; an empty line sends it', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.input({ key: 'q7:line', text: 'first line' })
+  await ui.input({ key: 'q7:line', text: 'second line' })
+  expect(calls.some(c => c[1] === 'answer')).toBe(false)
+  await ui.input({ key: 'q7:line', text: '' })
+  expect(calls).toContainEqual(['cactus', 'answer', 'q7', 'first line\nsecond line'])
+})

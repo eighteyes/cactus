@@ -1,13 +1,14 @@
 // editor: a multi-line text editor drawn inside the cactus pane (terminal only).
-// - keeps the draft and cursor as the instance's local state
+// - edits a draft the hooks module owns: adopts props.text on a new rev, posts
+//   each local edit back so the pane's line input and this box share one draft
 // - return inserts a newline; ctrl+s posts { submit } to the hooks module
 // - arrows, home/end, backspace/delete edit; esc hands the keys back (engine)
-// - a new `reset` prop from the hooks module clears the draft after a send
+// - ctrl+x posts { leave }: esc is unreliable in a pane
 
 import type { ClientKeyEvent, ClientModule, ClientSurface } from 'claude-code'
 
-type Props = { label: string; placeholder: string; reset: number; rows: number }
-type State = { text: string; cursor: number; reset: number }
+type Props = { label: string; placeholder: string; rev: number; text: string; rows: number; active: boolean }
+type State = { text: string; cursor: number; rev: number }
 
 function lineStart(text: string, at: number): number {
   return text.lastIndexOf('\n', at - 1) + 1
@@ -32,9 +33,10 @@ function verticalMove(text: string, at: number, dir: -1 | 1): number {
   return Math.min(end + 1 + column, lineEnd(text, end + 1))
 }
 
-function edit(st: State, k: ClientKeyEvent): State | 'submit' {
+function edit(st: State, k: ClientKeyEvent): State | 'submit' | 'leave' {
   const { text, cursor } = st
   if (k.ctrl && k.key === 's') return 'submit'
+  if (k.ctrl && k.key === 'x') return 'leave'
   if (k.ctrl || k.meta) return st
   const put = (s: string) => ({ ...st, text: text.slice(0, cursor) + s + text.slice(cursor), cursor: cursor + s.length })
   switch (k.key) {
@@ -56,6 +58,8 @@ function edit(st: State, k: ClientKeyEvent): State | 'submit' {
       return { ...st, cursor: lineStart(text, cursor) }
     case 'end':
       return { ...st, cursor: lineEnd(text, cursor) }
+    case 'space':
+      return put(' ')
     case 'tab':
       return put('  ')
     default:
@@ -67,15 +71,22 @@ const Editor: ClientModule<Props, State> = (props, surface: ClientSurface<State>
   const { Box, Text } = surface.elements
   const current = (): State => {
     const st = surface.state
-    return st === undefined || st.reset !== props.reset ? { text: '', cursor: 0, reset: props.reset } : st
+    return st === undefined || st.rev !== props.rev
+      ? { text: props.text, cursor: props.text.length, rev: props.rev }
+      : st
   }
+  // Esc cannot be relied on in a pane, so the editor says when it starts and
+  // stops: the hooks module shows it and moves the ring out on leave.
+  surface.onPointer(p => {
+    if (p.type === 'down' && !props.active) surface.post({ active: true })
+  })
   surface.onKey(k => {
-    const next = edit(current(), k)
-    if (next === 'submit') {
-      surface.post({ submit: current().text })
-      return
-    }
+    const prev = current()
+    const next = edit(prev, k)
+    if (next === 'submit') return surface.post({ submit: prev.text })
+    if (next === 'leave') return surface.post({ leave: true })
     surface.setState(next)
+    if (next.text !== prev.text || !props.active) surface.post({ active: true, text: next.text })
   })
 
   const { text, cursor } = current()
@@ -100,9 +111,17 @@ const Editor: ClientModule<Props, State> = (props, surface: ClientSurface<State>
   return Box({
     flexDirection: 'column',
     borderStyle: 'single',
+    borderColor: props.active ? 'cyan' : undefined,
     paddingX: 1,
     children: [
-      Text({ dimColor: true, children: text === '' ? `${props.label}: ${props.placeholder}` : props.label }),
+      Text({
+        dimColor: !props.active,
+        children: props.active
+          ? `${props.label} · editing · ctrl+s send · ctrl+x leave`
+          : text === ''
+            ? `${props.label}: ${props.placeholder}`
+            : `${props.label} · i or click to edit`,
+      }),
       ...drawn,
     ],
   })

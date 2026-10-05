@@ -2,5 +2,11 @@
   "name": "cactus-pane",
   "version": "0.3.0",
   "description": "A live cactus inbox pane for the session's project, answerable in place",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Sean Canton"
+  },
+  "displayName": "cactus pane",
+  "homepage": "https://github.com/eighteyes/cactus",
+  "repository": "https://github.com/eighteyes/cactus"
 }
