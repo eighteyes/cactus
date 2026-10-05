@@ -437,6 +437,13 @@ scope.
   The MCP `cactus_ask`/`cactus_run` pass `--no-wait` unless `wait` is set,
   and the Codex session-start hook tells Codex to post `--no-wait`. The
   courier agent stays deleted (q412); `poke.wake_owner` was removed (q430).
+- `www` guards every request (`_Handler._guard`), because a localhost POST is
+  reachable from any page the human visits and approving a `run` row makes
+  the agent execute it: Host must be loopback or the bound host (any Host on
+  a `0.0.0.0`/`::` bind, the user's explicit choice) against DNS rebinding;
+  POST must be `application/json` (415 otherwise), forcing a preflight the
+  server never grants; a POST's Origin, when present, must match its own
+  Host (403). No CORS allow header is ever sent.
 - `cactus elaborate`, `undo`, `exec` are human verbs like `answer`: no
   `--agent`, no ownership gate, so an external pane reaches TUI parity.
   `elaborate KEY [HINT]` is `e` (`Store.elaborate_request`); `--decompose`

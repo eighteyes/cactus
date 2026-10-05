@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import webbrowser
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -28,6 +29,9 @@ from .store import ACTIONABLE, AlreadyAnswered, Question, Store
 
 POLL_INTERVAL = 0.5
 PING_INTERVAL = 15.0
+
+
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 def _msg(exc: BaseException) -> str:
@@ -506,6 +510,46 @@ class _Handler(BaseHTTPRequestHandler):
             return {}
         return json.loads(raw.decode("utf-8"))
 
+    def _guard(self, post: bool) -> bool:
+        """Refuse a cross-site or rebound request; True means serve it.
+
+        A localhost server is reachable from any page the human visits, and
+        approving a `run` row makes the agent execute it. Three checks:
+        Host must name a loopback host or the host the server was bound to
+        (DNS rebinding); a POST must be application/json, which forces a CORS
+        preflight this server never grants (CSRF); a POST carrying an Origin
+        must be same-origin with its own Host. No CORS allow header is ever
+        sent. A wildcard bind (0.0.0.0, ::) accepts any Host: a non-loopback
+        bind is the user's explicit choice.
+        """
+        host_header = self.headers.get("Host") or ""
+        try:
+            hostname = urlsplit("//" + host_header).hostname
+        except ValueError:
+            hostname = None
+        bound = (self.server.bind_host or "").lower()  # type: ignore[attr-defined]
+        wildcard = bound in ("0.0.0.0", "::", "")
+        if not wildcard and hostname not in _LOOPBACK_HOSTS and hostname != bound.strip("[]"):
+            self._send_json(403, {"error": "host not allowed"})
+            return False
+        if not post:
+            return True
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self._send_json(415, {"error": "content-type must be application/json"})
+            return False
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            try:
+                o = urlsplit(origin)
+                ok = o.scheme in ("http", "https") and o.netloc.lower() == host_header.lower()
+            except ValueError:
+                ok = False
+            if not ok:
+                self._send_json(403, {"error": "cross-origin request refused"})
+                return False
+        return True
+
     def _error(self, exc: Exception) -> None:
         if isinstance(exc, (ValueError, KeyError, AlreadyAnswered, PokeError)):
             self._send_json(400, {"error": _msg(exc)})
@@ -516,6 +560,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - http.server's naming
         try:
+            if not self._guard(post=False):
+                return
             if self.path == "/" or self.path.startswith("/?"):
                 self._send_html(PAGE)
             elif self.path.startswith("/api/feed"):
@@ -531,6 +577,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         try:
+            if not self._guard(post=True):
+                return
             if self.path == "/api/answer":
                 self._handle_answer()
             elif self.path == "/api/clear":
@@ -663,6 +711,7 @@ class _Server(ThreadingHTTPServer):
         super().__init__(addr, _Handler)
         self.db_path = db_path
         self.project = project
+        self.bind_host = addr[0]
         # Each handler thread opens its own Store (see _Handler._store) since
         # a sqlite3 connection cannot cross threads; this holds those.
         self.local = threading.local()
