@@ -2800,11 +2800,13 @@ class CactusApp(App[int]):
             # check_action keeps the binding off here; on_key owns the flash.
             return
         try:
-            visit(q.pane, session=q.session)
+            visited = visit(q.pane, session=q.session)
         except PokeError as exc:
             self.flash = f"visit failed: {exc}"
         else:
             self.flash = f"visited {q.pane}"
+            if visited.raise_error:
+                self.flash += f" (window not raised: {visited.raise_error})"
         self._rebuild_status_bar()
 
     def action_open_site(self) -> None:

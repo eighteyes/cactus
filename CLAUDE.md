@@ -178,6 +178,17 @@ scope.
   herdr (or in another session) gets `agent_not_found`. `{session}`
   substitutes in `CACTUS_VISIT`/`CACTUS_POKE` templates;
   `Store.project_panes` is distinct per `(pane, session)`.
+- `herdr agent focus` only switches herdr's own view, so after a successful
+  default-transport focus `visit` also raises the kitty window running that
+  session's herdr client (`poke.raise_herdr_client`): `kitten @ --to
+  $KITTY_LISTEN_ON ls`, pick the window whose foreground process is `herdr`
+  (not `server`) with the row's `--session`, then `focus-window --match
+  id:N`; never a bare `kitten @`, which would use the tty Textual owns. No
+  `KITTY_LISTEN_ON` or `kitten` does nothing. `CACTUS_VISIT_RAISE` is a
+  `{session}` command template, or `off`/empty to skip; tests set `off`.
+  A `CACTUS_VISIT` override skips the raise. `visit` returns `Visited(ran,
+  raise_error)`; a raise failure never fails the visit, the TUI flashes
+  `visited PANE (window not raised: why)`.
 - `CACTUS_DB` set but empty raises rather than falling through to the default.
   A failed `mktemp` in a test harness would otherwise point the run at the
   user's live inbox, which is the one thing the variable exists to prevent.

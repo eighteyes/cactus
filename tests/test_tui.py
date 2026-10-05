@@ -345,6 +345,24 @@ async def test_visit_binds_only_on_a_row_with_a_pane(store: Store, project: str)
         assert app.flash == "visited w1:p1"
 
 
+async def test_visit_flash_names_a_window_that_was_not_raised(
+    store: Store, project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cactus import poke
+
+    store.ask("stamped", project=project, cwd=project, agent=AGENT, pane="w1:p1")
+    monkeypatch.setattr(
+        poke, "visit", lambda *a, **k: poke.Visited("herdr", "no kitty window runs herdr session s")
+    )
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("v")
+        await pilot.pause()
+        assert app.flash == "visited w1:p1 (window not raised: no kitty window runs herdr session s)"
+
+
 async def test_visit_flashes_on_a_row_posted_outside_herdr(store: Store, project: str) -> None:
     q = store.ask("unstamped", project=project, cwd=project, agent=AGENT)
 

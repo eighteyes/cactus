@@ -25,7 +25,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # A poke carries no instruction. It tells an agent that the inbox moved and lets
 # the agent decide what that means, which keeps the human out of the business of
@@ -363,19 +363,99 @@ def reachable(agent: str | None, pane: str | None) -> bool:
     return webhook_entry(agent) is not None
 
 
-def visit(pane: str | None, *, session: str | None = None, timeout: float = 5.0) -> str:
+class Visited(NamedTuple):
+    """What `visit` did: the focus command, and why the window was not raised."""
+
+    ran: str
+    raise_error: str | None = None
+
+
+def _kitty_herdr_window(listing: str, session: str | None) -> int | None:
+    """Id of the kitty window whose foreground process is a herdr client of
+    `session` (a client with no `--session` when `session` is None)."""
+    for os_window in json.loads(listing):
+        for tab in os_window.get("tabs", []):
+            for window in tab.get("windows", []):
+                for proc in window.get("foreground_processes", []):
+                    cmd = proc.get("cmdline") or []
+                    if not cmd or os.path.basename(cmd[0]) != "herdr" or "server" in cmd:
+                        continue
+                    flags = {
+                        cmd[i + 1] for i, a in enumerate(cmd[:-1]) if a == "--session"
+                    } | {a[10:] for a in cmd if a.startswith("--session=")}
+                    if (session in flags) if session else not flags:
+                        return window["id"]
+    return None
+
+
+def raise_herdr_client(session: str | None, timeout: float = 5.0) -> str | None:
+    """Bring the kitty window running the herdr client for `session` forward.
+
+    herdr's own `agent focus` only switches herdr's view; when the TUI runs in
+    another kitty window the screen never moves. CACTUS_VISIT_RAISE: `off` or
+    empty does nothing, anything else is a command template (`{session}`);
+    unset auto-detects kitty over $KITTY_LISTEN_ON (never a bare `kitten @`,
+    which would talk over the tty Textual owns). Returns what ran, or None
+    when there is nothing to raise; raises PokeError when kitty has no such
+    window or the command fails.
+    """
+    override = os.environ.get("CACTUS_VISIT_RAISE")
+    if override is not None:
+        if not override.strip() or override.strip() == "off":
+            return None
+        return _run_argv(
+            [part.replace("{session}", session or "") for part in shlex.split(override)],
+            timeout, "CACTUS_VISIT_RAISE",
+        )
+
+    sock = os.environ.get("KITTY_LISTEN_ON")
+    kitten = resolve_executable("kitten")
+    if not sock or kitten is None:
+        return None
+    try:
+        done = subprocess.run(
+            [kitten, "@", "--to", sock, "ls"],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PokeError(f"kitten timed out after {timeout:g}s") from exc
+    if done.returncode != 0:
+        tail = (done.stderr or done.stdout or "").strip().splitlines()
+        raise PokeError(f"kitten: {tail[-1] if tail else f'exit {done.returncode}'}")
+    try:
+        wid = _kitty_herdr_window(done.stdout, session)
+    except (ValueError, AttributeError) as exc:
+        raise PokeError(f"kitten ls gave unreadable output: {exc}") from exc
+    if wid is None:
+        raise PokeError(f"no kitty window runs herdr session {session or '(default)'}")
+    return _run_argv(
+        [kitten, "@", "--to", sock, "focus-window", "--match", f"id:{wid}"],
+        timeout, "CACTUS_VISIT_RAISE",
+    )
+
+
+def visit(pane: str | None, *, session: str | None = None, timeout: float = 5.0) -> Visited:
     """Focus the herdr pane a row was asked from. Returns what ran.
 
     Only a pane stamp can be visited: a row posted outside herdr has no
     conversation on screen to jump to, so it raises rather than guessing.
     `session` pins herdr to the row's own session (`{session}` in a
-    CACTUS_VISIT template).
+    CACTUS_VISIT template). On the default transport, after a successful
+    focus, the herdr client's kitty window is raised too; a failure there
+    never fails the visit, it comes back in `Visited.raise_error`.
     """
     if not pane:
         raise PokeError("posted outside herdr; no pane to visit")
     override = os.environ.get("CACTUS_VISIT")
     template = shlex.split(override) if override else _herdr_argv(DEFAULT_VISIT_COMMAND, session)
-    return _run_argv(
+    ran = _run_argv(
         [part.replace("{pane}", pane).replace("{session}", session or "") for part in template],
         timeout, "CACTUS_VISIT",
     )
+    if override:
+        return Visited(ran)
+    try:
+        raise_herdr_client(session, timeout)
+    except PokeError as exc:
+        return Visited(ran, str(exc))
+    return Visited(ran)
