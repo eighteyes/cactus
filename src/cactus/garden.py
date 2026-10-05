@@ -11,16 +11,23 @@ Responsibilities:
   (`World.drop_floaters`).
 - Read, write, and clear the file on disk (`read`/`save`/`clear`), writing
   atomically so a reader never observes a half-written file.
+- Keep a pending-seed queue (`garden-pending`, a count) beside the database
+  for answers made outside a TUI key: `add_pending` bumps it, `claim_pending`
+  returns and zeroes it, both under an exclusive `flock` so several
+  processes claim each seed exactly once. Kept out of garden.json because
+  every TUI save rewrites that file from its World.
 
 Pure Python: no Textual, no store import, no knowledge of the TUI.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+from contextlib import contextmanager
 
 
 def garden_path(db_path: Path) -> Path:
@@ -92,3 +99,52 @@ def clear(path: Path) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def pending_path(db_path: Path) -> Path:
+    """The pending-seed count file; only `db_path.parent` is used, so any
+    file beside the database (garden.json included) names the same queue."""
+    return db_path.parent / "garden-pending"
+
+
+@contextmanager
+def _locked(db_path: Path) -> Iterator[Path]:
+    path = pending_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield path
+
+
+def _read_count(path: Path) -> int:
+    try:
+        return max(int(path.read_text(encoding="utf-8").strip() or 0), 0)
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _write_count(path: Path, n: int) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(str(n), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def add_pending(db_path: Path, n: int = 1) -> None:
+    """Queue `n` seeds for whichever TUI field polls next."""
+    with _locked(db_path) as path:
+        _write_count(path, _read_count(path) + n)
+
+
+def claim_pending(db_path: Path, limit: int | None = None) -> int:
+    """Take up to `limit` queued seeds (all when `None`) and leave the rest."""
+    with _locked(db_path) as path:
+        have = _read_count(path)
+        took = have if limit is None else min(have, max(limit, 0))
+        if took:
+            _write_count(path, have - took)
+        return took
+
+
+def pending_count(db_path: Path) -> int:
+    """Queued seeds, without claiming them."""
+    return _read_count(pending_path(db_path))

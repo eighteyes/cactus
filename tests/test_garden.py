@@ -92,3 +92,39 @@ def test_garden_path_lives_beside_db() -> None:
     from pathlib import Path
 
     assert garden.garden_path(Path("/tmp/scratch/cactus.db")) == Path("/tmp/scratch/garden.json")
+
+
+def test_pending_add_and_claim_is_exactly_once(tmp_path) -> None:
+    db = tmp_path / "cactus.db"
+    assert garden.claim_pending(db) == 0
+    garden.add_pending(db)
+    garden.add_pending(db, 2)
+    assert garden.pending_count(db) == 3
+    assert garden.claim_pending(db, 2) == 2
+    assert garden.claim_pending(db) == 1
+    assert garden.claim_pending(db) == 0
+
+
+def test_pending_two_claimers_split_the_queue(tmp_path) -> None:
+    import threading
+
+    db = tmp_path / "cactus.db"
+    garden.add_pending(db, 200)
+    got: list[int] = []
+
+    def claimer() -> None:
+        while (n := garden.claim_pending(db, 3)):
+            got.append(n)
+
+    threads = [threading.Thread(target=claimer) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sum(got) == 200
+    assert garden.pending_count(db) == 0
+
+
+def test_pending_is_not_in_garden_json(tmp_path) -> None:
+    db = tmp_path / "cactus.db"
+    garden.add_pending(db)
+    garden.save(make_world(), garden.garden_path(db))
+    assert garden.pending_count(db) == 1

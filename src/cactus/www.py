@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from . import garden
 from .poke import PokeError, poke, deliver_if_mapped
 from .store import ACTIONABLE, AlreadyAnswered, Question, Store
 
@@ -648,6 +649,10 @@ class _Handler(BaseHTTPRequestHandler):
             text=body.get("text"),
             skipped=bool(body.get("skipped")),
         )
+        try:
+            garden.add_pending(store.path)
+        except OSError:
+            pass
         poked: str | None = None
         poke_error: str | None = None
         try:

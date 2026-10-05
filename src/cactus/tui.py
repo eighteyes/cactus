@@ -3942,6 +3942,8 @@ class CactusApp(App[int]):
             self._sky_reload_last = now
             self._reload_sky_config()
             self._reload_garden_if_changed()
+            if self.world is not None:
+                self._garden.drop_pending(self.world)
         self._render_field()
 
     def _flash_field(self, message: str | None) -> None:

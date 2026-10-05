@@ -2943,3 +2943,36 @@ async def test_empty_flipped_submit_is_refused(store: Store, project: str) -> No
         await pilot.pause()
         assert app.flash
     assert store.get(q.key, project=project).status == "open"
+
+
+async def test_tui_answer_queues_no_pending_seed(store: Store, project: str) -> None:
+    store.ask(
+        "pick one", project=project, cwd=project, agent=AGENT,
+        kind="choice", act="ask", choices=[Choice("a"), Choice("b")],
+    )
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+        assert len(app.world.seeds) == 1
+        assert garden.pending_count(store.path) == 0
+
+
+async def test_inline_field_claims_pending_seeds_and_caps(store: Store, project: str) -> None:
+    from cactus.fieldproc import PENDING_SEED_CAP
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        base = len(app.world.seeds)
+        garden.add_pending(store.path, 3)
+        app._sky_reload_last = None
+        app._field_tick()
+        assert len(app.world.seeds) == base + 3
+        assert garden.pending_count(store.path) == 0
+
+        garden.add_pending(store.path, PENDING_SEED_CAP + 5)
+        app._sky_reload_last = None
+        app._field_tick()
+        assert garden.pending_count(store.path) == 5

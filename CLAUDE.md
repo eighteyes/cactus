@@ -615,6 +615,14 @@ scope.
   skipped, so an answer's seed still lands and reaches the file. `cactus
   garden` prints the file's path, cell count, and drop count (or "empty");
   `--clear` removes it (`nothing to clear` if it was already gone).
+- Answers made outside a TUI key (`cactus answer`, `www` answer) queue a seed
+  in `garden-pending`, a count file beside the database (`garden.add_pending`;
+  not in garden.json, whose every TUI save rewrites it). The field claims it
+  on the `SKY_RELOAD_SECONDS` poll (`GardenSync.drop_pending`: inline in the
+  TUI, process mode in the child), under `flock` so each seed drops once,
+  capped at `PENDING_SEED_CAP` (20) per poll, the rest left queued, shown or
+  hidden. TUI answers drop their own and never queue; `cmd_exec`'s run
+  approval queues none, matching the TUI's `R`. `cactus garden` shows the count.
 - The field runs in one of two places (`fieldproc.py`), picked by
   `CactusApp(field_mode=...)`. `inline` (the default, so every `run_test`
   test, and `run_tui` under `CACTUS_FIELD=inline`): `InlineField` keeps the

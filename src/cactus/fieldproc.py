@@ -89,6 +89,9 @@ class SkyWatch:
         return config, None if initial else "sky config reloaded"
 
 
+PENDING_SEED_CAP = 20  # seeds claimed per poll; the rest stay queued
+
+
 class GardenSync:
     """garden.json beside the database: load, save, reload when another
     process wrote a newer one. Every method fails soft."""
@@ -122,6 +125,17 @@ class GardenSync:
         except OSError:
             return
         world.landed_since_save = 0
+
+    def drop_pending(self, world: World) -> int:
+        """Claim queued seeds (answers made outside a TUI key) and drop them
+        at random columns. Fails soft; returns how many fell."""
+        try:
+            n = garden.claim_pending(self.path, PENDING_SEED_CAP)
+        except OSError:
+            return 0
+        for _ in range(n):
+            world.drop(world.rng.randrange(world.cols))
+        return n
 
     def reload_if_changed(self, world: World) -> str | None:
         try:
@@ -479,6 +493,7 @@ def _child_loop(conn: Any, state: dict[str, Any]) -> None:
             flash = garden_sync.reload_if_changed(world)
             if flash is not None:
                 conn.send(("flash", flash))
+            garden_sync.drop_pending(world)
         if visible:
             cur = text_rows(world.render(pile_only=pile_only))
             if prev is None or len(prev) != len(cur):

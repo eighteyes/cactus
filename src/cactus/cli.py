@@ -766,8 +766,20 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             print(f"auto-poke: {woke}", file=sys.stderr)
     except PokeError as exc:
         print(f"cactus: answer saved; webhook poke failed: {_msg(exc)}", file=sys.stderr)
+    _queue_seed(store)
     _emit_one(q, as_json=args.json)
     return EXIT_OK
+
+
+def _queue_seed(store: Store) -> None:
+    """An answer made outside a TUI key still drops a seed in the garden:
+    queue it for the next field that polls. Fails soft."""
+    from . import garden
+
+    try:
+        garden.add_pending(store.path)
+    except OSError:
+        pass
 
 
 def _human_ref(args: argparse.Namespace, store: Store, project: str) -> tuple[str, str] | int:
@@ -1535,13 +1547,14 @@ def cmd_garden(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     data = garden.read(path)
     cells = len(data["cells"]) if data else 0
     drops = data["drops"] if data else 0
+    pending = garden.pending_count(store.path)
     if args.json:
         print(json.dumps({"path": str(path), "cells": cells, "drops": drops}))
         return EXIT_OK
     if data is None:
-        print(f"{path}  empty")
+        print(f"{path}  empty  {pending} pending")
     else:
-        print(f"{path}  {cells} cells  {drops} drops")
+        print(f"{path}  {cells} cells  {drops} drops  {pending} pending")
     return EXIT_OK
 
 

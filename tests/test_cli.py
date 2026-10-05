@@ -821,3 +821,16 @@ def test_edit_site_replaces_refuses_bad_and_empty_clears(cli):
     r = cli("edit", "q1", "--agent", AGENT_A, "--site", "", "--json")
     assert r.returncode == 0
     assert json.loads(r.stdout)["site"] is None
+
+
+def test_answer_queues_one_garden_seed_and_garden_shows_it(cli, scratch_env):
+    from pathlib import Path
+
+    from cactus import garden
+
+    db = Path(scratch_env["CACTUS_DB"])
+    assert cli("ask", "pick", "--agent", AGENT_A, "--no-wait", "-c", "a", "-c", "b").returncode == 0
+    assert garden.pending_count(db) == 0  # asking queues nothing
+    assert cli("answer", "q1", "-s", "a").returncode == 0
+    assert garden.pending_count(db) == 1
+    assert "1 pending" in cli("garden").stdout
