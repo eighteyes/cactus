@@ -26,13 +26,12 @@ Workload: per-invocation CLI (agents), long-running local surfaces (TUI, `--www`
 | O2 | Tests | pass | pytest suite green; `plugins/cactus/tests/test-hooks.sh` |
 | O3 | cactus-pane tests | gap | `mods/cactus-pane/tests/pane.test.tsx` has no runner wired |
 | O4 | Linux | pass | `xdg-open`, `wl-copy`/`xclip`/`xsel`, XDG paths |
-| H1 | Tree hygiene | gap | stray `a.txt`, a screenshot in `skills/cactus/`, another session's edits in two hook files |
+| H1 | Tree hygiene | accepted-risk | `a.txt`, a screenshot in `skills/cactus/`, two hook edits from another session: kept by choice (q523); untracked, so git installs never carry them |
 
 ## Fix order
 
-1. Tree hygiene (H1): delete or commit the strays; land or drop the two hook edits.
-2. Decide whether `main` should exist.
-3. Downgrade note (D3): say in CHANGELOG/DEPLOYMENT that `cactus migrate --yes` is one-way; back up the db first.
-4. File permissions (S4): create the data dir 0700.
-5. Single-source the version (D2): read `__version__` from package metadata; a script stamps the manifests.
-6. Wire cactus-pane tests (O3) and an issue template asking for `cactus --version` and `cactus where` (O1).
+1. Decide whether `main` should exist.
+2. Downgrade note (D3): say in CHANGELOG/DEPLOYMENT that `cactus migrate --yes` is one-way; back up the db first.
+3. File permissions (S4): create the data dir 0700.
+4. Single-source the version (D2): read `__version__` from package metadata; a script stamps the manifests.
+5. Wire cactus-pane tests (O3) and an issue template asking for `cactus --version` and `cactus where` (O1).
