@@ -10,7 +10,7 @@ cactus ships as a local tool and three host plugins. No server, no CI, no contai
 	Codex             .agents/plugins/marketplace.json         plugins/cactus: skill, hooks (the mod substitute)
 	Claude Desktop    scripts/package-plugin.sh                dist/cactus-<version>.plugin: MCP server, hooks, skills
 
-Versions: `pyproject.toml` and `.claude-plugin/plugin.json` carry `0.2.0`. The Codex plugin carries its own, `0.2.0+codex.<timestamp>` in `plugins/cactus/.codex-plugin/plugin.json`, bumped by hand.
+Versions: `pyproject.toml` and `.claude-plugin/plugin.json` carry `0.3.0`. The Codex plugin carries its own, `0.3.0+codex.<timestamp>` in `plugins/cactus/.codex-plugin/plugin.json`, bumped by hand.
 
 ## Deploy
 
@@ -65,7 +65,7 @@ The Codex `session-start.sh` runs `cactus deliver herdr --agent <session_id>` in
 
 ## Health & verification
 
-	cactus --version                                   # cactus 0.2.0
+	cactus --version                                   # cactus 0.3.0
 	uv run pytest tests/test_deliver.py tests/test_hooks.py
 	bash plugins/cactus/tests/test-hooks.sh            # Codex frontier.sh only, scratch inbox, `cactus` from PATH
 	cactus deliver --agent ID                          # ID: herdr | ID: webhook URL

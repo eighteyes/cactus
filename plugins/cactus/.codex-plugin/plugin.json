@@ -1,6 +1,6 @@
 {
   "name": "cactus",
-  "version": "0.2.0+codex.20261003013133",
+  "version": "0.3.0+codex.20261004172431",
   "description": "Durable human decision inbox for Codex agents.",
   "author": {
     "name": "eighteyes"

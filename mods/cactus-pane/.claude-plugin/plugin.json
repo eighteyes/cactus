@@ -1,6 +1,6 @@
 {
   "name": "cactus-pane",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "A live cactus inbox pane for the session's project, answerable in place",
   "types": "./types/index.d.ts"
 }
