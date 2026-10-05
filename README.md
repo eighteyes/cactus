@@ -6,7 +6,7 @@
 
 [![cactus demo](assets/cactus-demo.gif)](https://youtu.be/kobgaU4_Tn0)
 
-Do you run multiple agents at once? They make lots of questions only you can answer. Recent LLM developments have [reportedly](https://tech-insider.org/anthropic-engineer-claude-writing-quality-worse-2026/) steer written prose to be read by machines and not humans, making reading AI output tedious and burdensome. To bring order to all this information across multiple agents we need *primitives* and a *queue*: agents propose, users decide.
+Do you run multiple agents at once? They make lots of questions only you can answer. Recent LLM developments have [reportedly](https://tech-insider.org/anthropic-engineer-claude-writing-quality-worse-2026/) steered written prose to be read by machines and not humans, making reading AI output tedious and burdensome. To bring order to all this information across multiple agents we need *primitives* and a *queue*: agents propose, users decide.
 
 Cactus has become my primary AI interaction surface, I type into Claude when planning or when making precise suggestions. I don't have metrics, but I feel more effective and less mentally exhausted at the end of the day. Hopefully you too can find some benefit from this. 
 
@@ -50,7 +50,7 @@ Press `d` to decompose a complex question into smaller follow-up questions.
 **cactus-pane** (Claude Code mod, [mods/cactus-pane](mods/cactus-pane)): the inbox as a live pane in the session.
 - `/cactus-pane` opens it; it also opens at session start.
 
-## Enhancemenst
+## Enhancements
 [Herdr](https://herdr.dev/) allows users to poke, visit or inject into sessions, without relying on hooks. Claude Code and Codex achieve the same functionality via background processes. 
 
 ## Manual Installation
