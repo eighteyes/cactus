@@ -590,8 +590,9 @@ scope.
   `project` argument came in (an explicit `--here` wins for that run and
   never rewrites the saved pin) and only if the path is still in
   `store.projects()`; a stale pin is ignored, not erased. While scoped the
-  header reads `pinned` in place of `[ ] switch`, the `P` page still lists
-  every project and marks the pinned row `*`, and `enter` on another row
+  header reads `pinned` in place of `[ ] switch`, the `P` page lists
+  the projects with something due plus the pinned one, marked `*` (`P`
+  opens on an empty rail too, so a drained pin can be undone), and `enter` on another row
   flashes instead of switching. `pin_project` is gated to `projects_open`.
 - `p` on the projects page (`P`, q370-q372) pokes the selected project: one
   `poke.poke(webhook=False)` per distinct herdr `pane` on its

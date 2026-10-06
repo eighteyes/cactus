@@ -2531,6 +2531,34 @@ async def test_A_without_a_proposal_flashes_and_keybar_omits_it(
     assert store.get(q.key, project=project).status == "open"
 
 
+async def test_projects_page_hides_projects_with_nothing_due(store: Store, project: str, tmp_path) -> None:
+    quiet = str(tmp_path / "quiet")
+    done = store.ask("old", project=quiet, cwd=quiet)
+    store.clear(keys=[done.key], project=quiet, record=False)
+    store.ask("still due", project=project, cwd=project)
+    app = CactusApp(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("P")
+        await pilot.pause()
+        shown = [r["project"] for r in app.project_rows]
+    assert project in shown
+    assert quiet not in shown
+
+
+async def test_projects_page_keeps_the_pinned_project_with_nothing_due(store: Store, project: str, tmp_path) -> None:
+    quiet = str(tmp_path / "quiet")
+    done = store.ask("old", project=quiet, cwd=quiet)
+    store.clear(keys=[done.key], project=quiet, record=False)
+    app = CactusApp(store, project=quiet)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("P")  # reachable on an empty rail, so the pin can be undone
+        await pilot.pause()
+        shown = [r["project"] for r in app.project_rows]
+    assert quiet in shown
+
+
 async def test_A_on_the_projects_page_still_activates(store: Store, project: str) -> None:
     q = auto_row(store, project)
     store.set_auto(q.key, "b", 0.9, "reversible · low", project=project)

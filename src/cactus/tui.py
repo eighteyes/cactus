@@ -1202,7 +1202,7 @@ class CactusApp(App[int]):
         ])
 
     def _projects_text(self) -> str:
-        """Render all known projects, including ignored and currently quiet ones.
+        """Render the projects with something due (ignored ones included), plus the pinned one.
 
         Line: `▸ label  active  N due · N live · N answered  3m` — due leads
         because it is what ranks the list (q349/q351); the relative last
@@ -1210,7 +1210,7 @@ class CactusApp(App[int]):
         view's own line.
         """
         if not self.project_rows:
-            return "projects\n\nno projects yet\n\nesc or P  return to inbox"
+            return "projects\n\nnothing due anywhere\n\nesc or P  return to inbox"
         lines = ["projects", ""]
         for i, row in enumerate(self.project_rows):
             marker = "▸" if i == self.project_index else " "
@@ -1229,7 +1229,12 @@ class CactusApp(App[int]):
         return "\n".join(lines)
 
     def _render_projects(self) -> None:
-        self.project_rows = self.store.projects()
+        # Only projects with something due, plus the pinned one so `*` can
+        # still unpin it; a quiet project has nothing to pick.
+        self.project_rows = [
+            r for r in self.store.projects()
+            if r["due_count"] or r["project"] == self.scoped_project
+        ]
         if self.project_rows:
             self.project_index = max(0, min(self.project_index, len(self.project_rows) - 1))
         else:
@@ -2358,6 +2363,8 @@ class CactusApp(App[int]):
             # the one action that empties the rail in the first place.
             if action in ("prev_project", "next_project"):
                 return len(self._live_projects()) > 1
+            if action == "open_projects":
+                return True  # a pin on a drained project is undone from there
             if action == "undo":
                 return bool(self.undo_stack)
             return False
