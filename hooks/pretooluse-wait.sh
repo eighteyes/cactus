@@ -26,11 +26,19 @@ case $cmd in *cactus*) ;; *) exit 0 ;; esac
 # unquoted heredoc body line keeps the part from its first $( or backtick on.
 # A heuristic, not a parser: when unsure it keeps text, and a false block costs
 # one rerun where a missed one parks the agent for an hour.
+# No function runs inside $( ): a nested string joins a queue, and the result
+# lands in $code, so every program the file runs is named literally.
 LC_ALL=C
+code=""
 scan_commands() {
-  local src=$1 out="" line c n i q span word quoted strip
-  local -a pending=() pquoted=() pstrip=()
-  local in_body=0 delim="" dquoted=0 dstrip=0 open=""
+  local -a queue=("$1")
+  local src out line c n i q span word quoted strip
+  local -a pending pquoted pstrip
+  local in_body delim dquoted dstrip open
+  while [ "${#queue[@]}" -gt 0 ]; do
+  src=${queue[0]} queue=("${queue[@]:1}")
+  out="" pending=() pquoted=() pstrip=()
+  in_body=0 delim="" dquoted=0 dstrip=0 open=""
   while IFS= read -r line || [ -n "$line" ]; do
     if [ "$in_body" = 1 ]; then
       local test=$line
@@ -56,7 +64,7 @@ scan_commands() {
         if [ "$open" = '"' ] && [ "$c" = '\' ]; then span+=${line:i:2}; i=$((i + 2)); continue; fi
         if [ "$c" = "$open" ]; then
           if [ "$open" = '"' ] && [[ $span == *'$('* || $span == *'`'* ]]; then
-            out+=$(scan_commands "$span")
+            queue+=("$span")
           fi
           open="" span=""
         else
@@ -105,9 +113,10 @@ scan_commands() {
       pending=("${pending[@]:1}") pquoted=("${pquoted[@]:1}") pstrip=("${pstrip[@]:1}")
     fi
   done <<<"$src"
-  printf '%s' "$out"
+  code+=$out$'\n'
+  done
 }
-code=$(scan_commands "$cmd")
+scan_commands "$cmd"
 
 # `cactus ask|run` at command position: line start or after ; & | ( ` $( and
 # optional VAR=val prefixes, with optional global flags before the verb.
