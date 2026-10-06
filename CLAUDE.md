@@ -441,7 +441,7 @@ scope.
   `get --wait`. An agent posts each blocking ask as one backgrounded command
   (Bash `run_in_background`): it waits, its exit is the wake-up (the q339
   probe in the `--monitor` invariant is why that works), no gap between post
-  and wait. `hooks/pretooluse-wait.sh` refuses the foreground form. The
+  and wait. `hooks/pretooluse_wait.py` refuses the foreground form. The
   automatic poke on an answer (`poke_webhook_if_mapped`; `cli.cmd_answer`,
   `www`, the TUI) reaches webhook-mapped agents only and ignores
   `CACTUS_POKE`; herdr agents are not auto-poked unless their entry is `{"herdr": true}` (`cactus deliver herdr`); `p` still pokes by hand.

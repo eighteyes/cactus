@@ -1,6 +1,6 @@
 # Hooks
 
-Every hook cactus ships, for both hosts. Most exit 0 and print nothing when `cactus` is not on PATH or the project is disabled (`cactus project-status --json` reports `"enabled": false`). Exceptions: both SessionStart hooks print a reactivate line on a disabled project, and `pretooluse-wait.sh` checks neither.
+Every hook cactus ships, for both hosts. Most exit 0 and print nothing when `cactus` is not on PATH or the project is disabled (`cactus project-status --json` reports `"enabled": false`). Exceptions: both SessionStart hooks print a reactivate line on a disabled project, and `pretooluse_wait.py` checks neither.
 
 ## Claude
 
@@ -10,7 +10,7 @@ Registered in `hooks/hooks.json`. Scripts live in `hooks/`.
 |---|---|---|---|
 | SessionStart | `session-start.sh` | The required workflow, `Your cactus identity for this session: --agent ID`, a rehome count, open rows for the project. Disabled project: one reactivate line. | Never. |
 | UserPromptSubmit | `frontier.sh` | `cactus frontier (--agent ID):`, then elaborate, answered, open/live rows with gist and verdict, a `... N more: cactus list -s any --agent ID` line past the cap, then a counts line. | Never. |
-| PreToolUse (Bash) | `pretooluse-wait.sh` | `cactus ask/run waits for the human by default; rerun with run_in_background: true. Its exit wakes you.` | Exit 2 on a foreground `cactus ask` or `cactus run` that would wait. |
+| PreToolUse (Bash) | `pretooluse_wait.py` | `cactus ask/run waits for the human by default; rerun with run_in_background: true. Its exit wakes you.` | Exit 2 on a foreground `cactus ask` or `cactus run` that would wait. |
 | PermissionDenied (Bash) | `permission-denied.sh` | Nothing. Posts the denied command as `cactus run CMD --no-wait -t denied`, once per `tool_use_id` (deduped in `$XDG_STATE_HOME/cactus/denied-ID`). | Never. |
 | Stop | `stop-fork.sh` | `{"decision":"block","reason":"the turn ended without a fork; ..."}` | See Stop below. |
 

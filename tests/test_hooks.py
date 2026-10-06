@@ -68,7 +68,7 @@ def hook_env(tmp_path: Path, scratch_env: dict[str, str]) -> dict[str, str]:
 
 def run_hook(script: Path, payload: dict, env: dict[str, str], cwd: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(script)],
+        ["python3" if script.suffix == ".py" else "bash", str(script)],
         input=json.dumps(payload),
         env=env,
         cwd=cwd,
@@ -338,7 +338,7 @@ def test_stop_hook_counts_edit_plan_review_as_posting_the_fork(hook_env, project
 
 def _wait_guard(cmd: str, hook_env, project, **tool_input) -> subprocess.CompletedProcess[str]:
     payload = {"tool_name": "Bash", "tool_input": {"command": cmd, **tool_input}, "cwd": project}
-    return run_hook(ROOT_HOOKS / "pretooluse-wait.sh", payload, hook_env, project)
+    return run_hook(ROOT_HOOKS / "pretooluse_wait.py", payload, hook_env, project)
 
 
 @pytest.mark.parametrize("cmd", [
@@ -381,7 +381,7 @@ def test_wait_guard_allows_background_wait(hook_env, project):
 
 def test_wait_guard_ignores_other_tools(hook_env, project):
     payload = {"tool_name": "Write", "tool_input": {"command": "cactus ask x"}}
-    assert run_hook(ROOT_HOOKS / "pretooluse-wait.sh", payload, hook_env, project).returncode == 0
+    assert run_hook(ROOT_HOOKS / "pretooluse_wait.py", payload, hook_env, project).returncode == 0
 
 
 @pytest.mark.parametrize("cmd", [
@@ -415,7 +415,19 @@ def test_wait_guard_is_registered_on_bash():
     cfg = json.loads((ROOT_HOOKS / "hooks.json").read_text())
     entry = cfg["hooks"]["PreToolUse"][0]
     assert entry["matcher"] == "Bash"
-    assert "pretooluse-wait.sh" in entry["hooks"][0]["command"]
+    assert "pretooluse_wait.py" in entry["hooks"][0]["command"]
+
+
+def test_wait_guard_is_python_with_a_literal_launcher():
+    # The plugin validator cannot read shell expansions: the hook is a python
+    # file named by a literal python3 command, and the file runs nothing itself.
+    cfg = json.loads((ROOT_HOOKS / "hooks.json").read_text())
+    command = cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert command == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse_wait.py"'
+    assert not (ROOT_HOOKS / "pretooluse-wait.sh").exists()
+    src = (ROOT_HOOKS / "pretooluse_wait.py").read_text()
+    for banned in ("subprocess", "os.system", "os.popen", "shell=True"):
+        assert banned not in src, banned
 
 
 def test_session_start_waits_on_the_denied_row_instead_of_reposting(hook_env, project):

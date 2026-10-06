@@ -158,4 +158,4 @@ Read stdin into $input, exit 0 silently when cactus or jq is missing, and exit 0
 
 - scope: `hooks/*.sh`, `plugins/cactus/hooks/*.sh`
 - exemplar: plugins/cactus/hooks/stop.sh:6
-- below bar: 4 exceptions: hooks/identity.sh (sourced library, reads the caller's $input); hooks/pretooluse-wait.sh (no `command -v cactus` check, no project-status gate); hooks/session-start.sh and hooks/stop-fork.sh (use jq, never run `command -v jq`)
+- below bar: 4 exceptions: hooks/identity.sh (sourced library, reads the caller's $input); hooks/pretooluse_wait.py (no `command -v cactus` check, no project-status gate); hooks/session-start.sh and hooks/stop-fork.sh (use jq, never run `command -v jq`)
