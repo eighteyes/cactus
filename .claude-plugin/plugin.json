@@ -18,6 +18,5 @@
     "plan",
     "tui",
     "hooks"
-  ],
-  "icon": "./.claude-plugin/icon.png"
+  ]
 }

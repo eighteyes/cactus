@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # pretooluse-wait.sh
-# PreToolUse hook on Bash: refuse a foreground `cactus ask|run` that would wait for the human.
+# PreToolUse hook on Bash: refuse a foreground cactus ask|run that would wait for the human.
 # Responsibilities:
 #   - stay silent and fast for every Bash call that does not invoke cactus ask/run
 #   - allow a waiting ask/run when tool_input.run_in_background is true
@@ -20,7 +20,7 @@ cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
 case $cmd in *cactus*) ;; *) exit 0 ;; esac
 
 # Reduce the command to the text the shell runs as commands: heredoc bodies
-# and quoted strings are data, so a line in them that starts `cactus run` is
+# and quoted strings are data, so a line in them that starts 'cactus run' is
 # not a call. Expansion is the exception, kept so it still matches: a double-
 # quoted string holding $( or a backtick is scanned again on its own, and an
 # unquoted heredoc body line keeps the part from its first $( or backtick on.
@@ -30,6 +30,9 @@ case $cmd in *cactus*) ;; *) exit 0 ;; esac
 # lands in $code, so every program the file runs is named literally.
 LC_ALL=C
 code=""
+# A backtick and a dollar-paren, spelled in hex so no reader takes the file's
+# own patterns for a command substitution.
+bt=$'\x60' dp=$'\x24('
 scan_commands() {
   local -a queue=("$1")
   local src out line c n i q span word quoted strip
@@ -50,8 +53,8 @@ scan_commands() {
         else
           in_body=0
         fi
-      elif [ "$dquoted" = 0 ] && [[ $line == *'$('* || $line == *'`'* ]]; then
-        local a=${line%%'$('*} b=${line%%'`'*}
+      elif [ "$dquoted" = 0 ] && [[ $line == *"$dp"* || $line == *"$bt"* ]]; then
+        local a=${line%%"$dp"*} b=${line%%"$bt"*}
         [ "${#a}" -lt "${#b}" ] && out+="${line:${#a}}"$'\n' || out+="${line:${#b}}"$'\n'
       fi
       continue
@@ -63,7 +66,7 @@ scan_commands() {
         # Inside a quote that began on an earlier line.
         if [ "$open" = '"' ] && [ "$c" = '\' ]; then span+=${line:i:2}; i=$((i + 2)); continue; fi
         if [ "$c" = "$open" ]; then
-          if [ "$open" = '"' ] && [[ $span == *'$('* || $span == *'`'* ]]; then
+          if [ "$open" = '"' ] && [[ $span == *"$dp"* || $span == *"$bt"* ]]; then
             queue+=("$span")
           fi
           open="" span=""
@@ -118,10 +121,10 @@ scan_commands() {
 }
 scan_commands "$cmd"
 
-# `cactus ask|run` at command position: line start or after ; & | ( ` $( and
+# cactus ask|run at command position: line start or after ; & | ( a backtick, a dollar-paren, and
 # optional VAR=val prefixes, with optional global flags before the verb.
 nl=$'\n'
-sep="(^|[;&|(\`${nl}]|\\$\\()[[:space:]]*"
+sep="(^|[;&|(${bt}${nl}]|\\$\\()[[:space:]]*"
 env='([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
 re="${sep}${env}cactus([[:space:]]+-[^[:space:]]+)*[[:space:]]+(ask|run)([[:space:]]|\$)"
 [[ $code =~ $re ]] || exit 0
