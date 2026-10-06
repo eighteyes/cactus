@@ -8,5 +8,6 @@
   },
   "displayName": "cactus pane",
   "homepage": "https://github.com/eighteyes/cactus",
-  "repository": "https://github.com/eighteyes/cactus"
+  "repository": "https://github.com/eighteyes/cactus",
+  "license": "MIT"
 }
