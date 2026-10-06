@@ -461,3 +461,31 @@ def test_codex_session_start_registers_herdr_only_inside_herdr(cli, hook_env, pr
     out = run_hook(CODEX_HOOKS / "session-start.sh", {"session_id": "cx-1", "cwd": project}, env, project)
     assert "registered herdr delivery for cx-1" in out.stdout
     assert json.loads(map_path.read_text()) == {"cx-1": {"herdr": True}}
+
+
+def _backdate(env: dict[str, str], key: str, hours: float) -> None:
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    then = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="microseconds")
+    conn = sqlite3.connect(env["CACTUS_DB"])
+    conn.execute("UPDATE questions SET updated_at = ? WHERE key = ?", (then, key))
+    conn.commit()
+    conn.close()
+
+
+def test_session_start_lists_stale_rows_only_when_there_are_some(cli, hook_env, project):
+    hook_env = dict(hook_env, CACTUS_AGENT="root-session-1")
+    fresh = cli("ask", "fresh one", "-c", "a", "-c", "b", "--no-wait", "--agent", "other-agent-xyz", cwd=project).stdout.strip()
+    start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
+    assert "Stale cactus rows" not in start.stdout
+
+    old = cli("ask", "old question\nsecond line", "-c", "a", "-c", "b", "--no-wait", "--agent", "other-agent-xyz", cwd=project).stdout.strip()
+    _backdate(hook_env, old, 60)
+    start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
+    assert "Stale cactus rows" in start.stdout
+    assert "the human clears them" in start.stdout
+    line = next(ln for ln in start.stdout.splitlines() if ln.startswith(f"  {old}  "))
+    assert "other-ag  2d  old question" in line
+    assert "second line" not in line
+    assert not any(ln.startswith(f"  {fresh}  ") for ln in start.stdout.splitlines())

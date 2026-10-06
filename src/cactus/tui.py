@@ -71,7 +71,7 @@ from .scope import project_label
 from .sky import (SkyConfig, TuneField, slots as sky_slots, tuning_fields_for,
                   tuning_panel_of, tuning_panel_order)
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, DECOMPOSE_INSTRUCTION,
-                    AlreadyAnswered, Answer, Question, Store)
+                    AlreadyAnswered, Answer, Question, Store, stale_hours)
 
 POLL_INTERVAL = 0.5
 # Card first: the field gets only the rows the card leaves, and hides rather
@@ -185,6 +185,14 @@ PROJECT_POKE_MESSAGE = (
     "cactus: update your rows — re-read your answers, act on them, "
     "clear what is done, edit stale questions."
 )
+
+
+def _project_poke_message(stale_keys: list[str]) -> str:
+    """`PROJECT_POKE_MESSAGE`, plus the pane's own stale keys when it has any."""
+    if not stale_keys:
+        return PROJECT_POKE_MESSAGE
+    hours = f"{stale_hours():g}h"
+    return f"{PROJECT_POKE_MESSAGE} Stale (untouched {hours}+): {', '.join(stale_keys)} — edit or clear them."
 
 
 def _revised(q: Question) -> bool:
@@ -358,6 +366,10 @@ def _card_lines(
         lines.append(f"verdicts: {', '.join(reprs)}  (latest: {reprs[-1]})")
         if _revised(q):
             lines.append("revised after last verdict")
+
+    if q.stale():
+        lines.append("")
+        lines.append(Text(f"untouched {q.idle_label()}", style="dim"))
 
     heard = _heard_line(q)
     if heard:
@@ -646,6 +658,8 @@ class QuestionBlock(ListItem):
             parts.append("draft")
         if _revised(q):
             parts.append("revised")
+        if q.stale():
+            parts.append(f"stale {q.idle_label()}")
         return " · ".join(parts)
 
     @classmethod
@@ -671,6 +685,7 @@ class QuestionBlock(ListItem):
         state = question.heard_state
         self.set_class(state == "sent", "-sent")
         self.set_class(state == "heard", "-heard")
+        self.set_class(question.stale(), "-stale")
 
 
 class CactusApp(App[int]):
@@ -792,7 +807,7 @@ class CactusApp(App[int]):
     #card.-sent #card-text, #card.-heard #card-text {
         opacity: 60%;
     }
-    QuestionBlock.-sent, QuestionBlock.-heard {
+    QuestionBlock.-sent, QuestionBlock.-heard, QuestionBlock.-stale {
         opacity: 60%;
     }
     /* Card first: the text takes every row it needs, up to the whole card
@@ -1201,6 +1216,8 @@ class CactusApp(App[int]):
             marker = "▸" if i == self.project_index else " "
             state = "active" if row["enabled"] else "ignored"
             counts = f"{row['due_count']} due"
+            if row["stale_count"]:
+                counts += f" · {row['stale_count']} stale"
             if row["live_count"]:
                 counts += f" · {row['live_count']} live"
             if row["answered_count"]:
@@ -1237,7 +1254,8 @@ class CactusApp(App[int]):
         lines = []
         for row in rows:
             marker = "▸" if row["project"] == self.current_project else " "
-            lines.append(f"{marker} {project_label(row['project'])}  {row['due_count']}")
+            lines.append(f"{marker} {project_label(row['project'])}  {row['due_count']}"
+                         + (f" · {row['stale_count']} stale" if row["stale_count"] else ""))
         pane.update("\n".join(lines))
 
     def _toggle_projects_pane(self) -> None:
@@ -2781,7 +2799,7 @@ class CactusApp(App[int]):
             failed = 0
             for entry in panes:
                 try:
-                    poke(entry["agent"], pane=entry["pane"], session=entry["session"], message=PROJECT_POKE_MESSAGE,
+                    poke(entry["agent"], pane=entry["pane"], session=entry["session"], message=_project_poke_message(entry.get("stale", [])),
                          timeout=5.0, webhook=False)
                 except PokeError:
                     failed += 1

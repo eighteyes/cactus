@@ -315,9 +315,9 @@ def test_project_panes_distinct_status_filtered_and_skipped(store: Store, projec
     reach = store.project_panes(project)
 
     assert reach["panes"] == [
-        {"pane": "w1:p1", "session": "s1", "agent": "a1b"},
-        {"pane": "w1:p2", "session": "s1", "agent": "a2"},
-        {"pane": "w1:p2", "session": "s2", "agent": "a5"},
+        {"pane": "w1:p1", "session": "s1", "agent": "a1b", "stale": []},
+        {"pane": "w1:p2", "session": "s1", "agent": "a2", "stale": []},
+        {"pane": "w1:p2", "session": "s2", "agent": "a5", "stale": []},
     ]
     assert reach["skipped"] == 1
 
@@ -555,3 +555,65 @@ def test_edit_site_replace_keep_and_clear(store: Store, project: str) -> None:
 
     cleared = store.edit(q.key, agent=AGENT, project=project, site="")
     assert cleared.site is None
+
+
+def _backdate(store: Store, key: str, hours: float) -> None:
+    """Write `updated_at` directly, `hours` in the past, in `_now()`'s format."""
+    from datetime import datetime, timedelta, timezone
+
+    then = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="microseconds")
+    store.conn.execute("UPDATE questions SET updated_at = ? WHERE key = ?", (then, key))
+
+
+def test_stale_boundary_env_override_and_status(
+    store: Store, project: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cactus.store import stale_hours
+
+    monkeypatch.delenv("CACTUS_STALE_HOURS", raising=False)
+    assert stale_hours() == 24
+    q = store.ask("idle", project=project, cwd=project, agent=AGENT)
+    assert not store.get(q.key, project=project).stale()
+    assert store.get(q.key, project=project).as_dict()["stale"] is False
+
+    _backdate(store, q.key, 23.5)
+    assert not store.get(q.key, project=project).stale()
+    _backdate(store, q.key, 24.5)
+    got = store.get(q.key, project=project)
+    assert got.stale()
+    assert got.as_dict()["stale"] is True
+    assert got.as_dict()["idle_hours"] == 24.5
+    assert got.idle_label() == "24h"
+
+    _backdate(store, q.key, 60)
+    assert store.get(q.key, project=project).idle_label() == "2d"
+
+    # Any touch resets the clock.
+    store.edit(q.key, agent=AGENT, project=project, text="idle, edited")
+    assert not store.get(q.key, project=project).stale()
+
+    # The env var moves the threshold; invalid values fall back to 24.
+    _backdate(store, q.key, 3)
+    monkeypatch.setenv("CACTUS_STALE_HOURS", "2")
+    assert store.get(q.key, project=project).stale()
+    for bad in ("", "soon", "0", "-5", "nan"):
+        monkeypatch.setenv("CACTUS_STALE_HOURS", bad)
+        assert stale_hours() == 24
+
+    # Retired and answered rows never read stale.
+    monkeypatch.setenv("CACTUS_STALE_HOURS", "1")
+    _backdate(store, q.key, 100)
+    store.clear(keys=[q.key], project=project)
+    _backdate(store, q.key, 100)
+    assert not store.get(q.key, project=project).stale()
+
+
+def test_projects_stale_count_and_pane_stale_keys(store: Store, project: str) -> None:
+    old = store.ask("old", project=project, cwd=project, agent="a1", pane="w1:p1", session="s1")
+    store.ask("new", project=project, cwd=project, agent="a2", pane="w1:p2", session="s1")
+    _backdate(store, old.key, 50)
+
+    row = next(r for r in store.projects() if r["project"] == project)
+    assert row["stale_count"] == 1
+    panes = {p["pane"]: p["stale"] for p in store.project_panes(project)["panes"]}
+    assert panes == {"w1:p1": [old.key], "w1:p2": []}

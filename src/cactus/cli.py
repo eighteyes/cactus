@@ -230,6 +230,8 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
     for q in questions:
         indent = "  " * getattr(q, "depth", 0)
         head = f"{q.key}\t{q.status}\t"
+        if q.stale():
+            head += f"stale {q.idle_label()}\t"
         if show_project:
             head += f"[{project_display(q.project)}]\t"
         if q.thread:

@@ -2994,3 +2994,62 @@ async def test_inline_field_claims_pending_seeds_and_caps(store: Store, project:
         app._sky_reload_last = None
         app._field_tick()
         assert garden.pending_count(store.path) == 5
+
+
+def _backdate(store: Store, key: str, hours: float) -> None:
+    """Write `updated_at` directly, `hours` in the past, in `_now()`'s format."""
+    from datetime import datetime, timedelta, timezone
+
+    then = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="microseconds")
+    store.conn.execute("UPDATE questions SET updated_at = ? WHERE key = ?", (then, key))
+
+
+async def test_stale_row_marks_rail_card_and_projects(store: Store, project: str) -> None:
+    from cactus.tui import QuestionBlock
+
+    old = store.ask("dusty", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+    store.ask("fresh", project=project, cwd=project, agent=AGENT, kind="text", act="ask")
+    _backdate(store, old.key, 60)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        stale_blocks = [b for b in app.query(QuestionBlock) if b.has_class("-stale")]
+        assert len(stale_blocks) == 1
+        assert "stale 2d" in str(stale_blocks[0]._text.render())
+        assert len(app.query(QuestionBlock)) == 2
+
+        from cactus.tui import _card_lines
+
+        card = _card_lines(store.get(old.key, project=project), selected=set(), pending="", show_project=False)
+        assert "untouched 2d" in card.plain
+
+        await pilot.press("P")
+        await pilot.pause()
+        assert "1 stale" in app._projects_text()
+        app._rebuild_projects_pane()
+        assert "1 stale" in str(app.query_one("#projects-pane", Static).render())
+
+
+async def test_projects_page_poke_names_stale_keys_for_owning_pane_only(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cactus.tui import PROJECT_POKE_MESSAGE
+
+    log = _poke_log(tmp_path, monkeypatch)
+    old = store.ask("dusty", project=project, cwd=project, agent="a1", kind="text", act="ask", pane="w1:p1")
+    store.ask("fresh", project=project, cwd=project, agent="a2", kind="text", act="ask", pane="w1:p2")
+    _backdate(store, old.key, 60)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("P")
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+
+    sent = dict(line.split("|", 1) for line in log.read_text().splitlines())
+    assert sent["w1:p1"].startswith(PROJECT_POKE_MESSAGE)
+    assert f"Stale (untouched 24h+): {old.key}" in sent["w1:p1"]
+    assert sent["w1:p2"] == PROJECT_POKE_MESSAGE

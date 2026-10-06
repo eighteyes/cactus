@@ -872,6 +872,21 @@ scope.
   and `prior_key` are read inside the lock. A `j`/`k` that lands while
   `_rebuilding` is counted in `_rebuild_move` and replayed through the
   ListView after focus is restored.
+- Stale rows: an `open`/`live`/`elaborate` row whose `updated_at` is older
+  than `store.stale_hours()` (`CACTUS_STALE_HOURS`, float, default 24;
+  invalid, empty or non-positive reads 24). Computed at read time, no column:
+  any write that bumps `updated_at` resets the clock; `answered`/`cleared`
+  never read stale. `Question.stale()`/`idle_hours()`/`idle_label()` (`2d`
+  from 48h, else `Nh`); `as_dict` carries `stale` and `idle_hours` (1 dp).
+  `Store.projects()` adds `stale_count` (SQL, `updated_at < stale_cutoff()`,
+  same text format `_now()` writes) and `project_panes` adds a `stale` key
+  list per pane. The CLI text renderer adds a `stale 2d` field after the
+  status; the rail kind line ends `stale 2d` and the block takes `-stale`
+  (dimmed, still 4 rows, q226); the card adds a dim `untouched 2d`; the
+  projects page and pane add `N stale` when N > 0. The projects-page `p`
+  poke appends the pane's own stale keys to `PROJECT_POKE_MESSAGE`. The
+  root session-start hook lists stale rows (via `list --json` and jq) with
+  the rule: edit or clear your own, leave others'; silent when none.
 - Review/plan rows show sent / heard / responded (q404-q406), computed per
   row from the latest verdict's time `T` (`Question.heard_state`): `sent`
   after a verdict, `heard` once `heard_at > T`, normal once `responded_at > T`

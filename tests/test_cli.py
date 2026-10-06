@@ -834,3 +834,24 @@ def test_answer_queues_one_garden_seed_and_garden_shows_it(cli, scratch_env):
     assert cli("answer", "q1", "-s", "a").returncode == 0
     assert garden.pending_count(db) == 1
     assert "1 pending" in cli("garden").stdout
+
+
+def test_stale_row_marks_text_and_json(cli, scratch_env, project) -> None:
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    key = cli("ask", "gathering dust", "-c", "a", "-c", "b", "--no-wait", "--agent", "ag1").stdout.strip()
+    fresh = json.loads(cli("get", key, "--json").stdout)[0]
+    assert fresh["stale"] is False
+    assert "stale" not in cli("list").stdout
+
+    then = (datetime.now(timezone.utc) - timedelta(hours=60)).isoformat(timespec="microseconds")
+    conn = sqlite3.connect(scratch_env["CACTUS_DB"])
+    conn.execute("UPDATE questions SET updated_at = ? WHERE key = ?", (then, key))
+    conn.commit()
+    conn.close()
+
+    row = json.loads(cli("list", "--json").stdout)[0]
+    assert row["stale"] is True
+    assert row["idle_hours"] == pytest.approx(60, abs=0.2)
+    assert f"{key}\topen\tstale 2d\t" in cli("list").stdout

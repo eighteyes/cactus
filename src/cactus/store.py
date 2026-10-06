@@ -20,7 +20,7 @@ import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -247,6 +247,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
+STALE_STATUSES = ("open", "live", "elaborate")
+DEFAULT_STALE_HOURS = 24.0
+
+
+def stale_hours() -> float:
+    """Idle threshold in hours: `CACTUS_STALE_HOURS`, else 24. Invalid, empty,
+    or non-positive values fall back to the default."""
+    raw = os.environ.get("CACTUS_STALE_HOURS", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_STALE_HOURS
+    if not value > 0 or value == float("inf"):
+        return DEFAULT_STALE_HOURS
+    return value
+
+
+def stale_cutoff(now: datetime | None = None) -> str:
+    """The `updated_at` string a row must be older than to be stale, written
+    in the same format `_now()` stores so SQL and Python compare as text."""
+    now = now or datetime.now(timezone.utc)
+    return (now - timedelta(hours=stale_hours())).isoformat(timespec="microseconds")
+
+
 @dataclass
 class Choice:
     label: str
@@ -388,6 +412,26 @@ class Question:
             return "heard"
         return "sent"
 
+    def idle_hours(self, now: datetime | None = None) -> float:
+        """Hours since the row was last touched (`updated_at`)."""
+        now = now or datetime.now(timezone.utc)
+        try:
+            then = datetime.fromisoformat(self.updated_at)
+        except ValueError:
+            return 0.0
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - then).total_seconds() / 3600)
+
+    def idle_label(self, now: datetime | None = None) -> str:
+        """`2d` from 48h up (whole days, floored), else `Nh` (whole hours)."""
+        hours = int(self.idle_hours(now))
+        return f"{hours // 24}d" if hours >= 48 else f"{hours}h"
+
+    def stale(self, now: datetime | None = None) -> bool:
+        """Open/live/elaborate and idle past `stale_hours()`; computed at read time."""
+        return self.status in STALE_STATUSES and self.idle_hours(now) > stale_hours()
+
     @property
     def persistent(self) -> bool:
         return self.act in PERSISTENT_ACTS
@@ -425,6 +469,8 @@ class Question:
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "stale": self.stale(),
+            "idle_hours": round(self.idle_hours(), 1),
             "elaborate": self.elaborate,
             "elaborate_at": self.elaborate_at,
             "answer": self.answer.as_dict() if self.answer else None,
@@ -1812,14 +1858,17 @@ class Store:
                    MAX(questions.updated_at) AS last_activity,
                    MAX(CASE WHEN questions.status IN ('open', 'live', 'elaborate')
                             THEN questions.created_at END) AS newest_open,
-                   SUM(CASE WHEN questions.status IN ('open', 'elaborate') THEN 1 ELSE 0 END) AS due_count
+                   SUM(CASE WHEN questions.status IN ('open', 'elaborate') THEN 1 ELSE 0 END) AS due_count,
+                   SUM(CASE WHEN questions.status IN ('open', 'live', 'elaborate')
+                            AND questions.updated_at < ? THEN 1 ELSE 0 END) AS stale_count
             FROM known_projects
             LEFT JOIN project_settings ON project_settings.project = known_projects.project
             LEFT JOIN questions ON questions.project = known_projects.project
                               AND questions.status != 'cleared'
             GROUP BY known_projects.project
             ORDER BY due_count DESC, last_activity DESC
-            """
+            """,
+            (stale_cutoff(),),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -1831,25 +1880,34 @@ class Store:
         plus `skipped`: how many of those rows carry no pane and so cannot
         be prompted. A pane id names a pane inside one herdr session, so
         panes are distinct per `(session, pane)`. Returns
-        `{"panes": [{"pane", "session", "agent"}], "skipped": N}`.
+        `{"panes": [{"pane", "session", "agent", "stale"}], "skipped": N}`,
+        where `stale` lists the keys of that pane's stale rows (oldest first).
         """
+        cutoff = stale_cutoff()
         rows = self.conn.execute(
             """
-            SELECT pane, session, agent FROM questions
+            SELECT pane, session, agent, key, updated_at FROM questions
             WHERE project = ? AND status IN ('open', 'live', 'elaborate')
             ORDER BY id
             """,
             (project,),
         ).fetchall()
         latest: dict[tuple[str, str | None], str | None] = {}
+        stale: dict[tuple[str, str | None], list[str]] = {}
         skipped = 0
         for r in rows:
             if r["pane"]:
                 latest[(r["pane"], r["session"])] = r["agent"]
+                keys = stale.setdefault((r["pane"], r["session"]), [])
+                if r["updated_at"] < cutoff:
+                    keys.append(r["key"])
             else:
                 skipped += 1
         return {
-            "panes": [{"pane": p, "session": s, "agent": a} for (p, s), a in latest.items()],
+            "panes": [
+                {"pane": p, "session": s, "agent": a, "stale": stale[(p, s)]}
+                for (p, s), a in latest.items()
+            ],
             "skipped": skipped,
         }
 

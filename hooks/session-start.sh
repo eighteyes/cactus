@@ -53,4 +53,15 @@ if [ "$rc" -eq 0 ] && [ -n "$open" ]; then
   echo "Open cactus rows in this project (collect with \`cactus get KEY --agent ID --json\`):"
   echo "$open"
 fi
+
+# Rows untouched past the stale threshold (CACTUS_STALE_HOURS, default 24h).
+stale=$(cactus list --json -s open,live,elaborate 2>/dev/null | jq -r '
+  .[] | select(.stale == true)
+  | "  \(.key)  \(.agent // "unowned" | .[0:8])  \(
+      if .idle_hours >= 48 then "\(.idle_hours / 24 | floor)d" else "\(.idle_hours | floor)h" end
+    )  \(.text | split("\n")[0])"' 2>/dev/null)
+if [ -n "$stale" ]; then
+  echo "Stale cactus rows in this project (untouched past the threshold). Rows you own: 'cactus edit' if still relevant, or 'cactus clear KEY --agent ID' if dead. Rows owned by others: leave them, the human clears them."
+  echo "$stale"
+fi
 exit 0
