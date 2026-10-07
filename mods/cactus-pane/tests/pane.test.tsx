@@ -55,11 +55,6 @@ const PANE = {
   },
 } as const
 
-// Type into a row's editor key by key, as the person would.
-async function typeIn(ui: { key: (e: { key: string; in?: string }) => Promise<void> }, row: string, text: string) {
-  for (const ch of text) await ui.key({ key: ch, in: `${row}:editor` })
-}
-
 function fakeCactus(row: typeof ROW, calls: string[][]) {
   let answered = false
   return (argv: readonly string[]) => {
@@ -131,7 +126,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'q7:local' })
     expect(calls.some(c => c[1] === 'answer')).toBe(false)
 
-    await ui.key({ key: 's', ctrl: true, in: 'q7:editor' })
+    await ui.input({ key: 'q7:text', text: '' })
     expect(calls).toContainEqual(['cactus', 'answer', 'q7', '-s', 'oidc', '-s', 'local'])
   })
 }
@@ -184,8 +179,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const calls: string[][] = []
     const ui = await mounted($, on, ROW, calls, surface)
     await ui.press({ key: 'q7:elaborate' })
-    await typeIn(ui, 'q7', 'say what local costs')
-    await ui.key({ key: 's', ctrl: true, in: 'q7:editor' })
+    await ui.input({ key: 'q7:text', text: 'say what local costs' })
     expect(calls).toContainEqual(['cactus', 'elaborate', 'q7', 'say what local costs'])
     await ui.press({ key: 'q7:decompose' })
     expect(calls).toContainEqual(['cactus', 'elaborate', 'q7', '--decompose'])
@@ -223,7 +217,7 @@ test('answering this session’s own row wakes it with the verdict', async ($, o
   const woke: string[] = []
   on('prompt.submit', (_$, e) => {
     woke.push(e.text)
-    return { value: { turnId: 't' } } as never
+    return { text: e.text }
   })
   const ui = await mounted($, on, ROW, calls, 'terminal')
   await ui.press({ key: 'q7:local' })
@@ -263,16 +257,6 @@ test('j and k move the selection between questions', async ($, on) => {
   expect(await ui.find({ key: 'q7:card' })).toBeDefined()
 })
 
-test('the editor takes several lines; return is a newline, ctrl+s sends', async ($, on) => {
-  const calls: string[][] = []
-  const ui = await mounted($, on, ROW, calls, 'terminal')
-  await typeIn(ui, 'q7', 'line one')
-  await ui.key({ key: 'return', in: 'q7:editor' })
-  await typeIn(ui, 'q7', 'line two')
-  expect(calls.some(c => c[1] === 'answer')).toBe(false)
-  await ui.key({ key: 's', ctrl: true, in: 'q7:editor' })
-  expect(calls).toContainEqual(['cactus', 'answer', 'q7', 'line one\nline two'])
-})
 
 test('a multi row starts with its recommendation ticked; send or enter on the header submits', async ($, on) => {
   const calls: string[][] = []
@@ -293,32 +277,27 @@ test('m turns a single-choice row into pick-several for one answer', async ($, o
   expect(calls).toContainEqual(['cactus', 'answer', 'q7', '-s', 'oidc', '-s', 'local'])
 })
 
-test('ctrl+x leaves the editor without sending; typing marks it active', async ($, on) => {
-  const calls: string[][] = []
-  const ui = await mounted($, on, ROW, calls, 'terminal')
-  await typeIn(ui, 'q7', 'a b')
-  expect((await ui.find({ text: /editing · ctrl\+s send · ctrl\+x leave/, in: 'q7:editor' }))).toBeDefined()
-  await ui.key({ key: 'x', ctrl: true, in: 'q7:editor' })
-  expect(calls.some(c => c[1] === 'answer')).toBe(false)
-  expect((await ui.find({ text: /i or click to edit/, in: 'q7:editor' }))).toBeDefined()
-})
 
-test('the space key types a space', async ($, on) => {
-  const calls: string[][] = []
-  const ui = await mounted($, on, ROW, calls, 'terminal')
-  await ui.key({ key: 'a', in: 'q7:editor' })
-  await ui.key({ key: 'space', in: 'q7:editor' })
-  await ui.key({ key: 'b', in: 'q7:editor' })
-  await ui.key({ key: 's', ctrl: true, in: 'q7:editor' })
-  expect(calls).toContainEqual(['cactus', 'answer', 'q7', 'a b'])
-})
 
-test('the line input builds a multi-line draft; an empty line sends it', async ($, on) => {
+
+test('enter sends one line; a trailing backslash keeps the line for a multi-line answer', async ($, on) => {
   const calls: string[][] = []
   const ui = await mounted($, on, ROW, calls, 'terminal')
-  await ui.input({ key: 'q7:line', text: 'first line' })
-  await ui.input({ key: 'q7:line', text: 'second line' })
+  await ui.input({ key: 'q7:text', text: 'first line\\' })
   expect(calls.some(c => c[1] === 'answer')).toBe(false)
-  await ui.input({ key: 'q7:line', text: '' })
+  expect((await ui.find({ key: 'q7:draft' }))?.text).toContain('first line')
+  await ui.input({ key: 'q7:text', text: 'second line' })
   expect(calls).toContainEqual(['cactus', 'answer', 'q7', 'first line\nsecond line'])
+})
+
+test('a stale row marks its header with how long it sat untouched', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, { ...ROW, stale: true, idle_hours: 50.2 } as typeof ROW, calls, 'terminal')
+  expect((await ui.find({ key: 'q7:stale' }))?.text).toContain('stale 2d')
+})
+
+test('a fresh row has no stale mark', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  expect(await ui.find({ key: 'q7:stale' })).toBeUndefined()
 })

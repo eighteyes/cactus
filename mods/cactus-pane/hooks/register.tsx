@@ -1,7 +1,7 @@
 // cactus-pane: a live cactus inbox pane for the session's project.
 // - polls `cactus feed --json --here` and keeps the open/live/elaborate rows
 // - draws a one-line rail per row and a TUI-style card for the selected one
-// - the card's buttons carry the TUI's row keys (1-9, y/n, s, i, c, x, d, p)
+// - the card's buttons carry the TUI's row keys (1-9, y/n, s, i, c, x, d, e, b, r, m)
 // - acts through the `cactus` CLI, so cli.py stays the only validator
 // - /cactus-pane opens the pane focused; it also opens unasked at session start
 // - wakes this session when its own rows move, and turns its cactus waits off
@@ -15,6 +15,8 @@ const PANE = 'cactus-pane'
 const POLL_MS = 3000
 const PREVIEW_LINES = 40
 const HISTORY = 3
+// Headers drawn at once, centred on the selection, so its card stays in view.
+const LIST_WINDOW = 7
 const rows = atom({ plugin: 'cactus-pane', key: 'rows' } as const, [])
 const picks = atom({ plugin: 'cactus-pane', key: 'picks' } as const, {})
 const error = atom({ plugin: 'cactus-pane', key: 'error' } as const, null)
@@ -23,9 +25,7 @@ const previews = atom({ plugin: 'cactus-pane', key: 'previews' } as const, {})
 const undo = atom({ plugin: 'cactus-pane', key: 'undo' } as const, [])
 const modes = atom({ plugin: 'cactus-pane', key: 'modes' } as const, {})
 const flips = atom({ plugin: 'cactus-pane', key: 'flips' } as const, {})
-const editing = atom({ plugin: 'cactus-pane', key: 'editing' } as const, null)
 const drafts = atom({ plugin: 'cactus-pane', key: 'drafts' } as const, {})
-const DRAFT_ROWS = 3
 const UNDO_DEPTH = 20
 const RUN_TIMEOUT_MS = 600_000
 
@@ -254,9 +254,26 @@ async function cactus(
     const { [key]: _gone, ...rest } = all
     return rest
   })
+  const before = (await read($, rows)).map(r => r.key)
   lastCursor = ''
   await poll($)
+  await refocus($, key, before)
   return ran.stdout
+}
+
+// A row that left the inbox takes the focus ring with it, and a pane with no
+// ring hears no arrows. Land it on the header of the row now in that place.
+async function refocus($: EngineInterface, key: string, before: string[]): Promise<void> {
+  const now = (await read($, rows)).map(r => r.key)
+  if (now.includes(key)) return
+  const at = before.indexOf(key)
+  const after = before.slice(at + 1).find(k => now.includes(k))
+  const prior = before.slice(0, Math.max(0, at)).reverse().find(k => now.includes(k))
+  const target = after ?? prior
+  if (target === undefined) return
+  await select($, target)
+  await $.ui.focus({ requestId: PANE, key: `${target}:sel` }).catch(() => undefined)
+  await pinTop($, target)
 }
 
 // An answer or verdict the pane recorded goes on the undo stack: `u` pops it.
@@ -301,55 +318,54 @@ async function setFlip($: EngineInterface, key: string, on: boolean): Promise<vo
   })
 }
 
-// The draft is the hooks module's: the editor box and the line input both
-// write it. `revs` bumps when the hooks module changes it (a line appended, a
-// send clearing it), which tells the editor to adopt the new text.
-const revs = new Map<string, number>()
-
-function editorProps(key: string, label: string, text: string, active = false) {
-  const what = label === 'hint' ? 'what should the rewrite say?' : label === 'note' ? 'optional note' : 'click to edit'
-  return {
-    label,
-    placeholder: `${what} · enter newline · ctrl+s send · ctrl+x leave`,
-    rev: revs.get(key) ?? 0,
-    text,
-    rows: DRAFT_ROWS,
-    active,
-  }
-}
-
-async function setDraft($: EngineInterface, key: string, text: string, bump: boolean): Promise<void> {
-  if (bump) revs.set(key, (revs.get(key) ?? 0) + 1)
+async function setDraft($: EngineInterface, key: string, text: string): Promise<void> {
   await update($, drafts, all => {
     const { [key]: _gone, ...rest } = all
     return text === '' ? rest : { ...rest, [key]: text }
   })
 }
 
-// The line input: a line appends to the draft; an empty line sends the draft.
+// One input line; enter sends. Multi-line is hidden until asked for: a line
+// ending in `\` is kept (without the `\`) and shown above the input, and the
+// next plain enter sends every kept line plus that one.
 async function submitLine($: EngineInterface, key: string, line: string): Promise<void> {
   const draft = (await read($, drafts))[key] ?? ''
-  if (line.trim() === '') {
-    if (await submitText($, key, draft)) await setDraft($, key, '', true)
+  if (line.endsWith('\\')) {
+    const kept = line.slice(0, -1)
+    await setDraft($, key, draft === '' ? kept : `${draft}\n${kept}`)
     return
   }
-  await setDraft($, key, draft === '' ? line : `${draft}\n${line}`, true)
-  await showDraft($, key)
+  const full = draft === '' ? line : line === '' ? draft : `${draft}\n${line}`
+  if (await submitText($, key, full)) await setDraft($, key, '')
 }
 
-// The draft lives in the editor box above the line input; a box scrolled out
-// of view makes appended lines look lost, so bring it (and the line) in.
-async function showDraft($: EngineInterface, key: string): Promise<void> {
-  await $.ui.scroll({ to: { key: `${key}:editbox` }, block: 'nearest' }).catch(() => undefined)
-  await $.ui.scroll({ to: { key: `${key}:line` }, block: 'nearest' }).catch(() => undefined)
+// Enter on the open question's header sends, never picks: a multiple-choice
+// row sends its ticks, a single-choice row its pick (or recommendation), a
+// text row moves to the input. A run row is never run by enter.
+async function enterSends(
+  $: EngineInterface,
+  row: Row,
+  picked: string[] | undefined,
+  flipped: boolean,
+): Promise<void> {
+  const chosen = picked ?? row.recommend ?? []
+  if (row.act === 'run' || row.act === 'data') {
+    $.ui.toast(`cactus ${row.key}: use its keys; enter does not ${row.act === 'run' ? 'run' : 'copy'}`)
+    return
+  }
+  if (row.choices.length === 0) {
+    await $.ui.focus({ requestId: PANE, key: `${row.key}:text` }).catch(() => undefined)
+    return
+  }
+  const several = row.kind === 'multi' || flipped
+  if (chosen.length === 0 || (!several && chosen.length > 1)) {
+    $.ui.toast(`cactus ${row.key}: pick with 1-9 first`)
+    return
+  }
+  await answerRow($, row.key, chosen.flatMap(l => ['-s', l]))
 }
 
-async function leaveEditor($: EngineInterface, key: string): Promise<void> {
-  await update($, editing, () => null)
-  await $.ui.focus({ requestId: PANE, key: `${key}:sel` }).catch(() => undefined)
-}
-
-// One send path for the editor and the single-line fallback.
+// The send path behind the input line.
 async function submitText($: EngineInterface, key: string, value: string): Promise<boolean> {
   const row = (await read($, rows)).find(r => r.key === key)
   if (row === undefined) return false
@@ -396,6 +412,17 @@ async function select($: EngineInterface, key: string): Promise<void> {
   if ((await read($, selected)) !== key) await update($, selected, () => key)
 }
 
+// Keep the open question's header in view.
+// cactus's own idle label: whole days from 48h up, else whole hours.
+function idleLabel(hours: number): string {
+  const h = Math.floor(hours)
+  return h >= 48 ? `${Math.floor(h / 24)}d` : `${h}h`
+}
+
+async function pinTop($: EngineInterface, key: string): Promise<void> {
+  await $.ui.scroll({ to: { key: `${key}:sel` }, block: 'nearest' }).catch(() => undefined)
+}
+
 // The TUI's j/k: move the selection one row and bring its card into view.
 async function step($: EngineInterface, by: number): Promise<void> {
   const list = await read($, rows)
@@ -406,7 +433,7 @@ async function step($: EngineInterface, by: number): Promise<void> {
   if (to === undefined) return
   await select($, to.key)
   await $.ui.focus({ requestId: PANE, key: `${to.key}:sel` }).catch(() => undefined)
-  await $.ui.scroll({ to: { key: `${to.key}:card` }, block: 'nearest' }).catch(() => undefined)
+  await pinTop($, to.key)
 }
 
 // Diff against HEAD when the file changed, else its head: the TUI's `o`.
@@ -448,6 +475,8 @@ export const register: Register = on => {
     lastCursor = ''
     await poll($)
     await $.ui.open({ id: PANE, title: 'cactus', focus: true })
+    const first = (await read($, selected)) ?? (await read($, rows))[0]?.key
+    if (first !== undefined) await pinTop($, first)
 
     return { text: 'cactus pane opened.' }
   })
@@ -466,65 +495,11 @@ export const register: Register = on => {
     return next({ ...e, command: noWait(e.command) })
   })
 
-  // The editor posts { active } when it takes keys, { leave } on ctrl+x and
-  // { submit } on ctrl+s. Esc is unreliable in a pane, so leaving and sending
-  // move the ring back to the question header from here; a send also bumps
-  // `reset`, which clears the draft on the next draw.
-  on('ui.message', async ($, e, next) => {
-    if (e.requestId !== PANE || !e.element.endsWith(':editor')) return next(e)
-    const key = e.element.split(':')[0] ?? ''
-    const data = (e.data ?? {}) as { submit?: unknown; leave?: unknown; active?: unknown; text?: unknown }
-    if (data.active === true) {
-      await update($, editing, () => key)
-    } else if (data.leave === true) {
-      await leaveEditor($, key)
-    } else if (typeof data.submit === 'string') {
-      if (await submitText($, key, data.submit)) {
-        await setDraft($, key, '', true)
-        await leaveEditor($, key)
-      }
-    }
-    if (typeof data.text === 'string') await setDraft($, key, data.text, false)
-    return {}
-  })
-
-  // Up/down arrive as a one-row scroll with no pointer; they move the
-  // selection instead. A wheel tick carries a pointer and still scrolls.
-  on('ui.scroll', async ($, e, next) => {
-    if (e.requestId !== PANE || e.pointer !== undefined || Math.abs(e.by) !== 1) return next(e)
-    await step($, e.by)
-    return { deny: 'cactus-pane: arrows move the selection' }
-  })
-
   // Walking the ring onto any of a row's elements selects that row.
-  // The person's ring (tab or arrows; the mod cannot tell which, q479) only
-  // lands on question headers: stepping into the open card jumps to the next
-  // question instead. Options are picked by their keys; `i` (a plugin focus)
-  // still reaches the text box.
-  on('ui.focus', async ($, e, next) => {
-    if (e.requestId !== PANE) return next(e)
-    // The ring landing anywhere but the active editor means it was left.
-    const ed = await read($, editing)
-    if (ed !== null && e.element !== `${ed}:editor`) await update($, editing, () => null)
-    if (e.element === undefined) return next(e)
-    const [key, part] = e.element.split(':')
-    if (key === undefined || key === '') return next(e)
-    if (e.origin.kind === 'person' && part !== undefined && part !== 'sel') {
-      const list = await read($, rows)
-      const after = list[list.findIndex(r => r.key === key) + 1]
-      if (after === undefined) return { deny: 'cactus-pane: last question' }
-      await select($, after.key)
-      return next({ ...e, element: `${after.key}:sel` })
-    }
-    await select($, key)
-    return next(e)
-  })
-
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
     const Input = 'Input' in els ? els.Input : undefined
-    const Client = 'Client' in els ? els.Client : undefined
     const list = await read($, rows)
     const picked = await read($, picks)
     const failed = await read($, error)
@@ -533,7 +508,6 @@ export const register: Register = on => {
     const stack = await read($, undo)
     const modeOf = await read($, modes)
     const flipped = await read($, flips)
-    const editingKey = await read($, editing)
     const drafted = await read($, drafts)
     const current = list.find(r => r.key === wanted) ?? list[0]
 
@@ -562,9 +536,9 @@ export const register: Register = on => {
           void $.ui.copy({ text: body, surface })
           void answerRow($, row.key, ['-s', label])
         } else if (isMulti) {
-          // Park the ring on send so the next Enter submits the picks.
+          // The ring stays on the header, where enter sends.
           void toggle($, row.key, label, rec).then(() =>
-            $.ui.focus({ requestId: PANE, key: `${row.key}:send` }).catch(() => undefined),
+            $.ui.focus({ requestId: PANE, key: `${row.key}:sel` }).catch(() => undefined),
           )
         } else if (isRunAct && label === 'approve') {
           void runRow($, row.key, true)
@@ -572,9 +546,24 @@ export const register: Register = on => {
           void answerRow($, row.key, ['-s', label])
         }
       }
-      const confirmKey = (i: number) => (i === 0 ? 'y' : 'n')
+      const choiceKey = (i: number) => (isConfirm && i < 2 ? (i === 0 ? 'y' : 'n') : String(i + 1))
 
-      return (
+      // The keys the hidden Buttons below carry, named once in the card.
+      const legend = [
+        hasInput ? 'i type' : null,
+        row.act === 'notify' ? 'd dismiss' : 's skip',
+        canRun ? 'r run' : null,
+        isElaborate ? 'u withdraw' : `e ${isHinting ? 'cancel' : 'elaborate'} · b break up`,
+        row.act === 'review' || isPlan ? 'x close' : 'c clear',
+        canFlip ? `m ${isFlipped ? 'single' : 'multiple'}` : null,
+        isMulti ? `g send ${mine.length}` : null,
+        row.files.length > 0 ? 'f view · o preview' : null,
+        stack.length > 0 && !isElaborate ? 'u undo' : null,
+        list.length > 1 ? 'j/k move' : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+      const body = (
         <Box key={`${row.key}:card`} flexDirection="column" borderStyle="round" paddingX={1}>
           <Text bold wrap="wrap">{reflow(row.text)}</Text>
           <Text dimColor>
@@ -611,14 +600,10 @@ export const register: Register = on => {
                 return (
                   <Box key={`${row.key}:c${i}`} flexDirection="column">
                     <Box flexDirection="row" columnGap={2}>
-                      <Button
-                        key={`${row.key}:${c.label}`}
-                        label={`${isPicked ? '✓ ' : ''}${c.label}`}
-                        hotkey={isConfirm && i < 2 ? confirmKey(i) : i < 9 ? String(i + 1) : undefined}
-                        plain
-                        variant={rec.includes(c.label) ? 'primary' : undefined}
-                        onPress={press => pick(c.label, press.surface)}
-                      />
+                      <Text bold={isPicked}>
+                        <Text color="cyan">{choiceKey(i)}:</Text> {isPicked ? '✓ ' : ''}
+                        {c.label}
+                      </Text>
                       {rec.includes(c.label) && <Text color="yellow">recommended</Text>}
                       {row.chosen === c.label && <Text color="blue">chosen</Text>}
                       {!isData && lines[0] && <Text dimColor wrap="wrap">{lines[0]}</Text>}
@@ -650,15 +635,9 @@ export const register: Register = on => {
           {isPlan && row.steps.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               {row.steps.map(s => (
-                <Button
-                  key={`${row.key}:step${s.n}`}
-                  label={`[${s.done ? 'x' : ' '}] ${s.text}`}
-                  hotkey={s.n <= 9 ? String(s.n) : undefined}
-                  plain
-                  onPress={() =>
-                    void cactus($, row.key, ['plan', row.key, s.done ? '--undone' : '--done', String(s.n)])
-                  }
-                />
+                <Text key={`step${s.n}`}>
+                  <Text color="cyan">{s.n <= 9 ? `${s.n}:` : '  '}</Text> [{s.done ? 'x' : ' '}] {s.text}
+                </Text>
               ))}
             </Box>
           )}
@@ -687,21 +666,7 @@ export const register: Register = on => {
               {row.files.map((f, j) => (
                 <Box key={`${row.key}:f${j}`} flexDirection="column">
                   <Box flexDirection="row" columnGap={2}>
-                    <Button
-                      key={`${row.key}:open${j}`}
-                      label="view"
-                      hotkey={j === 0 ? 'f' : undefined}
-                      plain
-                      onPress={() => void $.process.run(['open', f])}
-                    />
-                    <Button
-                      key={`${row.key}:prev${j}`}
-                      label={f in shown ? 'hide' : 'preview'}
-                      hotkey={j === 0 ? 'o' : undefined}
-                      plain
-                      onPress={() => void togglePreview($, f)}
-                    />
-                    <Text dimColor>{f}</Text>
+                    <Text dimColor>{j === 0 ? 'f/o ' : '    '}{f}</Text>
                   </Box>
                   {f in shown && <Text dimColor>{shown[f]}</Text>}
                 </Box>
@@ -717,53 +682,62 @@ export const register: Register = on => {
             </Box>
           )}
 
-          {hasInput && Client !== undefined && (
-            <Box key={`${row.key}:editbox`} marginTop={1}>
-              <Client
-                key={`${row.key}:editor`}
-                module="./editor.tsx"
-                props={editorProps(row.key, inputLabel, drafted[row.key] ?? '', editingKey === row.key)}
-              />
+          <Box marginTop={1}>
+            <Text dimColor wrap="wrap">{legend}</Text>
+          </Box>
+        </Box>
+      )
+      const input = hasInput ? (
+        <Box key={`${row.key}:input`} flexDirection="column" marginTop={1}>
+          {(drafted[row.key] ?? '') !== '' && (
+            <Box key={`${row.key}:draft`}>
+              <Text wrap="wrap" dimColor>{drafted[row.key]}</Text>
             </Box>
           )}
-          {hasInput && Client === undefined && (drafted[row.key] ?? '') !== '' && (
-            <Box key={`${row.key}:draft`} borderStyle="single" paddingX={1} marginTop={1}>
-              <Text wrap="wrap">{drafted[row.key]}</Text>
-            </Box>
-          )}
-          {hasInput && Input !== undefined && (
+          {Input !== undefined && (
             <Input
-              key={`${row.key}:line`}
-              label="line"
-              placeholder="i to type · enter adds the line · enter on an empty line sends"
-              submitLabel="add"
+              key={`${row.key}:text`}
+              label={inputLabel}
+              placeholder="i to type · enter sends · end a line with \ for another line"
+              submitLabel="send"
               onSubmit={(value: string) => void submitLine($, row.key, value)}
             />
           )}
-
-          <Box flexDirection="row" columnGap={2} marginTop={1}>
-            {canFlip && (
-              <Button
-                key={`${row.key}:flip`}
-                label={isFlipped ? 'single choice' : 'multiple choice'}
-                hotkey="m"
-                plain
-                onPress={() => void setFlip($, row.key, !isFlipped)}
-              />
-            )}
-            {isMulti && (
-              <Button
-                key={`${row.key}:send`}
-                label={`send ${mine.length} picked (or enter)`}
-                hotkey="g"
-                plain
-                onPress={() =>
-                  mine.length === 0
-                    ? $.ui.toast(`cactus ${row.key}: nothing picked`)
-                    : void answerRow($, row.key, mine.flatMap(l => ['-s', l]))
-                }
-              />
-            )}
+        </Box>
+      ) : null
+      // Probe (q555): every key Button sits in a display:none Box, so nothing
+      // draws, and the question is whether its hotkey still presses it.
+      const controls = (
+        <Box key={`${row.key}:controls`} display="none" flexDirection="column">
+          {row.choices.length > 0 && (
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+              {row.choices.slice(0, 9).map((c, i) => (
+                <Button
+                  key={`${row.key}:${c.label}`}
+                  label={c.label.length > 14 ? `${c.label.slice(0, 13)}…` : c.label}
+                  hotkey={choiceKey(i)}
+                  plain
+                  onPress={press => pick(c.label, press.surface)}
+                />
+              ))}
+            </Box>
+          )}
+          {isPlan && row.steps.length > 0 && (
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+              {row.steps.filter(s => s.n <= 9).map(s => (
+                <Button
+                  key={`${row.key}:step${s.n}`}
+                  label={s.done ? 'undo step' : 'step'}
+                  hotkey={String(s.n)}
+                  plain
+                  onPress={() =>
+                    void cactus($, row.key, ['plan', row.key, s.done ? '--undone' : '--done', String(s.n)])
+                  }
+                />
+              ))}
+            </Box>
+          )}
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
             {hasInput && (
               <Button
                 key={`${row.key}:type`}
@@ -772,9 +746,8 @@ export const register: Register = on => {
                 plain
                 onPress={() =>
                   void $.ui
-                    .focus({ requestId: PANE, key: `${row.key}:line` })
+                    .focus({ requestId: PANE, key: `${row.key}:text` })
                     .catch(() => undefined)
-                    .then(() => showDraft($, row.key))
                 }
               />
             )}
@@ -821,7 +794,7 @@ export const register: Register = on => {
                   plain
                   onPress={() => {
                     void setMode($, row.key, isHinting ? null : 'elaborate')
-                    if (!isHinting) void $.ui.focus({ requestId: PANE, key: `${row.key}:line` }).catch(() => undefined)
+                    if (!isHinting) void $.ui.focus({ requestId: PANE, key: `${row.key}:text` }).catch(() => undefined)
                   }}
                 />
                 <Button
@@ -840,42 +813,55 @@ export const register: Register = on => {
               plain
               onPress={() => void cactus($, row.key, ['clear', row.key, ...owner])}
             />
-            {row.agent && (
+            {canFlip && (
               <Button
-                key={`${row.key}:poke`}
-                label="poke"
-                hotkey="p"
+                key={`${row.key}:flip`}
+                label={isFlipped ? 'single choice' : 'multiple choice'}
+                hotkey="m"
                 plain
-                onPress={() => void cactus($, row.key, ['poke', row.key])}
+                onPress={() => void setFlip($, row.key, !isFlipped)}
+              />
+            )}
+            {isMulti && (
+              <Button
+                key={`${row.key}:send`}
+                label={`send ${mine.length} picked`}
+                hotkey="g"
+                plain
+                onPress={() =>
+                  mine.length === 0
+                    ? $.ui.toast(`cactus ${row.key}: nothing picked`)
+                    : void answerRow($, row.key, mine.flatMap(l => ['-s', l]))
+                }
               />
             )}
           </Box>
+          {row.files.length > 0 && (
+            <Box flexDirection="row" columnGap={2}>
+              <Button key={`${row.key}:open0`} label="view file" hotkey="f" plain onPress={() => void $.process.run(['open', row.files[0] ?? ''])} />
+              <Button
+                key={`${row.key}:prev0`}
+                label={(row.files[0] ?? '') in shown ? 'hide preview' : 'preview'}
+                hotkey="o"
+                plain
+                onPress={() => void togglePreview($, row.files[0] ?? '')}
+              />
+            </Box>
+          )}
         </Box>
       )
+      return { body, controls, input, legend }
     }
+
+    const at = Math.max(0, list.findIndex(r => r === current))
+    const above = Math.max(0, Math.min(at - (LIST_WINDOW >> 1), list.length - LIST_WINDOW))
 
     return (
       <Box flexDirection="column">
         {failed !== null && <Text color="red">{failed}</Text>}
-        {stack.length > 0 && (
-          <Box flexDirection="row" columnGap={2}>
-            <Button
-              key="undo"
-              label={`undo ${stack[stack.length - 1]}`}
-              hotkey={current?.status === 'elaborate' ? undefined : 'u'}
-              plain
-              onPress={() => void undoLast($)}
-            />
-          </Box>
-        )}
         {list.length === 0 && <Text dimColor>Inbox empty.</Text>}
-        {list.length > 1 && (
-          <Box flexDirection="row" columnGap={2}>
-            <Button key="prev" label="up" hotkey="k" plain onPress={() => void step($, -1)} />
-            <Button key="next" label="down" hotkey="j" plain onPress={() => void step($, 1)} />
-          </Box>
-        )}
-        {list.map(row => {
+        {above > 0 && <Text dimColor>  ↑ {above} more (k)</Text>}
+        {list.slice(above, above + LIST_WINDOW).map(row => {
           const isCurrent = row === current
           return (
             <Box key={row.key} flexDirection="column">
@@ -885,24 +871,55 @@ export const register: Register = on => {
                   label={`${isCurrent ? '▸' : ' '} ${row.key}`}
                   plain
                   onPress={() => {
-                    // Enter on the open multi row's header sends its picks.
-                    const chosen = picked[row.key] ?? row.recommend ?? []
-                    if (isCurrent && (row.kind === 'multi' || flipped[row.key] === true) && chosen.length > 0) {
-                      void answerRow($, row.key, chosen.flatMap(l => ['-s', l]))
-                    } else void select($, row.key)
+                    if (!isCurrent) return void select($, row.key).then(() => pinTop($, row.key))
+                    void enterSends($, row, picked[row.key], flipped[row.key] === true)
                   }}
                 />
                 <Text color={ACT_COLOUR[row.act] ?? 'white'}>{row.act.padEnd(6)}</Text>
-                <Text wrap="truncate-end" dimColor={!isCurrent} bold={isCurrent}>
+                {row.stale === true && (
+                  <Box key={`${row.key}:stale`}>
+                    <Text dimColor>stale {idleLabel(row.idle_hours ?? 0)}</Text>
+                  </Box>
+                )}
+                <Text wrap="truncate-end" dimColor={!isCurrent || row.stale === true} bold={isCurrent}>
                   {row.word ? `${row.word}  ` : ''}
                   {firstLine(row.text)}
                 </Text>
               </Box>
-              {isCurrent && card(row)}
             </Box>
           )
         })}
+        {list.length - above - LIST_WINDOW > 0 && (
+          <Text dimColor>  ↓ {list.length - above - LIST_WINDOW} more (j)</Text>
+        )}
+        {/* The list on top, the open question's card under it: arrows walk the
+            headers, and the focus hook keeps them out of the card and keys. */}
+        {current !== undefined && card(current).body}
+        {current !== undefined && card(current).input}
+        {current !== undefined && card(current).controls}
+        <Box display="none" flexDirection="row" columnGap={2}>
+          {stack.length > 0 && (
+            <Button
+              key="undo"
+              label={`undo ${stack[stack.length - 1]}`}
+              hotkey={current?.status === 'elaborate' ? undefined : 'u'}
+              plain
+              onPress={() => void undoLast($)}
+            />
+          )}
+          {list.length > 1 && <Button key="prev" label="up" hotkey="k" plain onPress={() => void step($, -1)} />}
+          {list.length > 1 && <Button key="next" label="down" hotkey="j" plain onPress={() => void step($, 1)} />}
+        </Box>
       </Box>
     )
+  })
+
+  // Arrows and tab are the person's focus steps. Only question headers may
+  // take them; the keys below the list stay reachable by hotkey (and `i` puts
+  // the ring in the input), so a step onto them is refused and the ring stays.
+  on('ui.focus', async ($, e, next) => {
+    if (e.requestId !== PANE || e.origin.kind !== 'person') return next(e)
+    if (e.element !== undefined && !e.element.endsWith(':sel')) return { deny: 'cactus-pane: headers only' }
+    return next(e)
   })
 }

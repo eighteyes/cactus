@@ -42,6 +42,9 @@ export type Row = {
   result: RunResult | null
   answers: Answer[]
   elaborate: string | null
+  // Untouched past CACTUS_STALE_HOURS (cactus stale rows); absent on older cactus.
+  stale?: boolean
+  idle_hours?: number
 }
 
 declare module 'claude-code' {
@@ -55,7 +58,6 @@ declare module 'claude-code' {
       undo: string[]
       modes: Record<string, 'elaborate'>
       flips: Record<string, true>
-      editing: string | null
       drafts: Record<string, string>
     }
   }
