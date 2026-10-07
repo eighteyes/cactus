@@ -197,6 +197,21 @@ scope.
 - `review` and `plan` are persistent: born `live`, never auto-transitioning,
   answerable repeatedly. Their verdicts append, so `answer` is the latest of
   `answers` and undo withdraws only the newest row.
+- A `pass` verdict on a `review` row closes it (q601): `Store.answer` inserts
+  the answer, sets `status='cleared'` and stamps `last_change='passed'` in one
+  `BEGIN IMMEDIATE` transaction, and writes the decision record once, from the
+  closed row (status label `passed`). `fail`, text-only and skip verdicts
+  leave it `live`; plan, data and ordinary rows are untouched.
+  `Question.closed_by_pass` (`cleared` and `last_change == 'passed'`, also in
+  `as_dict`) tells it from an ordinary clear. `Store.reopen(key,
+  withdraw_pass=True)` on such a row deletes the pass and returns it to
+  `live`, the exact pre-pass state; on any other row the flag is ignored.
+  Plain `reopen` (`cactus reopen`) keeps the verdict. Every exit from
+  `cleared` resets `last_change='passed'` to NULL. The TUI `u` and `cactus
+  undo` pass `withdraw_pass=True`; `cactus undo` still refuses an ordinary
+  `cleared` row. `monitor.py` reports the pass as `verdict` (the answer count
+  rose), never `cleared`; `get --wait` returns on it; the cactus-pane mod
+  reads `closed_by_pass` and wakes with the verdict, not a decline.
 - `ListView` consumes `enter` before an App binding can see it, so the TUI
   triggers submit from `on_list_view_selected`, not from the `enter` binding.
 - The TUI rotates over projects with open questions only; `store.projects()`
@@ -523,7 +538,11 @@ scope.
   (`None` keeps, a list replaces, `[]` clears); `review`/`plan` route through
   `Store.set_files`, which refuses a `cleared` row like `set_review`/
   `set_steps`. The TUI's `f`/`F` bind only on a row with files
-  (`check_action`); a one-file row runs immediately, a multi-file row arms
+  (`check_action`); a one-file row runs immediately, a multi-file row's `f`
+  opens an fzf list of its files (`shell.pick_file`: diff-vs-HEAD or glow/bat
+  preview, enter pages the file, esc returns; `CACTUS_FZF` is a command
+  template with `{files}`, `off` disables, tests set it `off`) and without fzf,
+  like `F`, arms
   `file_pending` ("view"/"edit") and takes the next digit via
   `action_select_choice` (which `check_action` also lets through while armed,
   even on a row with no choices of its own) — any other key, or a row move,
@@ -901,7 +920,8 @@ scope.
   and the row's rail block take `-sent`/`-heard` classes (dimmed) plus a
   status line; `x` (`close_row`, bound by `check_action` only on a review/plan
   row) is `c`'s store call and undo entry; a finished plan or a review with a
-  verdict prompts `finished? x closes it (or the agent will)`.
+  non-pass verdict prompts `finished? x closes it (or the agent will)` (a
+  pass already closed the row, q601).
 - The auto-decider only proposes, never answers. `rank.classify` gates a row
   (`Rank.gated`: reversible and low complexity); only a gated row gets a
   `decide.propose` pick, a held one is stamped with `rank.reason()` and no

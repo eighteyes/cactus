@@ -371,6 +371,8 @@ class Question:
     # Which action last moved this row out of `elaborate` (q228): 'withdrawn'
     # or 'edited'. Read only by the monitor's transition classifier — not
     # rendered elsewhere, so it stays off as_dict() like the DB internals it is.
+    # Also 'passed' (q601): a review row closed by its own pass verdict, which
+    # is how `closed_by_pass` tells that clear from an ordinary one.
     last_change: str | None = None
     recommend: list[str] = field(default_factory=list)
     confidence: str | None = None
@@ -436,6 +438,16 @@ class Question:
     def persistent(self) -> bool:
         return self.act in PERSISTENT_ACTS
 
+    @property
+    def closed_by_pass(self) -> bool:
+        """A review row that a `pass` verdict cleared in the same step (q601).
+
+        `answer` stamps `last_change = 'passed'` as it clears the row; an
+        ordinary clear never does, and every exit from `cleared` resets it.
+        A cleared row takes no further verdict, so the pass is its latest.
+        """
+        return self.status == "cleared" and self.last_change == "passed"
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,
@@ -470,6 +482,7 @@ class Question:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "stale": self.stale(),
+            "closed_by_pass": self.closed_by_pass,
             "idle_hours": round(self.idle_hours(), 1),
             "elaborate": self.elaborate,
             "elaborate_at": self.elaborate_at,
@@ -1004,6 +1017,13 @@ class Store:
         and keeps its earlier verdicts: the append-only log is what lets a
         review row be passed today and failed tomorrow, and what makes the
         monitor stream an event feed rather than a status poll.
+
+        One exception (q601): a `pass` verdict on a review row closes it in
+        the same transaction — status `cleared`, `last_change = 'passed'` —
+        so a pass is final. `fail`, text-only and skip verdicts leave it
+        `live`. The verdict is still the latest answer, so `get`/`feed` and
+        the monitor (`verdict`) carry it; `reopen(withdraw_pass=True)` undoes
+        both halves.
         """
         q = self.get(key, project=project)
         if q is None:
@@ -1054,6 +1074,9 @@ class Store:
             )
         now = _now()
         status = "live" if q.persistent else "answered"
+        passes = q.act == "review" and "pass" in selected
+        if passes:
+            status = "cleared"
         # One explicit transaction, not two autocommitted statements: in
         # autocommit mode (isolation_level=None) each execute() commits on
         # its own, so a poller — the monitor, another TUI tick — can land
@@ -1072,8 +1095,10 @@ class Store:
                 (q.id, json.dumps(list(selected or [])), text, 1 if skipped else 0, now),
             )
             self.conn.execute(
-                "UPDATE questions SET status = ?, updated_at = ? WHERE id = ?",
-                (status, now, q.id),
+                "UPDATE questions SET status = ?, updated_at = ?, "
+                "last_change = CASE WHEN ? THEN 'passed' ELSE last_change END "
+                "WHERE id = ?",
+                (status, now, 1 if passes else 0, q.id),
             )
             self.conn.execute("COMMIT")
         except Exception:
@@ -1139,7 +1164,9 @@ class Store:
                     self._record(row, event="clear")
         return cur.rowcount
 
-    def reopen(self, key: str, *, project: str | None = None) -> Question:
+    def reopen(
+        self, key: str, *, project: str | None = None, withdraw_pass: bool = False
+    ) -> Question:
         """Withdraw the latest answer, or restore a cleared row.
 
         Undo for the human surfaces. On an answered or live row it cannot
@@ -1155,12 +1182,30 @@ class Store:
         `clear` this way is what recovers a cleared review/plan row, which
         the answer-withdrawing path below cannot do without deleting the
         latest verdict it was never meant to touch.
+
+        `withdraw_pass` (q601) is the undo of a pass-closed review row
+        (`Question.closed_by_pass`): it deletes the pass verdict and goes back
+        `live`, one step to the state before the pass. It acts only on that
+        case; on any other row it is ignored, so an ordinary clear still
+        restores with every verdict kept. Without it a pass-closed row also
+        just restores (verdict kept). Every exit from `cleared` resets
+        `last_change`, so a restored row is no longer `closed_by_pass`.
         """
         q = self.get(key, project=project)
         if q is None:
             raise KeyError(f"no such question: {key}")
         now = _now()
-        if q.status == "cleared":
+        if q.status == "cleared" and withdraw_pass and q.closed_by_pass:
+            withdrawn_answer = q.answer
+            self.conn.execute(
+                "DELETE FROM answers WHERE id = ("
+                " SELECT id FROM answers WHERE question_id = ?"
+                " ORDER BY created_at DESC, id DESC LIMIT 1)",
+                (q.id,),
+            )
+            status = "live"
+            event = "reopen"
+        elif q.status == "cleared":
             withdrawn_answer = None
             if q.persistent:
                 status = "live"
@@ -1186,7 +1231,9 @@ class Store:
                 status = "answered" if remaining else "open"
             event = "reopen"
         self.conn.execute(
-            "UPDATE questions SET status = ?, updated_at = ? WHERE id = ?",
+            "UPDATE questions SET status = ?, updated_at = ?, "
+            "last_change = CASE WHEN last_change = 'passed' THEN NULL "
+            "ELSE last_change END WHERE id = ?",
             (status, now, q.id),
         )
         result = self._get_by_id(q.id)

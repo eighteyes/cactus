@@ -2640,7 +2640,8 @@ class CactusApp(App[int]):
         """Run a single-file row's action immediately, or arm a digit pick.
 
         A one-file row has nothing to pick, so `f`/`F` runs it straight away.
-        A multi-file row instead arms `file_pending` and waits ~1.5s for the
+        A multi-file row opens an fzf list on `f` when fzf is available,
+        otherwise (and always on `F`) it arms `file_pending` and waits ~1.5s for the
         digit that names which one — `action_select_choice` intercepts it.
         """
         q = self._current_question()
@@ -2650,12 +2651,37 @@ class CactusApp(App[int]):
         if len(q.files) == 1:
             self._run_file_action(q, mode, 0)
             return
+        from .shell import fzf_available
+
+        if mode == "view" and fzf_available():
+            self._run_file_list(q)
+            return
         self.file_pending = mode
         self.file_pending_key = q.key
         self.flash = f"file 1-{len(q.files)}?"
         self.file_pending_timer = self.set_timer(
             1.5, partial(self._disarm_file_pending, q.key)
         )
+        self._rebuild_card()
+
+    def _run_file_list(self, q: Question) -> None:
+        """List a multi-file row's files in fzf under a suspended screen."""
+        from textual.app import SuspendNotSupported
+
+        from .shell import ShellError
+        from .shell import pick_file
+
+        try:
+            try:
+                with self.suspend():
+                    ran = pick_file(list(q.files))
+            except SuspendNotSupported:
+                ran = pick_file(list(q.files))
+        except ShellError as exc:
+            self.flash = f"view failed: {exc}"
+            self._rebuild_card()
+            return
+        self.flash = f"viewed {len(q.files)} files ({ran})"
         self._rebuild_card()
 
     def _cancel_file_pending(self) -> None:
@@ -4173,7 +4199,9 @@ class CactusApp(App[int]):
                         entry["key"], entry["idx"], entry["prior_done"], project=entry["project"]
                     )
                 else:
-                    self.store.reopen(entry["key"], project=entry["project"])
+                    self.store.reopen(
+                        entry["key"], project=entry["project"], withdraw_pass=True
+                    )
             except (KeyError, ValueError):
                 # Purged (or, for a step, cleared) out from under us; the next
                 # entry down is still good.

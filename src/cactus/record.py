@@ -97,6 +97,8 @@ def _status_label(row: "Question", event: str) -> str:
             return "skipped"
         return "answered" if row.answer is not None else "open"
     # event == "answer"
+    if row.closed_by_pass:
+        return "passed"
     if row.answer is not None and row.answer.skipped:
         return "skipped"
     return "live" if row.persistent else "answered"

@@ -294,3 +294,24 @@ def test_auto_proposal_does_not_change_signature(scratch_env, project, store):
     assert _signature(store.get(q.key, project=project)) == sig
     store.clear_auto(q.key, project=project)
     assert _signature(store.get(q.key, project=project)) == sig
+
+
+def test_pass_on_review_reads_verdict_then_undo_reopened(scratch_env, project, store):
+    proc = start_monitor(scratch_env, project, "--agent", "agent-a")
+    try:
+        wait_a_tick()
+        q = store.ask("review this", project=project, cwd=project, agent="agent-a",
+                      act="review", kind="confirm")
+        wait_a_tick()
+        store.answer(q.key, project=project, selected=["pass"])
+        wait_a_tick()
+        store.reopen(q.key, project=project, withdraw_pass=True)
+        wait_a_tick()
+    finally:
+        events = stop_and_read(proc)
+
+    mine = [e for e in events if e.get("key") == q.key]
+    names = [e["event"] for e in mine]
+    assert "cleared" not in names and "answered" not in names
+    assert names == ["verdict", "reopened"]
+    assert mine[0]["status"] == "cleared" and mine[0]["answer"]["selected"] == ["pass"]

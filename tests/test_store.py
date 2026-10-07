@@ -116,7 +116,7 @@ def test_review_row_born_live_and_repeatably_answerable(store: Store, project: s
     )
     assert q.status == "live"
 
-    r1 = store.answer(q.key, project=project, selected=["pass"])
+    r1 = store.answer(q.key, project=project, selected=["fail"])
     assert r1.status == "live"
     r2 = store.answer(q.key, project=project, selected=["fail"])
     assert r2.status == "live"
@@ -336,7 +336,7 @@ def test_heard_state_sent_heard_responded_and_restart(store: Store, project: str
     store.mark_heard(q.id)  # nothing to hear yet
     assert store.get(q.key, project=project).heard_at is None
 
-    store.answer(q.key, project=project, selected=["pass"])
+    store.answer(q.key, project=project, selected=["fail"])
     assert store.get(q.key, project=project).heard_state == "sent"
 
     store.mark_heard(q.id)
@@ -352,7 +352,7 @@ def test_heard_state_sent_heard_responded_and_restart(store: Store, project: str
 
 def test_mark_heard_moves_forward_past_latest_verdict_only(store: Store, project: str) -> None:
     q = _live_review(store, project)
-    store.answer(q.key, project=project, selected=["pass"])
+    store.answer(q.key, project=project, selected=["fail"])
     first = store.mark_heard(q.id)
     stamp, touched = first.heard_at, first.updated_at
 
@@ -368,7 +368,7 @@ def test_mark_heard_moves_forward_past_latest_verdict_only(store: Store, project
 
 def test_mark_heard_bumps_cursor_and_ignores_other_acts(store: Store, project: str) -> None:
     q = _live_review(store, project)
-    store.answer(q.key, project=project, selected=["pass"])
+    store.answer(q.key, project=project, selected=["fail"])
     before = store.cursor()
     store.mark_heard(q.id)
     assert store.cursor() != before
@@ -385,7 +385,7 @@ def test_heard_columns_do_not_change_monitor_signature(store: Store, project: st
     from cactus.monitor import _signature
 
     q = _live_review(store, project)
-    store.answer(q.key, project=project, selected=["pass"])
+    store.answer(q.key, project=project, selected=["fail"])
     sig = _signature(store.get(q.key, project=project))
     store.mark_heard(q.id)
     store.mark_responded(q.id)
@@ -493,7 +493,7 @@ def _later(db: str, delay: float, fn) -> "threading.Thread":
 def test_wait_returns_on_new_verdict_for_live_review(store: Store, project: str) -> None:
     q = store.ask("check", project=project, cwd=project, agent=AGENT, act="review",
                   kind="confirm", choices=[Choice("pass"), Choice("fail")])
-    t = _later(store.path, 0.3, lambda s: s.answer(q.key, project=project, selected=["pass"]))
+    t = _later(store.path, 0.3, lambda s: s.answer(q.key, project=project, selected=["fail"]))
     got = store.wait_for_answer(q.key, project=project, timeout=10, poll=0.05)
     t.join()
     assert got is not None and got.status == "live" and len(got.answers) == 1
@@ -617,3 +617,75 @@ def test_projects_stale_count_and_pane_stale_keys(store: Store, project: str) ->
     assert row["stale_count"] == 1
     panes = {p["pane"]: p["stale"] for p in store.project_panes(project)["panes"]}
     assert panes == {"w1:p1": [old.key], "w1:p2": []}
+
+
+# ---- pass closes a review row (q601) ----------------------------------------
+
+
+def test_pass_closes_review_row_and_keeps_the_verdict(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    r = store.answer(q.key, project=project, selected=["pass"])
+    assert r.status == "cleared" and r.closed_by_pass
+    assert r.answer is not None and r.answer.selected == ["pass"]
+    again = store.get(q.key, project=project)
+    assert again.status == "cleared" and len(again.answers) == 1
+
+
+def test_fail_text_and_skip_leave_review_live(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    assert store.answer(q.key, project=project, selected=["fail"]).status == "live"
+    assert store.answer(q.key, project=project, text="needs work").status == "live"
+    r = store.answer(q.key, project=project, skipped=True)
+    assert r.status == "live" and not r.closed_by_pass
+
+
+def test_pass_only_closes_review_rows(store: Store, project: str) -> None:
+    data = store.ask("d", project=project, cwd=project, agent="a1", kind="choice",
+                     act="data", choices=[Choice("pass", "body")])
+    assert store.answer(data.key, project=project, selected=["pass"]).status == "live"
+    plain = store.ask("p", project=project, cwd=project, agent="a1", kind="choice",
+                      choices=[Choice("pass"), Choice("fail")])
+    r = store.answer(plain.key, project=project, selected=["pass"])
+    assert r.status == "answered" and not r.closed_by_pass
+
+
+def test_pass_after_fail_closes_and_undo_uncovers_the_fail(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    store.answer(q.key, project=project, selected=["fail"])
+    store.answer(q.key, project=project, selected=["pass"])
+    r = store.reopen(q.key, project=project, withdraw_pass=True)
+    assert r.status == "live" and not r.closed_by_pass
+    assert [a.selected for a in r.answers] == [["fail"]]
+
+
+def test_undo_of_pass_withdraws_the_verdict_and_goes_live(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    store.answer(q.key, project=project, selected=["pass"])
+    r = store.reopen(q.key, project=project, withdraw_pass=True)
+    assert r.status == "live" and r.answers == [] and r.last_change is None
+    # Exactly the state before the pass: it can be passed again.
+    assert store.answer(q.key, project=project, selected=["pass"]).status == "cleared"
+
+
+def test_plain_reopen_of_pass_closed_row_keeps_the_verdict(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    store.answer(q.key, project=project, selected=["pass"])
+    r = store.reopen(q.key, project=project)
+    assert r.status == "live" and len(r.answers) == 1 and not r.closed_by_pass
+
+
+def test_ordinary_clear_is_not_a_pass_and_withdraw_flag_is_ignored(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    store.answer(q.key, project=project, selected=["fail"])
+    store.clear(keys=[q.key], project=project)
+    assert not store.get(q.key, project=project).closed_by_pass
+    r = store.reopen(q.key, project=project, withdraw_pass=True)
+    assert r.status == "live" and len(r.answers) == 1
+
+
+def test_wait_returns_when_pass_closes_a_live_review(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    t = _later(store.path, 0.3, lambda s: s.answer(q.key, project=project, selected=["pass"]))
+    got = store.wait_for_answer(q.key, project=project, timeout=10, poll=0.05)
+    t.join()
+    assert got is not None and got.status == "cleared" and got.answer.selected == ["pass"]

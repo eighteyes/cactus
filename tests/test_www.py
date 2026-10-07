@@ -83,3 +83,12 @@ def test_foreign_host_is_403_and_localhost_is_200(www) -> None:
     req, port, q, store = www
     assert req("GET", "/api/feed", headers={"Host": "evil.example"})[0] == 403
     assert req("GET", "/api/feed", headers={"Host": f"localhost:{port}"})[0] == 200
+
+
+def test_answer_pass_on_review_row_closes_it(www) -> None:
+    req, port, q, store = www
+    rq = store.ask("check", project=q.project, cwd=q.project, act="review", kind="confirm", agent="a1")
+    body = json.dumps({"key": rq.key, "project": rq.project, "selected": ["pass"]})
+    status, _ = req("POST", "/api/answer", body, {"Content-Type": "application/json"})
+    assert status == 200
+    assert store.get(rq.key, project=rq.project).status == "cleared"

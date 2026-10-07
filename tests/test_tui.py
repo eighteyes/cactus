@@ -469,6 +469,92 @@ async def test_view_edit_two_file_row_digit_picks_the_file(
     assert f"{q.key} has no file" not in app.flash
 
 
+async def test_view_two_file_row_opens_fzf_list_with_the_files(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_FZF", str(script))
+
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    store.ask("two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.file_pending is None
+
+    assert log.read_text().strip() == f"{one} {two}"
+
+
+async def test_edit_two_file_row_still_arms_digit_pick_with_fzf_on(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_FZF", str(script))
+
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    store.ask("two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("F")
+        await pilot.pause()
+        assert app.file_pending == "edit"
+
+    assert not log.exists()
+
+
+async def test_view_one_file_row_skips_fzf(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_FZF", str(script))
+    pager, pager_log = _logging_script(tmp_path / "p") if (tmp_path / "p").mkdir() is None else (None, None)
+    monkeypatch.setenv("CACTUS_PAGER", f"{pager} {{path}}")
+
+    target = tmp_path / "a.txt"
+    target.write_text("hi")
+    store.ask("one file", project=project, cwd=project, agent=AGENT, files=[str(target)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+
+    assert not log.exists()
+    assert pager_log.read_text().strip() == str(target)
+
+
+async def test_view_two_file_row_without_fzf_arms_digit_pick(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CACTUS_FZF", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))  # no fzf anywhere
+
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    store.ask("two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.file_pending == "view"
+
+
 async def test_view_file_disarmed_by_an_unrelated_key(
     store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2186,7 +2272,7 @@ async def test_verdict_dims_card_sent_then_heard_then_normal(store: Store, proje
         await pilot.pause()
         assert _card_classes(app) == (False, False)
 
-        store.answer(q.key, project=project, selected=["pass"])
+        store.answer(q.key, project=project, selected=["fail"])
         await app._reload(force=True)
         await pilot.pause()
         assert _card_classes(app) == (True, False)
@@ -2273,7 +2359,7 @@ async def test_finished_prompt_on_plan_and_review(store: Store, project: str) ->
             await pilot.press("j")
             await pilot.pause()
         assert prompt not in str(app.query_one("#card-text", Static).content)
-        store.answer(rq.key, project=project, selected=["pass"])
+        store.answer(rq.key, project=project, selected=["fail"])
         await app._reload(force=True)
         await pilot.pause()
         assert prompt in str(app.query_one("#card-text", Static).content)
@@ -3097,3 +3183,34 @@ async def test_projects_page_poke_names_stale_keys_for_owning_pane_only(
     assert sent["w1:p1"].startswith(PROJECT_POKE_MESSAGE)
     assert f"Stale (untouched 24h+): {old.key}" in sent["w1:p1"]
     assert sent["w1:p2"] == PROJECT_POKE_MESSAGE
+
+
+async def test_pass_closes_review_and_u_restores_it_live_without_the_verdict(
+    store: Store, project: str
+) -> None:
+    rq = _review(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        got = store.get(rq.key, project=project)
+        assert got.status == "cleared" and got.answer.selected == ["pass"]
+
+        await pilot.press("u")
+        await pilot.pause()
+        got = store.get(rq.key, project=project)
+        assert got.status == "live" and got.answers == []
+
+
+async def test_fail_leaves_review_live_with_the_finished_prompt(
+    store: Store, project: str
+) -> None:
+    rq = _review(store, project)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+        assert store.get(rq.key, project=project).status == "live"
+        assert "finished? x closes it" in str(app.query_one("#card-text", Static).content)

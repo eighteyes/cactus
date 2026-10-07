@@ -830,7 +830,9 @@ def cmd_undo(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     """Withdraw the latest answer or verdict on an answered or live row (TUI `u`).
 
     A human verb: no ownership gate. It cannot recall an answer an agent
-    already read. A cleared row restores through `reopen`, which is gated.
+    already read. A cleared row restores through `reopen`, which is gated —
+    except a review row its own pass verdict closed (q601, `closed_by_pass`):
+    that undo withdraws the pass and puts the row back `live`.
     """
     ref = _human_ref(args, store, project)
     if isinstance(ref, int):
@@ -840,15 +842,15 @@ def cmd_undo(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     if q is None:
         print(f"cactus: no such question: {args.key}", file=sys.stderr)
         return EXIT_EMPTY
-    if q.status == "cleared":
+    if q.status == "cleared" and not q.closed_by_pass:
         print(f"cactus: {q.key} is cleared; restore it with `cactus reopen {q.key} --agent ID`",
               file=sys.stderr)
         return EXIT_ERROR
-    if q.status not in ("answered", "live") or q.answer is None:
+    if (q.status not in ("answered", "live") or q.answer is None) and not q.closed_by_pass:
         print(f"cactus: {q.key} has no answer to undo", file=sys.stderr)
         return EXIT_ERROR
     try:
-        q = store.reopen(rkey, project=rproj)
+        q = store.reopen(rkey, project=rproj, withdraw_pass=True)
     except KeyError as exc:
         print(f"cactus: {_msg(exc)}", file=sys.stderr)
         return EXIT_EMPTY

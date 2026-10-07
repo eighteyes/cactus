@@ -407,7 +407,7 @@ def test_garden_prints_path_and_clear_removes_file(cli, scratch_env):
 
 def _heard_review(cli, agent=AGENT_A):
     assert cli("ask", "check it", "--act", "review", "--agent", agent).returncode == 0
-    assert cli("answer", "q1", "-s", "pass").returncode == 0
+    assert cli("answer", "q1", "-s", "fail").returncode == 0
 
 
 def _heard_state(store, project, key="q1"):
@@ -855,3 +855,29 @@ def test_stale_row_marks_text_and_json(cli, scratch_env, project) -> None:
     assert row["stale"] is True
     assert row["idle_hours"] == pytest.approx(60, abs=0.2)
     assert f"{key}\topen\tstale 2d\t" in cli("list").stdout
+
+
+def test_answer_pass_closes_review_row_and_get_shows_the_verdict(cli):
+    cli("ask", "check", "--act", "review", "--no-wait", "--agent", AGENT_A)
+    assert cli("answer", "q1", "-s", "pass").returncode == 0
+    row = _row(cli)
+    assert row["status"] == "cleared"
+    assert row["answer"]["selected"] == ["pass"]
+
+
+def test_answer_fail_keeps_review_row_live(cli):
+    cli("ask", "check", "--act", "review", "--no-wait", "--agent", AGENT_A)
+    cli("answer", "q1", "-s", "fail")
+    assert _row(cli)["status"] == "live"
+
+
+def test_undo_of_pass_closed_review_restores_live_without_the_verdict(cli):
+    cli("ask", "check", "--act", "review", "--no-wait", "--agent", AGENT_A)
+    cli("answer", "q1", "-s", "pass")
+    r = cli("undo", "q1", "--json")
+    assert r.returncode == 0
+    out = json.loads(r.stdout)
+    assert out["status"] == "live" and not out.get("answer")
+    # The ordinary-clear refusal still holds.
+    cli("clear", "q1", "--agent", AGENT_A)
+    assert cli("undo", "q1").returncode == 1
