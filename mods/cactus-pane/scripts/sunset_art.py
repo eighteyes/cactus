@@ -22,7 +22,8 @@ def noise(x, y):
 
 SKY = ['#4b2a6b', '#6e2f6e', '#9a3468', '#c4405e', '#e05a4f', '#f07f45', '#f9a640']
 SUN_C = '#ffd166'
-CACTUS_C = '#2f7d4a'
+CACTUS_C = '#3f9a5c'
+CACTUS_SHADE = '#24603a'
 GROUND_C = '#8a5a3c'
 
 
@@ -36,6 +37,53 @@ def cactus(x, y):
     rcap = 26 <= x <= 28 and y == 8
     rbar = 22 <= x <= 29 and 17 <= y <= 20
     return y < DH and (trunk or cap or larm or lcap or lbar or rarm or rcap or rbar)
+
+
+# Light comes from the sun on the right: each part fades from lit (right edge)
+# to shadow (left edge). Outline dots always draw so the silhouette holds.
+PARTS = {
+    'trunk': (17, 22, 0.25, 1.0),
+    'larm': (10, 14, 0.15, 0.55),
+    'lbar': (10, 17, 0.15, 0.55),
+    'rarm': (25, 29, 0.5, 0.95),
+    'rbar': (22, 29, 0.5, 0.95),
+}
+
+
+def part(x, y):
+    if 17 <= x <= 22 and 5 <= y or 18 <= x <= 21 and y == 4:
+        return 'trunk'
+    if 10 <= x <= 14 and 13 <= y <= 23 or 11 <= x <= 13 and y == 12:
+        return 'larm'
+    if 10 <= x <= 17 and 21 <= y <= 24:
+        return 'lbar'
+    if 25 <= x <= 29 and 9 <= y <= 19 or 26 <= x <= 28 and y == 8:
+        return 'rarm'
+    if 22 <= x <= 29 and 17 <= y <= 20:
+        return 'rbar'
+    return None
+
+
+# Interior columns, left (shadow) to right (lit): how many dots of every 4
+# rows draw. Vertical stripes keep the shading clean at this size.
+COLUMNS = {
+    'trunk': {18: 1, 19: 4, 20: 2, 21: 4},
+    'larm': {11: 1, 12: 2, 13: 1},
+    'lbar': {11: 1, 12: 1, 13: 1, 14: 1, 15: 1, 16: 1},
+    'rarm': {26: 2, 27: 4, 28: 3},
+    'rbar': {23: 3, 24: 3, 25: 3, 26: 3, 27: 4, 28: 3},
+}
+STIPPLE = {1: (0,), 2: (0, 2), 3: (0, 1, 2), 4: (0, 1, 2, 3)}
+
+
+def cactus_dot(x, y):
+    """None outside the cactus, else whether this dot draws."""
+    if y >= DH or not cactus(x, y):
+        return None
+    if any(not cactus(x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+        return True
+    n = COLUMNS[part(x, y)].get(x, 4)
+    return (y + x) % 4 in STIPPLE[n]
 
 
 def sun(x, y):
@@ -66,16 +114,20 @@ def cell(cx, cy):
     bits = {'cactus': 0, 'sun': 0, 'sky': 0, 'ground': 0}
     for dx, dy, bit in DOTS:
         x, y = cx * 2 + dx, cy * 4 + dy
-        if cactus(x, y):
-            bits['cactus'] |= bit
+        on = cactus_dot(x, y)
+        if on is not None:
+            if on:
+                bits['cactus'] |= bit
+            bits['shade'] = bits.get('shade', 0) + (0 if on else 1)
         elif sun(x, y):
             bits['sun'] |= bit
         elif y < HORIZON and sky_on(x, y):
             bits['sky'] |= bit
         elif y >= HORIZON and ground_on(x, y):
             bits['ground'] |= bit
-    if bits['cactus']:
-        return chr(0x2800 | bits['cactus']), CACTUS_C
+    if bits['cactus'] or bits.get('shade'):
+        lit = bin(bits['cactus']).count('1') >= 5
+        return chr(0x2800 | bits['cactus']), CACTUS_C if lit else CACTUS_SHADE
     if bits['sun']:
         return chr(0x2800 | bits['sun']), SUN_C
     if bits['sky']:
