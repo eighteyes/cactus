@@ -133,7 +133,7 @@ Keep one tests/test_<module>.py per src module.
 Cite the deciding cactus row key (qNNN) in comments that explain a design choice.
 
 - scope: `src/cactus/*.py`, `hooks/*.sh`
-- exemplar: hooks/stop-fork.sh:14
+- exemplar: hooks/stop_fork.py:14
 - below bar: widespread (94 hits across src/cactus/*.py and hooks/*.sh) but a citation habit, not checkable behavior
 
 *from-future-annotations*
@@ -158,4 +158,4 @@ Read stdin into $input, exit 0 silently when cactus or jq is missing, and exit 0
 
 - scope: `hooks/*.sh`, `plugins/cactus/hooks/*.sh`
 - exemplar: plugins/cactus/hooks/stop.sh:6
-- below bar: 4 exceptions: hooks/identity.sh (sourced library, reads the caller's $input); hooks/pretooluse_wait.py (no `command -v cactus` check, no project-status gate); hooks/session-start.sh and hooks/stop-fork.sh (use jq, never run `command -v jq`)
+- below bar: 4 exceptions: hooks/cactus_identity.py (imported helper module); hooks/pretooluse_wait.py (no `command -v cactus` check, no project-status gate); hooks/session_start.py and hooks/stop_fork.py (no jq)

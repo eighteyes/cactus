@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/frontier.sh\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/frontier.py\"",
             "timeout": 10
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"",
             "timeout": 10
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/permission-denied.sh\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/permission_denied.py\"",
             "timeout": 10
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-fork.sh\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/stop_fork.py\"",
             "timeout": 10
           }
         ]

@@ -4,8 +4,8 @@ test_hooks.py — exercises the Claude Code and Codex plugin hook scripts end to
 Responsibilities:
 - Build a `cactus` shim on PATH that runs this checkout's CLI against a
   scratch database, and an environment with real HERDR_* identity stripped.
-- Drive each hook script (`hooks/*.sh` for Claude Code, `plugins/cactus/hooks/*.sh`
-  for Codex) with `bash script.sh` and JSON on stdin, the way the real host does.
+- Drive each hook script (`hooks/*.py` for Claude Code with `python3`,
+  `plugins/cactus/hooks/*.sh` for Codex with `bash`) with JSON on stdin, the way the real host does.
 - Check the disabled-project path is silent (or says so) for every hook, the
   enabled path produces the documented output, and a project disabled with
   `cactus project ignore` is not read as enabled by a stray jq `false` value.
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -57,7 +58,7 @@ def hook_env(tmp_path: Path, scratch_env: dict[str, str]) -> dict[str, str]:
     env.update(scratch_env)
     env["PYTHONPATH"] = str(SRC)
     env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
-    # permission-denied.sh dedupes tool_use_id through a state file under
+    # permission_denied.py dedupes tool_use_id through a state file under
     # $XDG_STATE_HOME; scope it to this test so a run never dedupes against
     # (or pollutes) the developer's real ~/.local/state/cactus.
     env["XDG_STATE_HOME"] = str(tmp_path / "xdg-state")
@@ -86,21 +87,21 @@ def list_all(cli, project: str) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
-# Root plugin (Claude Code): hooks/*.sh, identity via CACTUS_AGENT/herdr
+# Root plugin (Claude Code): hooks/*.py, identity via CACTUS_AGENT/herdr
 # --------------------------------------------------------------------------
 
 
 def test_root_disabled_project_is_silent(cli, hook_env, project):
     cli("project", "ignore", cwd=project)
 
-    start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
+    start = run_hook(ROOT_HOOKS / "session_start.py", {"cwd": project}, hook_env, project)
     assert "disabled" in start.stdout
     assert "cactus project activate" in start.stdout
 
-    frontier = run_hook(ROOT_HOOKS / "frontier.sh", {"cwd": project}, hook_env, project)
+    frontier = run_hook(ROOT_HOOKS / "frontier.py", {"cwd": project}, hook_env, project)
     assert frontier.stdout.strip() == ""
 
-    stop = run_hook(ROOT_HOOKS / "stop-fork.sh", {}, hook_env, project)
+    stop = run_hook(ROOT_HOOKS / "stop_fork.py", {}, hook_env, project)
     assert stop.stdout.strip() == ""
 
     denied_env = dict(hook_env)
@@ -111,7 +112,7 @@ def test_root_disabled_project_is_silent(cli, hook_env, project):
         "denial_reason": "test",
         "cwd": project,
     }
-    denied = run_hook(ROOT_HOOKS / "permission-denied.sh", payload, denied_env, project)
+    denied = run_hook(ROOT_HOOKS / "permission_denied.py", payload, denied_env, project)
     assert denied.stdout.strip() == ""
     assert list_all(cli, project) == []
 
@@ -121,7 +122,7 @@ def test_root_enabled_project(cli, hook_env, project):
     agent = "root-session-1"
     hook_env = dict(hook_env, CACTUS_AGENT=agent)
 
-    start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
+    start = run_hook(ROOT_HOOKS / "session_start.py", {"cwd": project}, hook_env, project)
     # q430: the backgrounded wait is the wake; no monitor, no push line.
     assert "--monitor" not in start.stdout
     assert "its exit is your wake-up" in start.stdout
@@ -132,10 +133,10 @@ def test_root_enabled_project(cli, hook_env, project):
     key = asked.stdout.strip()
     assert key
 
-    frontier = run_hook(ROOT_HOOKS / "frontier.sh", {"cwd": project}, hook_env, project)
+    frontier = run_hook(ROOT_HOOKS / "frontier.py", {"cwd": project}, hook_env, project)
     assert key in frontier.stdout
 
-    stop = run_hook(ROOT_HOOKS / "stop-fork.sh", {}, hook_env, project)
+    stop = run_hook(ROOT_HOOKS / "stop_fork.py", {}, hook_env, project)
     assert stop.stdout.strip() == ""
 
     before = list_all(cli, project)
@@ -146,7 +147,7 @@ def test_root_enabled_project(cli, hook_env, project):
         "denial_reason": "auto-mode denied it",
         "cwd": project,
     }
-    denied = run_hook(ROOT_HOOKS / "permission-denied.sh", payload, hook_env, project)
+    denied = run_hook(ROOT_HOOKS / "permission_denied.py", payload, hook_env, project)
     assert denied.returncode == 0
     after = list_all(cli, project)
     assert len(after) == len(before) + 1
@@ -166,11 +167,11 @@ def test_root_ignore_not_fooled_by_false(cli, hook_env, project):
     agent = "root-session-2"
     hook_env = dict(hook_env, CACTUS_AGENT=agent)
 
-    assert run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project).stdout.count(
+    assert run_hook(ROOT_HOOKS / "session_start.py", {"cwd": project}, hook_env, project).stdout.count(
         "disabled"
     ) >= 1
-    assert run_hook(ROOT_HOOKS / "frontier.sh", {"cwd": project}, hook_env, project).stdout.strip() == ""
-    assert run_hook(ROOT_HOOKS / "stop-fork.sh", {}, hook_env, project).stdout.strip() == ""
+    assert run_hook(ROOT_HOOKS / "frontier.py", {"cwd": project}, hook_env, project).stdout.strip() == ""
+    assert run_hook(ROOT_HOOKS / "stop_fork.py", {}, hook_env, project).stdout.strip() == ""
     payload = {
         "tool_name": "Bash",
         "tool_input": {"command": "echo nope"},
@@ -178,7 +179,7 @@ def test_root_ignore_not_fooled_by_false(cli, hook_env, project):
         "denial_reason": "test",
         "cwd": project,
     }
-    denied = run_hook(ROOT_HOOKS / "permission-denied.sh", payload, hook_env, project)
+    denied = run_hook(ROOT_HOOKS / "permission_denied.py", payload, hook_env, project)
     assert denied.stdout.strip() == ""
     assert list_all(cli, project) == []
 
@@ -287,7 +288,7 @@ def test_stop_hooks_do_not_require_monitor(cli, hook_env, project):
 
     on = dict(hook_env, CACTUS_AGENT=agent)
     payload = {"session_id": agent, "cwd": project}
-    script = ROOT_HOOKS / "stop-fork.sh"
+    script = ROOT_HOOKS / "stop_fork.py"
     assert run_hook(script, payload, on, project).stdout.strip() == ""
     # The Codex Stop hook never blocks for open rows: an idle Codex session
     # has no wake-up (q342), so a block would repeat on every stop.
@@ -308,7 +309,7 @@ def _transcript(tmp_path: Path, *assistant_content: dict) -> str:
 
 def test_stop_hook_on_by_default_holds_a_turn_without_an_ask(hook_env, project, tmp_path):
     env = dict(hook_env)
-    script = ROOT_HOOKS / "stop-fork.sh"
+    script = ROOT_HOOKS / "stop_fork.py"
     bare = {"cwd": project, "transcript_path": _transcript(tmp_path, {"type": "text", "text": "done"})}
     held = run_hook(script, bare, env, project)
     assert json.loads(held.stdout)["decision"] == "block"
@@ -320,7 +321,7 @@ def test_stop_hook_on_by_default_holds_a_turn_without_an_ask(hook_env, project, 
 
 
 def test_stop_hook_counts_edit_plan_review_as_posting_the_fork(hook_env, project, tmp_path):
-    script = ROOT_HOOKS / "stop-fork.sh"
+    script = ROOT_HOOKS / "stop_fork.py"
     for cmd in ("cactus edit q1 --agent a --text x", "cac plan q1 --agent a", "cactus review q1"):
         payload = {"cwd": project, "transcript_path": _transcript(
             tmp_path, {"type": "tool_use", "name": "Bash", "input": {"command": cmd}})}
@@ -418,36 +419,43 @@ def test_wait_guard_is_registered_on_bash():
     assert "pretooluse_wait.py" in entry["hooks"][0]["command"]
 
 
-def test_wait_guard_is_python_with_a_literal_launcher():
-    # The plugin validator cannot read shell expansions: the hook is a python
-    # file named by a literal python3 command, and the file runs nothing itself.
+def test_every_hook_is_python_with_a_literal_launcher():
+    # The plugin validator cannot read shell expansions: each hook is a python
+    # file named by a literal python3 command, and no hook file uses a shell.
     cfg = json.loads((ROOT_HOOKS / "hooks.json").read_text())
-    command = cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert command == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse_wait.py"'
-    assert not (ROOT_HOOKS / "pretooluse-wait.sh").exists()
-    src = (ROOT_HOOKS / "pretooluse_wait.py").read_text()
-    for banned in ("subprocess", "os.system", "os.popen", "shell=True"):
-        assert banned not in src, banned
+    commands = [h["command"] for entries in cfg["hooks"].values() for e in entries for h in e["hooks"]]
+    assert len(commands) == 5
+    for command in commands:
+        m = re.fullmatch(r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/([a-z_]+\.py)"', command)
+        assert m, command
+        assert (ROOT_HOOKS / m.group(1)).is_file(), command
+    assert not list(ROOT_HOOKS.glob("*.sh"))
+    for script in ROOT_HOOKS.glob("*.py"):
+        src = script.read_text()
+        for banned in ("os.system", "os.popen", "shell=True"):
+            assert banned not in src, (script.name, banned)
+    # The wait guard launches nothing at all.
+    assert "subprocess" not in (ROOT_HOOKS / "pretooluse_wait.py").read_text()
 
 
 def test_session_start_waits_on_the_denied_row_instead_of_reposting(hook_env, project):
     # q21/q22: the PermissionDenied hook posts the run row itself; an agent
     # told to post its own produced a second approval whose run failed.
     hook_env = dict(hook_env, CACTUS_AGENT="root-session-1")
-    start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
+    start = run_hook(ROOT_HOOKS / "session_start.py", {"cwd": project}, hook_env, project)
     assert "-t denied" in start.stdout
     assert "get KEY --wait" in start.stdout
     assert "only when no such row exists" in start.stdout
 
 
 def test_hooks_spell_project_status_one_way():
-    for script in [*ROOT_HOOKS.glob("*.sh"), *CODEX_HOOKS.glob("*.sh")]:
+    for script in [*ROOT_HOOKS.glob("*.py"), *CODEX_HOOKS.glob("*.sh")]:
         assert "cactus project status" not in script.read_text(), script.name
 
 
 def test_stop_hook_is_silent_while_the_agent_has_an_open_row(hook_env, project, tmp_path, cli):
     # q469: a fork already waiting on the human is the fork; nothing to post.
-    script = ROOT_HOOKS / "stop-fork.sh"
+    script = ROOT_HOOKS / "stop_fork.py"
     transcript = _transcript(tmp_path, {"type": "text", "text": "done"})
     mine = {"cwd": project, "session_id": "s1", "transcript_path": transcript}
     other = {"cwd": project, "session_id": "s2", "transcript_path": transcript}
@@ -489,12 +497,12 @@ def _backdate(env: dict[str, str], key: str, hours: float) -> None:
 def test_session_start_lists_stale_rows_only_when_there_are_some(cli, hook_env, project):
     hook_env = dict(hook_env, CACTUS_AGENT="root-session-1")
     fresh = cli("ask", "fresh one", "-c", "a", "-c", "b", "--no-wait", "--agent", "other-agent-xyz", cwd=project).stdout.strip()
-    start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
+    start = run_hook(ROOT_HOOKS / "session_start.py", {"cwd": project}, hook_env, project)
     assert "Stale cactus rows" not in start.stdout
 
     old = cli("ask", "old question\nsecond line", "-c", "a", "-c", "b", "--no-wait", "--agent", "other-agent-xyz", cwd=project).stdout.strip()
     _backdate(hook_env, old, 60)
-    start = run_hook(ROOT_HOOKS / "session-start.sh", {"cwd": project}, hook_env, project)
+    start = run_hook(ROOT_HOOKS / "session_start.py", {"cwd": project}, hook_env, project)
     assert "Stale cactus rows" in start.stdout
     assert "the human clears them" in start.stdout
     line = next(ln for ln in start.stdout.splitlines() if ln.startswith(f"  {old}  "))

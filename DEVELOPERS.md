@@ -23,7 +23,7 @@ Agents write rows, humans answer them, one SQLite file between them. Dependency 
       acp.py         ACP form-elicitation bridge onto blocking rows
       field.py sky.py fieldproc.py garden.py   decorative sky + seed garden
       rank.py decide.py clef_serve.py          auto-decider (proposes, never answers)
-    hooks/           Claude plugin hooks (hooks.json, identity.sh, stop-fork.sh, frontier.sh ...)
+    hooks/           Claude plugin hooks (hooks.json, cactus_identity.py, stop_fork.py, frontier.py ...)
     plugins/cactus/  Codex plugin: hooks/ (hooks.json, session-start, frontier, stop, permission-request), tests/test-hooks.sh
     server/cactus-mcp  MCP launcher, referenced by .mcp.json
     scripts/package-plugin.sh  builds the Claude Desktop plugin bundle
@@ -49,7 +49,7 @@ Run from the checkout against a scratch inbox. Never the default DB: it is the l
 
 ## Conventions
 
-- New files open with a name / description / Responsibilities header (`src/cactus/poke.py`, `hooks/stop-fork.sh`). Older files lack one (`plugins/cactus/hooks/*.sh`, `src/cactus/acp.py`).
+- New files open with a name / description / Responsibilities header (`src/cactus/poke.py`, `hooks/stop_fork.py`). Older files lack one (`plugins/cactus/hooks/*.sh`, `src/cactus/acp.py`).
 - `Store` is the only SQLite caller. Read-then-insert runs under `BEGIN IMMEDIATE` (`src/cactus/store.py:897`). Multi-write state changes share one transaction so pollers never see half (`:1013`).
 - cli validates and gates ownership; Store stays mechanism (`_refuse_if_not_owner`, `src/cactus/cli.py:968`).
 - Exit codes: 0 ok, 1 error, 2 `--wait` timeout, 3 no match (`src/cactus/cli.py:30`). argparse errors forced to 1 (`_ArgumentParser`, `cli.py:1617`).
@@ -60,8 +60,8 @@ Run from the checkout against a scratch inbox. Never the default DB: it is the l
 - After-commit side effects fail soft: records and delivery never roll back the write (`store.py:1597 _record`; `cli.py:749`).
 - Shared config writes are atomic temp + `os.replace` (`poke.py:125 write_delivery`).
 - Renames keep an alias (`poke_webhook_if_mapped = deliver_if_mapped`, `poke.py:183`).
-- Decisions cite the row key: `q469` in `hooks/stop-fork.sh`, `q430` in CLAUDE.md.
-- Hooks read stdin into `$input` before sourcing `identity.sh`. Most exit 0 when `cactus` is missing or `cactus project-status --json` says disabled; Codex `session-start.sh` prints a disabled line instead.
+- Decisions cite the row key: `q469` in `hooks/stop_fork.py`, `q430` in CLAUDE.md.
+- Hooks read stdin into `input` before importing `cactus_identity`. Most exit 0 when `cactus` is missing or `cactus project-status --json` says disabled; Codex `session-start.sh` prints a disabled line instead.
 
 Full list: [docs/conventions.md](docs/conventions.md). Terms: [docs/glossary.md](docs/glossary.md).
 
@@ -100,16 +100,16 @@ No DB change. Verb: `cactus deliver [herdr | webhook URL | off] --agent ID`.
 
 **Hook frontier + Stop gate**
 
-    Claude  hooks/hooks.json Stop -> hooks/stop-fork.sh
+    Claude  hooks/hooks.json Stop -> hooks/stop_fork.py
       CACTUS_STOP_HOOK=0 -> exit
       no `cactus` -> exit
       project-status disabled -> exit
-      identity.sh cactus_resolve_agent      payload session_id > herdr > CACTUS_AGENT
-      cactus list -s open --agent ID        open row in this project -> silent (q469, stop-fork.sh:38); live/elaborate don't count
+      cactus_identity.py resolve_agent      payload session_id > herdr > CACTUS_AGENT
+      cactus list -s open --agent ID        open row in this project -> silent (q469, stop_fork.py); live/elaborate don't count
       stop_hook_active -> silent
       turn opened by task-notification / cross-session message -> silent
       else transcript has cactus ask|edit|plan|review or AskUserQuestion -> silent
-      else {"decision":"block",...}         stop-fork.sh:185
+      else {"decision":"block",...}         stop_fork.py
 
     Codex   plugins/cactus/hooks/frontier.sh (UserPromptSubmit, mod-mode substitute)
       cactus list -s any --agent ID --json

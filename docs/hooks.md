@@ -8,11 +8,11 @@ Registered in `hooks/hooks.json`. Scripts live in `hooks/`.
 
 | Event | Script | Prints | Blocks |
 |---|---|---|---|
-| SessionStart | `session-start.sh` | The required workflow, `Your cactus identity for this session: --agent ID`, a rehome count, open rows for the project. Disabled project: one reactivate line. | Never. |
-| UserPromptSubmit | `frontier.sh` | `cactus frontier (--agent ID):`, then elaborate, answered, open/live rows with gist and verdict, a `... N more: cactus list -s any --agent ID` line past the cap, then a counts line. | Never. |
+| SessionStart | `session_start.py` | The required workflow, `Your cactus identity for this session: --agent ID`, a rehome count, open rows for the project. Disabled project: one reactivate line. | Never. |
+| UserPromptSubmit | `frontier.py` | `cactus frontier (--agent ID):`, then elaborate, answered, open/live rows with gist and verdict, a `... N more: cactus list -s any --agent ID` line past the cap, then a counts line. | Never. |
 | PreToolUse (Bash) | `pretooluse_wait.py` | `cactus ask/run waits for the human by default; rerun with run_in_background: true. Its exit wakes you.` | Exit 2 on a foreground `cactus ask` or `cactus run` that would wait. |
-| PermissionDenied (Bash) | `permission-denied.sh` | Nothing. Posts the denied command as `cactus run CMD --no-wait -t denied`, once per `tool_use_id` (deduped in `$XDG_STATE_HOME/cactus/denied-ID`). | Never. |
-| Stop | `stop-fork.sh` | `{"decision":"block","reason":"the turn ended without a fork; ..."}` | See Stop below. |
+| PermissionDenied (Bash) | `permission_denied.py` | Nothing. Posts the denied command as `cactus run CMD --no-wait -t denied`, once per `tool_use_id` (deduped in `$XDG_STATE_HOME/cactus/denied-ID`). | Never. |
+| Stop | `stop_fork.py` | `{"decision":"block","reason":"the turn ended without a fork; ..."}` | See Stop below. |
 
 **SessionStart.** Resolves identity, then runs `cactus rehome --agent ID` to move rows this pane posted under a previous identity. Rehome needs both `HERDR_PANE_ID` and `HERDR_SESSION`; outside herdr it does nothing. No identity: prints a line asking the agent to pick one stable `--agent`.
 
@@ -32,13 +32,13 @@ Registered in `hooks/hooks.json`. Scripts live in `hooks/`.
 
 ### Identity
 
-`hooks/identity.sh` resolves `--agent` for every Claude hook. Order:
+`hooks/cactus_identity.py` resolves `--agent` for every Claude hook. Order:
 
 1. `session_id` from the hook payload.
 2. herdr's view of the pane, when `HERDR_PANE_ID` is set (`c100-identity --resolve`, else `herdr agent get`).
 3. `CACTUS_AGENT`.
 
-The payload wins: after `/clear`, herdr still reports the previous conversation's id (q327). Each hook that sources `identity.sh` reads stdin into `input` first.
+The payload wins: after `/clear`, herdr still reports the previous conversation's id (q327). Each hook that imports `cactus_identity.py` reads stdin into `input` first.
 
 ## Codex
 
@@ -70,7 +70,7 @@ Delivery registration: [delivery.md](delivery.md).
 | Variable | Host | Effect |
 |---|---|---|
 | `CACTUS_STOP_HOOK` | both | `0` disables the Stop hook. On by default. |
-| `CACTUS_AGENT` | Claude | Last-resort `--agent` in `identity.sh`. |
+| `CACTUS_AGENT` | Claude | Last-resort `--agent` in `cactus_identity.py`. |
 | `HERDR_PANE_ID` | both | Claude: enables the herdr identity tier (also needs `herdr` on PATH); with `HERDR_SESSION`, gates `cactus rehome`. Codex: SessionStart registers herdr delivery. |
 | `HERDR_SESSION` | Claude | With `HERDR_PANE_ID`, gates `cactus rehome`. |
-| `CACTUS_FRONTIER_MAX` | Claude | Rows `frontier.sh` lists. Default 5. |
+| `CACTUS_FRONTIER_MAX` | Claude | Rows `frontier.py` lists. Default 5. |

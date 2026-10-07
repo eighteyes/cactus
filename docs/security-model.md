@@ -10,13 +10,13 @@ cactus is a single-user, local tool. One person's machine, one SQLite inbox, man
 	browser -> www	/api/answer, /api/clear, /api/reopen, /api/poke	loopback by default (--host overrides); no auth	src/cactus/www.py:12, :675; src/cactus/cli.py:1642
 	human -> shell	a run row's command, a review's run_cmd	explicit keypress (TUI R, cactus exec)	src/cactus/shell.py:56
 	answer -> agent	delivery map entry: webhook POST or herdr prompt	entry must exist for the row's owner	src/cactus/poke.py:149
-	hook payload -> identity	session_id from the harness	none; taken as given	hooks/identity.sh:18
+	hook payload -> identity	session_id from the harness	none; taken as given	hooks/cactus_identity.py:18
 
 **Identity**
 
 - `--agent ID` is a self-declared string. No token, no signature.
 - Required on `ask`, `run`, `edit`, `deliver`, `rehome`, `--monitor`, and bulk `clear` (src/cactus/cli.py:462, :563, :909, :1301, :1852, :2002).
-- Hooks resolve it: payload `session_id`, then herdr's view of `HERDR_PANE_ID`, then `CACTUS_AGENT` (hooks/identity.sh:18).
+- Hooks resolve it: payload `session_id`, then herdr's view of `HERDR_PANE_ID`, then `CACTUS_AGENT` (hooks/cactus_identity.py:18).
 - Any local process can claim any id.
 
 **Authorization**
@@ -56,7 +56,7 @@ These gates stop agents colliding. They are not access control: the id they comp
 
 **Stop hook**
 
-- hooks/stop-fork.sh exits silent when the resolved agent has an `open` row in the current project (hooks/stop-fork.sh:37-39). `live` and `elaborate` do not count. No resolved identity: no check.
+- hooks/stop_fork.py exits silent when the resolved agent has an `open` row in the current project (hooks/stop_fork.py:37-39). `live` and `elaborate` do not count. No resolved identity: no check.
 - plugins/cactus/hooks/stop.sh (Codex) counts `open`, `live`, `elaborate`; it never blocks.
 - `CACTUS_STOP_HOOK=0` turns both off.
 

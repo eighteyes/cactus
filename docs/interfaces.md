@@ -137,21 +137,21 @@ No `deliver` tool.
 
 ## Hooks (events consumed)
 
-Claude plugin: `hooks/hooks.json`. Codex plugin: `plugins/cactus/hooks/hooks.json`. Hooks exit 0 silently when `cactus` is missing; most also when `jq` is missing (not `hooks/stop-fork.sh`, `hooks/session-start.sh`) and when `cactus project-status` reports the project disabled. Both SessionStart hooks print `Cactus is disabled for this project. ...` instead.
+Claude plugin: `hooks/hooks.json`. Codex plugin: `plugins/cactus/hooks/hooks.json`. Hooks exit 0 silently when `cactus` is missing; most also when `jq` is missing (not `hooks/stop_fork.py`, `hooks/session_start.py`) and when `cactus project-status` reports the project disabled. Both SessionStart hooks print `Cactus is disabled for this project. ...` instead.
 
 | Host | Event | Script | Does | Errors / exit | Site |
 |---|---|---|---|---|---|
-| Claude | SessionStart | `hooks/session-start.sh` | prints the workflow, `--agent ID`, rehomes this pane's rows (`cactus rehome`), lists open rows | none; disabled project prints `Cactus is disabled for this project. ...` (points at `cactus project activate`) | `hooks/session-start.sh:19`, `:42` |
-| Claude | UserPromptSubmit | `hooks/frontier.sh` | prints up to `CACTUS_FRONTIER_MAX` (5) rows: elaborate, answered, open/live, with verdicts, then a counts line | none; silent on no identity or no rows | `hooks/frontier.sh:30` |
+| Claude | SessionStart | `hooks/session_start.py` | prints the workflow, `--agent ID`, rehomes this pane's rows (`cactus rehome`), lists open rows | none; disabled project prints `Cactus is disabled for this project. ...` (points at `cactus project activate`) | `hooks/session_start.py:19`, `:42` |
+| Claude | UserPromptSubmit | `hooks/frontier.py` | prints up to `CACTUS_FRONTIER_MAX` (5) rows: elaborate, answered, open/live, with verdicts, then a counts line | none; silent on no identity or no rows | `hooks/frontier.py:30` |
 | Claude | PreToolUse (Bash) | `hooks/pretooluse_wait.py` | refuses a foreground `cactus ask\|run` that would wait; passes `run_in_background`, `--no-wait`, `--no-block`, non-waiting acts | exit 2, stderr `cactus ask/run waits for the human by default; rerun with run_in_background: true. Its exit wakes you.` | `hooks/pretooluse_wait.py:134` |
-| Claude | PermissionDenied (Bash) | `hooks/permission-denied.sh` | posts the denied command as `cactus run --no-wait -t denied`, once per `tool_use_id` | none; post failures discarded | `hooks/permission-denied.sh:44` |
-| Claude | Stop | `hooks/stop-fork.sh` | silent when `CACTUS_STOP_HOOK=0`, or when `cactus list -s open --agent ID --json` is non-empty (q469; `live`/`elaborate` do not count); else blocks a human-opened turn with no `cactus ask\|edit\|plan\|review` or AskUserQuestion: `{"decision":"block","reason":"the turn ended without a fork; ..."}` | without `jq` the open-row check reads 0 and the hook can still block | `hooks/stop-fork.sh:38`, `:185` |
+| Claude | PermissionDenied (Bash) | `hooks/permission_denied.py` | posts the denied command as `cactus run --no-wait -t denied`, once per `tool_use_id` | none; post failures discarded | `hooks/permission_denied.py:44` |
+| Claude | Stop | `hooks/stop_fork.py` | silent when `CACTUS_STOP_HOOK=0`, or when `cactus list -s open --agent ID --json` is non-empty (q469; `live`/`elaborate` do not count); else blocks a human-opened turn with no `cactus ask\|edit\|plan\|review` or AskUserQuestion: `{"decision":"block","reason":"the turn ended without a fork; ..."}` | without `jq` the open-row check reads 0 and the hook can still block | `hooks/stop_fork.py:38`, `:185` |
 | Codex | SessionStart | `plugins/cactus/hooks/session-start.sh` | with `HERDR_PANE_ID` set, runs `cactus deliver herdr --agent SESSION_ID` and prints `Cactus registered herdr delivery for ID: answers prompt this pane.`; prints the mod-mode line and open rows | deliver failure: no registration line; disabled project prints `Cactus is disabled for this project. ...` | `plugins/cactus/hooks/session-start.sh:18` |
 | Codex | UserPromptSubmit | `plugins/cactus/hooks/frontier.sh` | the mod-mode substitute: reads `cactus list -s any --agent ID --json`, prints up to five rows (elaborate, answered, open/live) with the latest answer (`— answer: LABELS — TEXT` or `— skipped; use the stated default`), then `cactus clear KEY --agent ID` for each printed answered row whose act is not review, plan or data | none | `plugins/cactus/hooks/frontier.sh:17`, `:59` |
 | Codex | PermissionRequest (Bash) | `plugins/cactus/hooks/permission-request.sh` | posts the command as `cactus run --no-wait`, then denies: `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Cactus approval KEY was opened. ..."}}}` | post fails: no output, Codex's own prompt stands | `plugins/cactus/hooks/permission-request.sh:17`, `:19` |
 | Codex | Stop | `plugins/cactus/hooks/stop.sh` | never blocks (no idle wake in Codex) | none | `plugins/cactus/hooks/stop.sh:23` |
 
-Agent id: Codex hooks use the payload `session_id`. Claude hooks resolve payload `session_id`, then herdr, then `CACTUS_AGENT` (`hooks/identity.sh:35`).
+Agent id: Codex hooks use the payload `session_id`. Claude hooks resolve payload `session_id`, then herdr, then `CACTUS_AGENT` (`hooks/cactus_identity.py:35`).
 
 ## Environment
 
@@ -162,8 +162,8 @@ Agent id: Codex hooks use the payload `session_id`. Claude hooks resolve payload
 | `CACTUS_POKE_WEBHOOKS` | delivery map path | `src/cactus/poke.py:82` |
 | `CACTUS_VISIT` | `v` visit template (`{pane}`) | `src/cactus/poke.py:358` |
 | `CACTUS_RECORDS` | `0` disables decision records | `src/cactus/cli.py:188` |
-| `CACTUS_STOP_HOOK` | `0` disables the Claude Stop hook | `hooks/stop-fork.sh:24` |
-| `CACTUS_AGENT` | last-resort hook identity; MCP default agent; `ask --by` default | `hooks/identity.sh:35`, `src/cactus/mcp.py:64` |
+| `CACTUS_STOP_HOOK` | `0` disables the Claude Stop hook | `hooks/stop_fork.py:24` |
+| `CACTUS_AGENT` | last-resort hook identity; MCP default agent; `ask --by` default | `hooks/cactus_identity.py:35`, `src/cactus/mcp.py:64` |
 | `CACTUS_PROJECT` | MCP default project (else home) | `src/cactus/mcp.py:68` |
 | `CACTUS_MCP_MAX_WAIT` | MCP wait clamp, seconds (default 50) | `src/cactus/mcp.py:73` |
 | `HERDR_PANE_ID` | Codex session start registers herdr delivery only when set | `plugins/cactus/hooks/session-start.sh:18` |

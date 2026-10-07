@@ -339,19 +339,18 @@ scope.
   that agent's rows of that thread the same way any other `agent` filter
   does — no separate mechanism, `_scope_where`'s thread clause and `list`'s
   `agent` clause already AND together.
-- Hook identity (`hooks/identity.sh`, q327) resolves the hook payload's
+- Hook identity (`hooks/cactus_identity.py`, q327) resolves the hook payload's
   `session_id` first, then herdr's view of the pane, then `CACTUS_AGENT`.
   herdr infers a conversation id from the transcript file, which at
   SessionStart after `/clear` does not exist yet, so it answers with the
   previous conversation's id and the whole session posts under a dead
-  owner. Every root hook reads stdin into `input` before sourcing
-  identity.sh; nothing else may consume stdin first.
-- Both Stop hooks (`hooks/stop-fork.sh`, `plugins/cactus/hooks/stop.sh`) are
+  owner. Every root hook reads stdin into `input` before resolving identity; nothing else may consume stdin first.
+- Both Stop hooks (`hooks/stop_fork.py`, `plugins/cactus/hooks/stop.sh`) are
   on by default (q411): they exit 0 before reading stdin only when
   `CACTUS_STOP_HOOK=0`. The Claude hook holds a turn opened by a human prompt
   that posted none of `cactus ask`, `edit`, `plan`, `review` or
   AskUserQuestion; the Codex hook never blocks. The Claude hook also stays
-  silent while the agent (`identity.sh`) has an `open` row in the project
+  silent while the agent (`cactus_identity.py`) has an `open` row in the project
   (q469): that fork is already waiting on the human. `live` and `elaborate`
   do not count — a standing plan/review would mute it for good, and an
   elaborate row waits on the agent.
@@ -565,7 +564,7 @@ scope.
   of the three `open_*` actions stays reachable via `check_action` no
   matter which of the three is currently open.
 - The projects pane (q349/q352, `#projects-pane`) is a due-ranked preview
-  beside the rail — every enabled project, one line each, `▸ label  N due`,
+  beside the rail — every enabled project with something due (plus the pinned one), one line each, `▸ label  N due`,
   ranked by `due_count` like `projects()` itself, current project marked
   `▸`. Left of `#rail` inside `#body`, so it never shifts the rail's own
   fixed-height rows — it lives in its own column, not stacked above them.
