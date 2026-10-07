@@ -107,7 +107,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     await ui.press({ key: 'q7:local' })
     expect(calls).toContainEqual(['cactus', 'answer', 'q7', '-s', 'local'])
-    expect(await ui.find({ text: /Inbox empty/ })).toBeDefined()
+    expect(await ui.find({ text: /Cactus inbox empty/ })).toBeDefined()
+    expect(await ui.find({ text: /Decisions incoming/ })).toBeDefined()
   })
 
   test(`a multi row sends every pick (${surface})`, async ($, on) => {

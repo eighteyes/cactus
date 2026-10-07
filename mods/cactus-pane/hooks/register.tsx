@@ -416,6 +416,21 @@ async function select($: EngineInterface, key: string): Promise<void> {
 }
 
 // Keep the open question's header in view.
+// The empty inbox: a saguaro under the sun. Each line is [text, colour] runs.
+const SUN = 'yellow'
+const CACTUS = 'green'
+const SAND = 'yellowBright'
+const DESERT: [string, string | undefined][][] = [
+  [['      ,*-.       ', CACTUS], ['\\ | /', SUN]],
+  [['      |  |       ', CACTUS], ['- o -', SUN]],
+  [['  ,.  |  |       ', CACTUS], ['/ | \\', SUN]],
+  [['  | |_|  | ,.', CACTUS]],
+  [['  `---.  |_| |', CACTUS]],
+  [['      |  .--`', CACTUS]],
+  [['      |  |', CACTUS]],
+  [['.,.,.,', SAND], ['|  |', CACTUS], ['.,.,..,.,.,.,', SAND]],
+]
+
 // cactus's own idle label: whole days from 48h up, else whole hours.
 function idleLabel(hours: number): string {
   const h = Math.floor(hours)
@@ -862,7 +877,21 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {failed !== null && <Text color="red">{failed}</Text>}
-        {list.length === 0 && <Text dimColor>Inbox empty.</Text>}
+        {list.length === 0 && (
+          <Box key="empty" flexDirection="column">
+            <Text bold>Cactus inbox empty.</Text>
+            <Text dimColor>Decisions incoming...</Text>
+            <Box flexDirection="column" marginTop={1}>
+              {DESERT.map((line, i) => (
+                <Text key={String(i)}>
+                  {line.map(([part, color], j) => (
+                    <Text key={String(j)} color={color}>{part}</Text>
+                  ))}
+                </Text>
+              ))}
+            </Box>
+          </Box>
+        )}
         {above > 0 && <Text dimColor>  ↑ {above} more (k)</Text>}
         {list.slice(above, above + LIST_WINDOW).map(row => {
           const isCurrent = row === current
