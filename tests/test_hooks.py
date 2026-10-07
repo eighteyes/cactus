@@ -156,6 +156,19 @@ def test_root_enabled_project(cli, hook_env, project):
     assert new_rows[0]["act"] == "run"
 
 
+def test_frontier_hook_off_switch(cli, hook_env, project):
+    cli("project", "activate", cwd=project)
+    agent = "root-session-off"
+    hook_env = dict(hook_env, CACTUS_AGENT=agent)
+    asked = cli("ask", "--no-wait", "pick a lane", "--agent", agent, "-c", "left", "-c", "right", cwd=project)
+    key = asked.stdout.strip()
+    assert key in run_hook(ROOT_HOOKS / "frontier.py", {"cwd": project}, hook_env, project).stdout
+    off = dict(hook_env, CACTUS_FRONTIER_HOOK="0")
+    assert run_hook(ROOT_HOOKS / "frontier.py", {"cwd": project}, off, project).stdout == ""
+    codex = {"session_id": agent, "cwd": project}
+    assert run_hook(CODEX_HOOKS / "frontier.sh", codex, off, project).stdout == ""
+
+
 def test_root_ignore_not_fooled_by_false(cli, hook_env, project):
     cli("project", "activate", cwd=project)
     cli("project", "ignore", cwd=project)

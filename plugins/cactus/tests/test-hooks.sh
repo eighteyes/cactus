@@ -22,6 +22,8 @@ frontier=$(cd "$repo_root" && printf '%s\n' "$input" \
 grep -F 'Cactus mod mode (plugin loaded)' <<<"$frontier"
 grep -F "$key open Choose the test path" <<<"$frontier"
 
+test -z "$(printf '%s\n' "$input" | CACTUS_FRONTIER_HOOK=0 bash plugins/cactus/hooks/frontier.sh)"
+
 cd "$repo_root"
 cactus answer "$key" -s safe >/dev/null
 frontier=$(printf '%s\n' "$input" | bash plugins/cactus/hooks/frontier.sh)

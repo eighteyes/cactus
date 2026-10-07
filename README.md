@@ -141,6 +141,7 @@ PermissionRequest  Codex         post the requested command as a `cactus run` ro
 ```
 
 Stop is on by default; `CACTUS_STOP_HOOK=0` silences both Stop hooks.
+`CACTUS_FRONTIER_HOOK=0` silences both frontier (UserPromptSubmit) hooks.
 
 ### CLI
 

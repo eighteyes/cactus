@@ -369,6 +369,8 @@ scope.
   (q469): that fork is already waiting on the human. `live` and `elaborate`
   do not count — a standing plan/review would mute it for good, and an
   elaborate row waits on the agent.
+- Both frontier hooks (`hooks/frontier.py`, `plugins/cactus/hooks/frontier.sh`)
+  exit 0 before reading stdin when `CACTUS_FRONTIER_HOOK=0`; on by default.
 - `cactus rehome --agent NEW` (q208) is gated to rows stamped with the
   caller's own `HERDR_PANE_ID`/`HERDR_SESSION` — missing either refuses (exit
   1) rather than guessing which rows are "mine". Scoped to the current

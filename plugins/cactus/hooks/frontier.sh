@@ -5,6 +5,7 @@
 #   - inject the mod-mode workflow line and this agent's frontier each user turn
 #   - print each row's full latest answer, so an answer reaches Codex here
 #   - clear answered one-shot rows, but only the ones printed this turn
+#   - stay silent (exit 0) when CACTUS_FRONTIER_HOOK=0, before reading stdin
 # Codex has no live pane and no way for an extension to start a turn, so this
 # hook does the mod's job on the next prompt; herdr delivery (`cactus deliver`,
 # 185e58d) is the only external wake.
@@ -13,6 +14,8 @@
 # session_id in the payload, project-status not disabled, `cactus list` OK.
 set -u
 
+# On by default; CACTUS_FRONTIER_HOOK=0 opts out.
+[ "${CACTUS_FRONTIER_HOOK:-1}" = "0" ] && exit 0
 input=$(cat)
 command -v cactus >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0

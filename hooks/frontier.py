@@ -5,6 +5,7 @@
 #   - stay silent when cactus is not installed, no identity resolves, or the agent has no rows
 #   - list the agent's rows awaiting elaboration first, then answered-but-not-cleared (acted-on backlog), then open
 #   - cap the listing at CACTUS_FRONTIER_MAX rows (default 5), key and gist each, and close with one counts line
+#   - stay silent (exit 0) when CACTUS_FRONTIER_HOOK=0, before reading stdin
 # Python 3 stdlib only; calls the cactus CLI by argv.
 import os
 import shutil
@@ -42,6 +43,9 @@ def hint(row):
 
 
 def main():
+    # On by default; CACTUS_FRONTIER_HOOK=0 opts out.
+    if os.environ.get("CACTUS_FRONTIER_HOOK", "1") == "0":
+        return 0
     if not shutil.which("cactus"):
         return 0
     payload = ident.read_stdin()
