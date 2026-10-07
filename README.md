@@ -171,7 +171,7 @@ cactus --version
 ```
 
 `f`/`F` in the TUI preview (pager) / edit (editor) a row's attached file; a
-row with more than one arms a digit pick.
+row with more than one lists its files in fzf for `f` (digit pick for `F`, or without fzf).
 
 Full reference: `cactus --agent-help`.
 

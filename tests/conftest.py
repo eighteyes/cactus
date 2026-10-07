@@ -49,6 +49,7 @@ def scratch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, st
         "CACTUS_OPEN": "true {url}",
         "CACTUS_PAGER": "true {path}",
         "CACTUS_EDITOR": "true {path}",
+        "CACTUS_FZF": "off",
         "CACTUS_RECORDS": "0",
         "CACTUS_SKY": str(tmp_path / "sky.toml"),
         "CACTUS_RANK": "off",

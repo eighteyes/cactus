@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -155,6 +156,82 @@ def view(path: str) -> str:
     """Preview `path` in a pager: CACTUS_PAGER, else PAGER, else `less`."""
     template = os.environ.get("CACTUS_PAGER") or os.environ.get("PAGER") or "less"
     return _run_program(template, path)
+
+
+def _have(program: str) -> bool:
+    return shutil.which(program) is not None
+
+
+def fzf_available() -> bool:
+    """Whether a multi-file view can open an fzf list.
+
+    CACTUS_FZF is a command template: `off` disables the list, any other
+    value enables it, unset falls back to `fzf` on PATH.
+    """
+    override = os.environ.get("CACTUS_FZF")
+    if override:
+        return override.strip().lower() != "off"
+    return _have("fzf")
+
+
+def _fzf_preview() -> str:
+    """Shell snippet fzf runs per highlighted `{}`: diff vs HEAD, else a render."""
+    plain = "cat" if not _have("bat") else "bat --color=always --style=numbers"
+    md = "glow -s dark" if _have("glow") else plain
+    return (
+        'f={}; d=$(dirname "$f"); '
+        'out=$(git -C "$d" diff --color=always HEAD -- "$f" 2>/dev/null); '
+        'if [ -n "$out" ]; then printf "%s\\n" "$out"; '
+        f'else case "$f" in *.md) {md} "$f";; *) {plain} "$f";; esac; fi'
+    )
+
+
+def _fzf_open() -> str:
+    """Shell snippet bound to enter: the full pager for the highlighted `{}`."""
+    pager = os.environ.get("CACTUS_PAGER")
+    if pager:
+        return f"{pager} {{}}" if "{path}" not in pager else pager.replace("{path}", "{}")
+    md = "glow -p {}" if _have("glow") else None
+    other = "bat --paging=always {}" if _have("bat") else (
+        f"{os.environ.get('PAGER') or 'less'} {{}}"
+    )
+    return f'case {{}} in *.md) {md or other};; *) {other};; esac'
+
+
+def pick_file(files: list[str]) -> str:
+    """List `files` in fzf with a preview; enter pages one, esc returns.
+
+    CACTUS_FZF overrides the command: a template split with shlex, each
+    `{files}` argument expanded to every path (paths are appended when none
+    carries it). Otherwise runs fzf with the paths on stdin. Inherits the tty.
+    Returns a short description of what ran.
+    """
+    override = os.environ.get("CACTUS_FZF")
+    try:
+        if override:
+            argv = shlex.split(override)
+            if not argv:
+                raise ShellError("no program configured")
+            if "{files}" in argv:
+                at = argv.index("{files}")
+                argv = [*argv[:at], *files, *argv[at + 1:]]
+            else:
+                argv = [*argv, *files]
+            subprocess.call(argv)
+        else:
+            argv = [
+                "fzf", "--preview", _fzf_preview(),
+                "--preview-window", "right,60%",
+                "--bind", f"enter:execute({_fzf_open()})",
+            ]
+            subprocess.run(
+                argv, input="\n".join(files) + "\n", text=True, stdout=subprocess.DEVNULL
+            )
+    except FileNotFoundError:
+        raise ShellError(f"{argv[0]}: not found") from None
+    except OSError as exc:
+        raise ShellError(f"{argv[0]}: {exc}") from exc
+    return f"{argv[0]} {len(files)} files"
 
 
 def edit(path: str) -> str:
