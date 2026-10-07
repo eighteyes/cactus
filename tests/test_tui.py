@@ -49,6 +49,7 @@ from cactus import garden
 from cactus.field import World
 from cactus.fieldproc import ProcessField, text_rows
 from cactus.store import Choice, Store
+from cactus.scope import project_label
 from cactus.tui import CactusApp, FieldView, QuestionBlock
 
 # The projects pane (P / I / A) is a separate change; until it lands these
@@ -1038,6 +1039,21 @@ async def test_projects_pane_shows_due_ranked_projects_marks_current(
     # still carries the ▸ marker even though it isn't first.
     assert lines[0].strip().endswith("3")
     assert any(l.startswith("▸") and l.strip().endswith("1") for l in lines)
+
+
+async def test_projects_pane_hides_projects_with_nothing_due(
+    store: Store, project: str, tmp_path: Path
+) -> None:
+    quiet = str(tmp_path / "quiet")
+    done = store.ask("old", project=quiet, cwd=quiet, agent=AGENT)
+    store.clear(keys=[done.key], project=quiet, record=False)
+    store.ask("still due", project=project, cwd=project, agent=AGENT)
+    app = CactusApp(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = str(app.query_one("#projects-pane", Static).content)
+    assert project_label(project) in text
+    assert project_label(quiet) not in text
 
 
 @needs_sublists

@@ -1255,7 +1255,11 @@ class CactusApp(App[int]):
         pane.display = visible
         if not visible:
             return
-        rows = [r for r in self.store.projects() if r["enabled"]]
+        # Same rule as the projects page: something due, or the pinned one.
+        rows = [
+            r for r in self.store.projects()
+            if r["enabled"] and (r["due_count"] or r["project"] == self.scoped_project)
+        ]
         lines = []
         for row in rows:
             marker = "▸" if row["project"] == self.current_project else " "
