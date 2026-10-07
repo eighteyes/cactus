@@ -112,6 +112,9 @@ type Moved = { row: Row; text: string; clears: boolean; heard: boolean }
 function describe(row: Row): Moved {
   const last = row.answers[row.answers.length - 1]
   const asked = `${row.key} ${firstLine(row.text)}`
+  if (row.status === 'cleared' && row.closed_by_pass === true && last !== undefined) {
+    return { row, text: `${asked}\n  verdict: ${verdict(last)}\n  (the pass closed it)`, clears: false, heard: false }
+  }
   if (row.status === 'cleared') {
     return { row, text: `${asked}\n  declined: the human cleared it`, clears: false, heard: false }
   }

@@ -45,6 +45,8 @@ export type Row = {
   // Untouched past CACTUS_STALE_HOURS (cactus stale rows); absent on older cactus.
   stale?: boolean
   idle_hours?: number
+  // A review a pass closed (q601): cleared by the verdict, not by a decline.
+  closed_by_pass?: boolean
 }
 
 declare module 'claude-code' {

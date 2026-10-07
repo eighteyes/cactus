@@ -301,3 +301,32 @@ test('a fresh row has no stale mark', async ($, on) => {
   const ui = await mounted($, on, ROW, calls, 'terminal')
   expect(await ui.find({ key: 'q7:stale' })).toBeUndefined()
 })
+
+test('a pass that closed a review wakes with the verdict, not a decline', async ($, on) => {
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const choices = [{ label: 'pass', description: null }, { label: 'fail', description: null }]
+  const review = { ...ROW, act: 'review', kind: 'choice', status: 'live', choices, recommend: null, confidence: null, answers: [] as typeof ROW.answers }
+  const closed = { ...review, status: 'cleared', closed_by_pass: true, answers: [{ selected: ['pass'], text: null, skipped: false, created_at: 't' }] }
+  let served: unknown = review
+  let n = 0
+  on('process.run', (_$, e) => {
+    if (e.argv.includes('answer')) served = closed
+    n += 1
+    return { value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n }, questions: [served] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.focus', () => ({}))
+  await $.command.run(RUN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'q7:pass' })
+  const all = woke.join('\n')
+  expect(all).toContain('verdict: pass')
+  expect(all).not.toContain('declined')
+})
