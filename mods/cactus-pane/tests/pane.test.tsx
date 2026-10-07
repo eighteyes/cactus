@@ -331,3 +331,31 @@ test('a pass that closed a review wakes with the verdict, not a decline', async 
   expect(all).toContain('verdict: pass')
   expect(all).not.toContain('declined')
 })
+
+async function emptyPane($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], bodyColumns: number) {
+  on('process.run', () => ({
+    value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n: 0 }, questions: [] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.command.run(RUN)
+  return $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns }, surface: 'terminal' })
+}
+
+test('the empty inbox draws the sunset to the pane width, art first', async ($, on) => {
+  const ui = await emptyPane($, on, 60)
+  expect(await ui.find({ key: 'sunset' })).toBeDefined()
+  const lines: string[] = []
+  for (let i = 0; i < 9; i++) lines.push((await ui.find({ key: `sunset:${i}` }))?.text ?? '')
+  expect(lines.every(l => l !== '')).toBe(true)
+  expect(Math.max(...lines.map(l => [...l].length))).toBeLessThanOrEqual(60)
+  expect(Math.max(...lines.map(l => [...l].length))).toBeGreaterThan(48)
+  expect(await ui.find({ text: /Cactus inbox empty/ })).toBeDefined()
+})
+
+test('a pane too narrow for the sunset shows only the words', async ($, on) => {
+  const ui = await emptyPane($, on, 16)
+  expect(await ui.find({ key: 'sunset' })).toBeUndefined()
+  expect(await ui.find({ text: /Decisions incoming/ })).toBeDefined()
+})
