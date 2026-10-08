@@ -429,6 +429,7 @@ async function select($: EngineInterface, key: string): Promise<void> {
 // sparse shadow column), and casts a long ground shadow away from it.
 const ART_ROWS = 9
 const ART_MIN_COLUMNS = 20
+const GROVE_STALKS = 3
 const HORIZON = 28
 const SKY_COLOURS = ['#4b2a6b', '#6e2f6e', '#9a3468', '#c4405e', '#e05a4f', '#f07f45', '#f9a640']
 const SUN_COLOUR = '#ffd166'
@@ -467,19 +468,21 @@ function saguaro(): Part[] {
   ]
 }
 
-// A stand of single stalks bunched on the right, past the sun: each lit on
+// Three single stalks bunched on the right, past the sun: each lit on
 // the side facing it (west), shadowed on the east, heights from the hash.
 // Tallest first, so a shorter stalk in front keeps its own outline.
 function grove(dotWidth: number, sunX: number): Part[] {
   const out: Part[] = []
   // Even columns only: every stalk then splits into braille cells the same way.
-  let x = Math.max(sunX + 14, Math.round(dotWidth * 0.7)) & ~1
-  while (x + 4 <= dotWidth - 2) {
+  // Laid right to left from the pane's edge; a stalk too close to the sun is
+  // dropped, so a narrow pane gets fewer.
+  let x = (dotWidth - 9) & ~1
+  for (let i = 0; i < GROVE_STALKS && x >= sunX + 12; i++) {
     const top = 6 + Math.floor(noise(x, 99) * 15)
     const lit = x + 2 < sunX
     const cols = lit ? { [x + 1]: 1, [x + 2]: 4, [x + 3]: 3 } : { [x + 1]: 3, [x + 2]: 4, [x + 3]: 1 }
     out.push({ rects: [[x, x + 4, top, 99], [x + 1, x + 3, top - 1, top - 1]], cols, base: [x, x + 4] })
-    x += 6 + 2 * Math.floor(noise(x, 7) * 2)
+    x -= 6 + 2 * Math.floor(noise(x, 7) * 2)
   }
   return out.sort((p, q) => (q.rects[0]?.[2] ?? 0) - (p.rects[0]?.[2] ?? 0))
 }
