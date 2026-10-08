@@ -1058,7 +1058,15 @@ export const register: Register = on => {
                     void enterOnOpen($, row)
                   }}
                 />
-                <Text color={ACT_COLOUR[row.act] ?? 'white'}>{row.act.padEnd(6)}</Text>
+                {/* Sent back for a rewrite (elaborate or break up): the agent owes
+                    the next move, so the act reads wait.. until it answers. */}
+                <Box key={`${row.key}:act`}>
+                  {row.status === 'elaborate' ? (
+                    <Text color="yellow">{'wait..'.padEnd(6)}</Text>
+                  ) : (
+                    <Text color={ACT_COLOUR[row.act] ?? 'white'}>{row.act.padEnd(6)}</Text>
+                  )}
+                </Box>
                 {row.stale === true && (
                   <Box key={`${row.key}:stale`}>
                     <Text dimColor>stale {idleLabel(row.idle_hours ?? 0)}</Text>

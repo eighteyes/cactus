@@ -399,3 +399,15 @@ test('enter on the header sends a typed note kept as a draft', async ($, on) => 
   await ui.press({ key: 'q7:sel' })
   expect(calls).toContainEqual(['cactus', 'answer', 'q7', 'go with whatever is cheaper'])
 })
+
+test('a row sent back for a rewrite reads wait.. in the list', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, { ...ROW, status: 'elaborate', elaborate: 'say what local costs' }, calls, 'terminal')
+  expect((await ui.find({ key: 'q7:act' }))?.text).toContain('wait..')
+})
+
+test('an open ask reads its act in the list', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  expect((await ui.find({ key: 'q7:act' }))?.text).toContain('ask')
+})
