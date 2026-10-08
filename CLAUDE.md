@@ -354,6 +354,15 @@ scope.
   that agent's rows of that thread the same way any other `agent` filter
   does — no separate mechanism, `_scope_where`'s thread clause and `list`'s
   `agent` clause already AND together.
+- `--www` auth (A1): a loopback bind has no token and is unchanged. Any other
+  bind (`--host tailscale` resolves `tailscale ip -4`) creates `www-token`
+  beside the database (0600, 32 urlsafe bytes), prints
+  `http://HOST:PORT/login?t=TOKEN` to stdout once, and, after `_guard`,
+  401s every route (SSE and POST included) lacking the `cactus_token` cookie.
+  `/login?t=` compares with `hmac.compare_digest`; a wrong or missing `t` is
+  401 with no cookie. The file is re-read per request, so `cactus www-token
+  --rotate` kills old cookies live. `log_message` stays silent so the token
+  never reaches stderr.
 - Hook identity (`hooks/cactus_identity.py`, q327) resolves the hook payload's
   `session_id` first, then herdr's view of the pane, then `CACTUS_AGENT`.
   herdr infers a conversation id from the transcript file, which at

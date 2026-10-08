@@ -9,18 +9,25 @@ Responsibilities:
 - Serialize every store call behind one lock: Store's sqlite3 connection is
   opened with the default check_same_thread=True, so a ThreadingHTTPServer
   handler thread cannot touch it directly without one.
-- Bind loopback only by default and perform no authentication — this is a
-  human's own machine reaching its own inbox, not a shared service.
+- Bind loopback only by default with no authentication — this is a human's
+  own machine reaching its own inbox. A non-loopback bind (a phone over
+  Tailscale) requires the `cactus_token` cookie on every route except
+  /login, which trades the `www-token` file's secret for that cookie.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
+import secrets
+import subprocess
 import sys
 import threading
 import time
 import webbrowser
-from urllib.parse import urlsplit
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -33,6 +40,53 @@ PING_INTERVAL = 15.0
 
 
 _LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+COOKIE_NAME = "cactus_token"
+COOKIE_MAX_AGE = 365 * 24 * 3600
+
+
+def is_loopback(host: str) -> bool:
+    return host.strip("[]").lower() in _LOOPBACK_HOSTS
+
+
+def token_path(db_path: Any) -> Path:
+    """The token file sits beside the database."""
+    return Path(db_path).parent / "www-token"
+
+
+def read_token(db_path: Any) -> str | None:
+    try:
+        return token_path(db_path).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def make_token(db_path: Any, rotate: bool = False) -> str:
+    """Return the stored token, creating it (0600) when missing or on rotate."""
+    if not rotate:
+        existing = read_token(db_path)
+        if existing:
+            return existing
+    path = token_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(token + "\n")
+    os.replace(tmp, path)
+    return token
+
+
+def tailscale_ip() -> str:
+    """The Mac's tailnet IPv4, from `tailscale ip -4`; ValueError when unavailable."""
+    try:
+        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"--host tailscale: cannot run tailscale ({exc})") from exc
+    ip = out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else ""
+    if out.returncode != 0 or not ip:
+        raise ValueError("--host tailscale: `tailscale ip -4` gave no address (is Tailscale up?)")
+    return ip
 
 
 def _msg(exc: BaseException) -> str:
@@ -460,6 +514,7 @@ class _Handler(BaseHTTPRequestHandler):
     # Set on the server instance: db_path, project.
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: D401 - silence per-request noise
+        # Silent on purpose: the default would print /login?t=TOKEN to stderr.
         pass
 
     # ---- helpers ----------------------------------------------------------
@@ -551,6 +606,52 @@ class _Handler(BaseHTTPRequestHandler):
                 return False
         return True
 
+    def _token(self) -> str | None:
+        """None on a loopback bind; else the token file's current value, so
+        `cactus www-token --rotate` kills old cookies without a restart."""
+        token = self.server.token  # type: ignore[attr-defined]
+        if token is None:
+            return None
+        return read_token(self.server.db_path) or token  # type: ignore[attr-defined]
+
+    def _authed(self) -> bool:
+        """True on a loopback bind, else when the cookie matches the token."""
+        token = self._token()
+        if token is None:
+            return True
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == COOKIE_NAME and hmac.compare_digest(value.encode(), token.encode()):
+                return True
+        return False
+
+    def _send_text(self, status: int, text: str, headers: dict[str, str] | None = None) -> None:
+        data = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_login(self) -> None:
+        token = self._token()
+        if token is None:
+            self._send_text(302, "", {"Location": "/"})
+            return
+        given = (parse_qs(urlsplit(self.path).query).get("t") or [""])[0]
+        if not hmac.compare_digest(given.encode(), token.encode()):
+            self._send_text(401, "unauthorized")
+            return
+        self._send_text(302, "", {
+            "Location": "/",
+            "Set-Cookie": f"{COOKIE_NAME}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={COOKIE_MAX_AGE}",
+        })
+
     def _error(self, exc: Exception) -> None:
         if isinstance(exc, (ValueError, KeyError, AlreadyAnswered, PokeError)):
             self._send_json(400, {"error": _msg(exc)})
@@ -562,6 +663,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - http.server's naming
         try:
             if not self._guard(post=False):
+                return
+            if urlsplit(self.path).path == "/login":
+                self._handle_login()
+                return
+            if not self._authed():
+                self._send_text(401, "unauthorized")
                 return
             if self.path == "/" or self.path.startswith("/?"):
                 self._send_html(PAGE)
@@ -579,6 +686,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             if not self._guard(post=True):
+                return
+            if not self._authed():
+                self._send_text(401, "unauthorized")
                 return
             if self.path == "/api/answer":
                 self._handle_answer()
@@ -712,8 +822,11 @@ class _Handler(BaseHTTPRequestHandler):
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr: tuple[str, int], db_path: Any, project: str | None) -> None:
+    def __init__(
+        self, addr: tuple[str, int], db_path: Any, project: str | None, token: str | None = None
+    ) -> None:
         super().__init__(addr, _Handler)
+        self.token = token  # None: loopback bind, no auth
         self.db_path = db_path
         self.project = project
         self.bind_host = addr[0]
@@ -738,9 +851,19 @@ def run_www(
     `store` is left open and closed by `cli.main`'s `finally`, same as every
     other surface.
     """
-    server = _Server((host, port), store.path, project)
+    if host.lower() == "tailscale":
+        try:
+            host = tailscale_ip()
+        except ValueError as exc:
+            print(f"cactus: {exc}", file=sys.stderr)
+            return 1
+    token = None if is_loopback(host) else make_token(store.path)
+    server = _Server((host, port), store.path, project, token)
     url = f"http://{host}:{port}"
     print(f"cactus: www on {url}", file=sys.stderr)
+    if token:
+        print(f"{url}/login?t={token}")
+        sys.stdout.flush()
     if open_browser:
         webbrowser.open(url)
     try:

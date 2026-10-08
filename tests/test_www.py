@@ -92,3 +92,76 @@ def test_answer_pass_on_review_row_closes_it(www) -> None:
     status, _ = req("POST", "/api/answer", body, {"Content-Type": "application/json"})
     assert status == 200
     assert store.get(rq.key, project=rq.project).status == "cleared"
+
+
+# ---- token auth on a non-loopback bind ------------------------------------
+
+from cactus.www import make_token, token_path  # noqa: E402
+
+
+@pytest.fixture
+def secured(store):
+    token = make_token(store.path)
+    server = _Server(("127.0.0.1", 0), store.path, None, token)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    port = server.server_address[1]
+
+    def req(method, path, body=None, headers=None):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        c.request(method, path, body=body, headers=headers or {})
+        r = c.getresponse()
+        data = r.read()
+        hdrs = dict(r.getheaders())
+        c.close()
+        return r.status, data, hdrs
+
+    yield req, token, store
+    server.shutdown()
+    server.server_close()
+
+
+def test_token_file_is_0600(store) -> None:
+    make_token(store.path)
+    assert oct(token_path(store.path).stat().st_mode & 0o777) == "0o600"
+
+
+def test_loopback_bind_needs_no_token(www) -> None:
+    req, port, q, store = www
+    assert req("GET", "/api/feed")[0] == 200
+
+
+def test_secured_routes_401_without_cookie(secured) -> None:
+    req, token, store = secured
+    assert req("GET", "/")[0] == 401
+    assert req("GET", "/api/feed")[0] == 401
+    assert req("GET", "/api/events")[0] == 401
+    st, _, _ = req("POST", "/api/answer", body="{}", headers={"Content-Type": "application/json"})
+    assert st == 401
+
+
+def test_login_wrong_or_missing_token_is_401_no_cookie(secured) -> None:
+    req, token, store = secured
+    for path in ("/login", "/login?t=", "/login?t=nope"):
+        st, _, hdrs = req("GET", path)
+        assert st == 401 and "Set-Cookie" not in hdrs
+
+
+def test_login_sets_cookie_and_unlocks(secured) -> None:
+    req, token, store = secured
+    st, _, hdrs = req("GET", f"/login?t={token}")
+    assert st == 302 and hdrs["Location"] == "/"
+    cookie = hdrs["Set-Cookie"]
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Max-Age=31536000" in cookie
+    pair = cookie.split(";")[0]
+    assert req("GET", "/api/feed", headers={"Cookie": pair})[0] == 200
+
+
+def test_rotate_invalidates_old_cookie(secured) -> None:
+    req, token, store = secured
+    pair = f"cactus_token={token}"
+    assert req("GET", "/api/feed", headers={"Cookie": pair})[0] == 200
+    new = make_token(store.path, rotate=True)
+    assert new != token
+    assert req("GET", "/api/feed", headers={"Cookie": pair})[0] == 401
+    assert req("GET", "/api/feed", headers={"Cookie": f"cactus_token={new}"})[0] == 200

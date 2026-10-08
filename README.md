@@ -150,7 +150,7 @@ Humans:
 ```sh
 cactus --tui          # answer the queue
 cactus --watch        # read-only feed
-cactus --www          # localhost web surface
+cactus --www          # localhost web surface (--host tailscale for a phone: token login, see `cactus www-token`)
 ```
 
 Agents:
