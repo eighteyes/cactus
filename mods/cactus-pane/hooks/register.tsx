@@ -310,10 +310,10 @@ async function runRow($: EngineInterface, key: string, isRunAct: boolean): Promi
 
 // The flip is the pane's alone: `cactus answer -s a -s b` already records
 // several picks on a choice row, so the row itself never changes.
-async function setFlip($: EngineInterface, key: string, on: boolean): Promise<void> {
+async function setFlip($: EngineInterface, key: string, flipOn: boolean): Promise<void> {
   await update($, flips, all => {
     const { [key]: _gone, ...rest } = all
-    return on ? { ...rest, [key]: true as const } : rest
+    return flipOn ? { ...rest, [key]: true as const } : rest
   })
   await update($, picks, all => {
     const { [key]: _gone, ...rest } = all
@@ -443,9 +443,9 @@ type Part = { rects: [number, number, number, number][]; cols: Record<number, nu
 
 // Fixed hash in [0, 1): the same art at the same width, every draw.
 function noise(x: number, y: number): number {
-  let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) >>> 0
-  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0
-  return ((h ^ (h >>> 16)) >>> 0) / 2 ** 32
+  let mix = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) >>> 0
+  mix = Math.imul(mix ^ (mix >>> 13), 1274126177) >>> 0
+  return ((mix ^ (mix >>> 16)) >>> 0) / 2 ** 32
 }
 
 // The armed saguaro on the left, lit from the right (the sun is east of it).
@@ -564,8 +564,8 @@ function sunsetAt(columns: number): [string, string | undefined][][] {
 
 // cactus's own idle label: whole days from 48h up, else whole hours.
 function idleLabel(hours: number): string {
-  const h = Math.floor(hours)
-  return h >= 48 ? `${Math.floor(h / 24)}d` : `${h}h`
+  const whole = Math.floor(hours)
+  return whole >= 48 ? `${Math.floor(whole / 24)}d` : `${whole}h`
 }
 
 async function pinTop($: EngineInterface, key: string): Promise<void> {
