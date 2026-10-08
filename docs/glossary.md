@@ -102,10 +102,10 @@ deliver
 **Hooks**
 
 identity
-: Hook agent id: payload `session_id`, then herdr, then `CACTUS_AGENT`. `hooks/cactus_identity.py:18`
+: Hook agent id: payload `session_id`, then herdr, then `CACTUS_AGENT`. `hooks/cactus_identity.py` `resolve_agent`
 
 frontier
-: The agent's own rows injected on each user prompt: elaborate, answered, open and live. `hooks/frontier.py:40`
+: The agent's own rows injected on each user prompt: elaborate, answered, open and live. `hooks/frontier.py` `main`
 
 mod mode
 : Codex stand-in for the pane mod: post `--no-wait`, never arm a waiter, read answers from the frontier. `plugins/cactus/hooks/frontier.sh:17`
@@ -117,10 +117,10 @@ auto-clear
 : Codex frontier clears the answered one-shot rows it just printed. `plugins/cactus/hooks/frontier.sh:42`
 
 fork
-: A decision posted to cactus. The Stop hook blocks a turn that posted none. `hooks/stop_fork.py:3`
+: A decision posted to cactus. The Stop hook blocks a turn that posted none. `hooks/stop_fork.py`
 
 open-row gate
-: Stop hook stays silent while the agent has an `open` row in this project (q469). Other projects, `live`, and `elaborate` do not count. `hooks/stop_fork.py:38`
+: Stop hook stays silent while the agent has an `open` row in this project (q469). Other projects, `live`, and `elaborate` do not count. `hooks/stop_fork.py` `main`
 
 **Drift**
 

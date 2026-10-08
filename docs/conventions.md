@@ -133,7 +133,7 @@ Keep one tests/test_<module>.py per src module.
 Cite the deciding cactus row key (qNNN) in comments that explain a design choice.
 
 - scope: `src/cactus/*.py`, `hooks/*.sh`
-- exemplar: hooks/stop_fork.py:14
+- exemplar: hooks/stop_fork.py (header block)
 - below bar: widespread (94 hits across src/cactus/*.py and hooks/*.sh) but a citation habit, not checkable behavior
 
 *from-future-annotations*
