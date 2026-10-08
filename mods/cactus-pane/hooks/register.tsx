@@ -281,9 +281,27 @@ async function refocus($: EngineInterface, key: string, before: string[]): Promi
 
 // An answer or verdict the pane recorded goes on the undo stack: `u` pops it.
 async function answerRow($: EngineInterface, key: string, args: string[]): Promise<void> {
+  const row = (await read($, rows)).find(r => r.key === key)
   if ((await cactus($, key, ['answer', key, ...args])) !== null) {
     await update($, undo, stack => [...stack.filter(k => k !== key), key].slice(-UNDO_DEPTH))
+    // A review or plan stays open after a verdict; move on to the next
+    // question so the one just sent does not sit under the reader.
+    if (row !== undefined && PERSISTENT.has(row.act)) await advancePast($, key)
   }
+}
+
+// Select the question after `key`, wrapping to the top; a no-op when `key` is
+// not the selected one any more or is the only question left.
+async function advancePast($: EngineInterface, key: string): Promise<void> {
+  const list = await read($, rows)
+  // Nothing stored yet means the first question is the open one.
+  if (((await read($, selected)) ?? list[0]?.key) !== key || list.length < 2) return
+  const at = list.findIndex(r => r.key === key)
+  const to = list[(at + 1) % list.length]
+  if (to === undefined || to.key === key) return
+  await select($, to.key)
+  await $.ui.focus({ requestId: PANE, key: `${to.key}:sel` }).catch(() => undefined)
+  await pinTop($, to.key)
 }
 
 async function undoLast($: EngineInterface): Promise<void> {

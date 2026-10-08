@@ -369,3 +369,24 @@ test('a pane too narrow for the sunset shows only the words', async ($, on) => {
   expect(await ui.find({ key: 'sunset' })).toBeUndefined()
   expect(await ui.find({ text: /Decisions incoming/ })).toBeDefined()
 })
+
+test('a verdict on a review moves the pane to the next question', async ($, on) => {
+  const choices = [{ label: 'pass', description: null }, { label: 'fail', description: null }]
+  const review = { ...ROW, act: 'review', kind: 'choice', status: 'live', choices, recommend: null, confidence: null }
+  const next = { ...ROW, key: 'q8', text: 'Second question?' }
+  on('process.run', () => ({
+    value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n: 1 }, questions: [review, next] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.focus', () => ({}))
+  on('ui.scroll', () => ({}))
+  await $.command.run(RUN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'q7:card' })).toBeDefined()
+  await ui.press({ key: 'q7:fail' })
+  expect(await ui.find({ key: 'q8:card' })).toBeDefined()
+  expect(await ui.find({ key: 'q7:card' })).toBeUndefined()
+})
