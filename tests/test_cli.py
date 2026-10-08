@@ -881,3 +881,10 @@ def test_undo_of_pass_closed_review_restores_live_without_the_verdict(cli):
     # The ordinary-clear refusal still holds.
     cli("clear", "q1", "--agent", AGENT_A)
     assert cli("undo", "q1").returncode == 1
+
+
+def test_www_token_prints_path_and_rotates(cli) -> None:
+    first = cli("www-token")
+    again = cli("www-token")
+    assert first.stdout == again.stdout
+    assert cli("www-token", "--rotate").stdout != first.stdout

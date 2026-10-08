@@ -1328,6 +1328,17 @@ def cmd_poke(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     return EXIT_OK
 
 
+def cmd_www_token(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Print the www token file's path and a login URL hint; --rotate replaces
+    the token first (old cookies stop working)."""
+    from .www import make_token, token_path
+
+    token = make_token(store.path, rotate=args.rotate)
+    print(token_path(store.path))
+    print(f"login: http://HOST:PORT/login?t={token}")
+    return EXIT_OK
+
+
 def cmd_deliver(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """Declare (or read, or drop) how answers reach `--agent`: a herdr pane
     prompt or a webhook, in the per-agent delivery map. No database change."""
@@ -1681,7 +1692,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--www", action="store_true",
                    help="serve a localhost web answering surface (human)")
     p.add_argument("--port", type=int, default=8642, help="with --www, port to bind (default: 8642)")
-    p.add_argument("--host", default="127.0.0.1", help="with --www, host to bind (default: 127.0.0.1)")
+    p.add_argument("--host", default="127.0.0.1", help="with --www, host to bind (default: 127.0.0.1; 'tailscale' binds this machine's tailnet IPv4). A non-loopback bind requires a login token")
     p.add_argument("--open", action="store_true", help="with --www, open the browser once bound")
     p.add_argument("--monitor", action="store_true",
                    help="stream inbox events as plain lines, one per change")
@@ -1888,6 +1899,11 @@ def build_parser() -> argparse.ArgumentParser:
     dl.add_argument("url", nargs="?", help="webhook URL (webhook mode only)")
     dl.add_argument("--agent", required=True, help="the agent id whose entry to set")
     dl.set_defaults(fn=cmd_deliver)
+
+    wt = verb("www-token", parents=[common],
+              help="print the --www login token path and URL hint")
+    wt.add_argument("--rotate", action="store_true", help="replace the token; old cookies die")
+    wt.set_defaults(fn=cmd_www_token)
 
     rh = verb("rehome", parents=[common],
               help="move this session's rows from a prior identity onto --agent")
