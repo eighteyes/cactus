@@ -390,3 +390,12 @@ test('a verdict on a review moves the pane to the next question', async ($, on) 
   expect(await ui.find({ key: 'q8:card' })).toBeDefined()
   expect(await ui.find({ key: 'q7:card' })).toBeUndefined()
 })
+
+test('enter on the header sends a typed note kept as a draft', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, { ...ROW, recommend: ['oidc'], confidence: 'med' }, calls, 'terminal')
+  await ui.input({ key: 'q7:text', text: 'go with whatever is cheaper\\' })
+  expect(calls.some(c => c[1] === 'answer')).toBe(false)
+  await ui.press({ key: 'q7:sel' })
+  expect(calls).toContainEqual(['cactus', 'answer', 'q7', 'go with whatever is cheaper'])
+})

@@ -360,18 +360,21 @@ async function submitLine($: EngineInterface, key: string, line: string): Promis
   if (await submitText($, key, full)) await setDraft($, key, '')
 }
 
-// Enter on the open question's header sends, never picks: a multiple-choice
-// row sends its ticks, a single-choice row its pick (or recommendation), a
-// text row moves to the input. A run row is never run by enter.
-// Enter on the open question never answers it: an enter meant to open the
-// next question sent its recommendation (q622). A digit answers, `g` sends a
-// multi pick, the text line sends what was typed. Enter only points the way.
+// Enter on the open question never answers on its own: an enter meant to open
+// the next question sent its recommendation (q622). It sends only a note you
+// typed and kept as a draft (with any ticks on a multi row); otherwise a digit
+// answers, `g` sends a multi pick, and the text line sends on its own enter.
 async function enterOnOpen($: EngineInterface, row: Row): Promise<void> {
+  const draft = (await read($, drafts))[row.key] ?? ''
+  if (draft !== '') {
+    if (await submitText($, row.key, draft)) await setDraft($, row.key, '')
+    return
+  }
   if (row.choices.length === 0 && row.act !== 'run') {
     await $.ui.focus({ requestId: PANE, key: `${row.key}:text` }).catch(() => undefined)
     return
   }
-  $.ui.toast(`cactus ${row.key}: enter does not answer; press a digit${row.kind === 'multi' ? ', then g to send' : ''}`)
+  $.ui.toast(`cactus ${row.key}: enter does not answer; press a digit or type a note${row.kind === 'multi' ? ', then g to send' : ''}`)
 }
 
 // The send path behind the input line.
