@@ -345,27 +345,15 @@ async function submitLine($: EngineInterface, key: string, line: string): Promis
 // Enter on the open question's header sends, never picks: a multiple-choice
 // row sends its ticks, a single-choice row its pick (or recommendation), a
 // text row moves to the input. A run row is never run by enter.
-async function enterSends(
-  $: EngineInterface,
-  row: Row,
-  picked: string[] | undefined,
-  flipped: boolean,
-): Promise<void> {
-  const chosen = picked ?? row.recommend ?? []
-  if (row.act === 'run' || row.act === 'data') {
-    $.ui.toast(`cactus ${row.key}: use its keys; enter does not ${row.act === 'run' ? 'run' : 'copy'}`)
-    return
-  }
-  if (row.choices.length === 0) {
+// Enter on the open question never answers it: an enter meant to open the
+// next question sent its recommendation (q622). A digit answers, `g` sends a
+// multi pick, the text line sends what was typed. Enter only points the way.
+async function enterOnOpen($: EngineInterface, row: Row): Promise<void> {
+  if (row.choices.length === 0 && row.act !== 'run') {
     await $.ui.focus({ requestId: PANE, key: `${row.key}:text` }).catch(() => undefined)
     return
   }
-  const several = row.kind === 'multi' || flipped
-  if (chosen.length === 0 || (!several && chosen.length > 1)) {
-    $.ui.toast(`cactus ${row.key}: pick with 1-9 first`)
-    return
-  }
-  await answerRow($, row.key, chosen.flatMap(l => ['-s', l]))
+  $.ui.toast(`cactus ${row.key}: enter does not answer; press a digit${row.kind === 'multi' ? ', then g to send' : ''}`)
 }
 
 // The send path behind the input line.
@@ -1043,7 +1031,7 @@ export const register: Register = on => {
                   plain
                   onPress={() => {
                     if (!isCurrent) return void select($, row.key).then(() => pinTop($, row.key))
-                    void enterSends($, row, picked[row.key], flipped[row.key] === true)
+                    void enterOnOpen($, row)
                   }}
                 />
                 <Text color={ACT_COLOUR[row.act] ?? 'white'}>{row.act.padEnd(6)}</Text>

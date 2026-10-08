@@ -259,13 +259,23 @@ test('j and k move the selection between questions', async ($, on) => {
 })
 
 
-test('a multi row starts with its recommendation ticked; send or enter on the header submits', async ($, on) => {
+test('a multi row starts with its recommendation ticked; g sends it, enter on the header does not', async ($, on) => {
   const calls: string[][] = []
   const ui = await mounted($, on, { ...ROW, kind: 'multi' }, calls, 'terminal')
   expect((await ui.find({ key: 'q7:send' }))?.text).toContain('send 1 picked')
   await ui.press({ key: 'q7:local' })
   await ui.press({ key: 'q7:sel' })
+  expect(calls.some(c => c[1] === 'answer')).toBe(false)
+  await ui.press({ key: 'q7:send' })
   expect(calls).toContainEqual(['cactus', 'answer', 'q7', '-s', 'oidc', '-s', 'local'])
+})
+
+test('enter on the open question never sends its recommendation', async ($, on) => {
+  const calls: string[][] = []
+  const ui = await mounted($, on, { ...ROW, recommend: ['oidc'], confidence: 'med' }, calls, 'terminal')
+  await ui.press({ key: 'q7:sel' })
+  await ui.press({ key: 'q7:sel' })
+  expect(calls.some(c => c[1] === 'answer')).toBe(false)
 })
 
 test('m turns a single-choice row into pick-several for one answer', async ($, on) => {

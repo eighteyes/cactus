@@ -10,7 +10,7 @@ A live [cactus](https://github.com/eighteyes/cactus) inbox inside Claude Code. Y
 ## Use
 
 - Opens at session start. `/cactus-pane` opens it again.
-- A rail of open rows, a card for the focused one. Answer with the TUI's keys: digits pick, `i` types, enter sends.
+- A rail of open rows, a card for the focused one. A digit answers, `i` types (enter in the text line sends it), `g` sends a multi pick. Enter on a question only opens it; it never answers, so a stray enter cannot send a recommendation.
 - When one of the session's rows moves, the pane starts a turn carrying the answer in full and clears the row. The agent posts `cactus ask --no-wait` and keeps working.
 
 ## What it runs and sends
