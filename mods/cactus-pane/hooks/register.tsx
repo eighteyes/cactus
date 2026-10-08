@@ -433,6 +433,8 @@ async function select($: EngineInterface, key: string): Promise<void> {
 const ART_ROWS = 9
 const ART_MIN_COLUMNS = 20
 const GROVE_STALKS = 3
+// Dot row each stalk's top reaches: tall, middle, short (the sky is 28 dots).
+const GROVE_TOPS = [5, 12, 19]
 const HORIZON = 28
 const SKY_COLOURS = ['#4b2a6b', '#6e2f6e', '#9a3468', '#c4405e', '#e05a4f', '#f07f45', '#f9a640']
 const SUN_COLOUR = '#ffd166'
@@ -480,8 +482,11 @@ function grove(dotWidth: number, sunX: number): Part[] {
   // Laid right to left from the pane's edge; a stalk too close to the sun is
   // dropped, so a narrow pane gets fewer.
   let x = (dotWidth - 9) & ~1
+  // Three clearly different heights (tall, middle, short), dealt in an order
+  // the width picks, so the stand never reads as one height.
+  const turn = Math.floor(noise(dotWidth, 3) * GROVE_TOPS.length)
   for (let i = 0; i < GROVE_STALKS && x >= sunX + 12; i++) {
-    const top = 6 + Math.floor(noise(x, 99) * 15)
+    const top = GROVE_TOPS[(i + turn) % GROVE_TOPS.length] ?? 12
     const lit = x + 2 < sunX
     const cols = lit ? { [x + 1]: 1, [x + 2]: 4, [x + 3]: 3 } : { [x + 1]: 3, [x + 2]: 4, [x + 3]: 1 }
     out.push({ rects: [[x, x + 4, top, 99], [x + 1, x + 3, top - 1, top - 1]], cols, base: [x, x + 4] })
