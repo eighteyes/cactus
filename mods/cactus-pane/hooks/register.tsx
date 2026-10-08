@@ -440,6 +440,7 @@ const STIPPLE: Record<number, number[]> = { 1: [0], 2: [0, 2], 3: [0, 1, 2], 4: 
 // 4 rows each interior column draws (absent: all 4), and its base span on the
 // ground, which casts the shadow.
 type Part = { rects: [number, number, number, number][]; cols: Record<number, number>; base: [number, number] }
+// Stipple phase counts from each part's left edge, so every stalk shades alike.
 
 // Fixed hash in [0, 1): the same art at the same width, every draw.
 function noise(x: number, y: number): number {
@@ -465,13 +466,14 @@ function saguaro(): Part[] {
 // Tallest first, so a shorter stalk in front keeps its own outline.
 function grove(dotWidth: number, sunX: number): Part[] {
   const out: Part[] = []
-  let x = Math.max(sunX + 14, Math.round(dotWidth * 0.7))
+  // Even columns only: every stalk then splits into braille cells the same way.
+  let x = Math.max(sunX + 14, Math.round(dotWidth * 0.7)) & ~1
   while (x + 4 <= dotWidth - 2) {
     const top = 6 + Math.floor(noise(x, 99) * 15)
     const lit = x + 2 < sunX
     const cols = lit ? { [x + 1]: 1, [x + 2]: 4, [x + 3]: 3 } : { [x + 1]: 3, [x + 2]: 4, [x + 3]: 1 }
     out.push({ rects: [[x, x + 4, top, 99], [x + 1, x + 3, top - 1, top - 1]], cols, base: [x, x + 4] })
-    x += 6 + Math.floor(noise(x, 7) * 3)
+    x += 6 + 2 * Math.floor(noise(x, 7) * 2)
   }
   return out.sort((p, q) => (q.rects[0]?.[2] ?? 0) - (p.rects[0]?.[2] ?? 0))
 }
@@ -490,7 +492,7 @@ function sunsetArt(columns: number): [string, string | undefined][][] {
     if (p === undefined) return undefined
     // An edge against open sky or another cactus: stalks in a stand stay apart.
     if (sides.some(([dx, dy]) => y + dy < dotHeight && partAt(x + dx, y + dy) !== p && !sameCactus(p, partAt(x + dx, y + dy)))) return true
-    return (STIPPLE[p.cols[x] ?? 4] ?? []).includes((x + y) % 4)
+    return (STIPPLE[p.cols[x] ?? 4] ?? []).includes((y + x - p.base[0]) % 4)
   }
   // The saguaro's parts are one plant: no outline between trunk and arm.
   const plant = new Set(parts.slice(0, 5))
