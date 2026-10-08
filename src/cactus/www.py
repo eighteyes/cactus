@@ -6,6 +6,8 @@ Responsibilities:
 - Expose a small JSON API (/api/feed, /api/answer, /api/clear, /api/reopen,
   /api/poke) that mirrors what the TUI does through Store, plus /api/events
   for Server-Sent Events so the page updates without polling.
+- Serve the PWA manifest, service worker and icons from a fixed whitelist
+  in www_static/.
 - Serialize every store call behind one lock: Store's sqlite3 connection is
   opened with the default check_same_thread=True, so a ThreadingHTTPServer
   handler thread cannot touch it directly without one.
@@ -20,6 +22,7 @@ import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -42,6 +45,23 @@ def _msg(exc: BaseException) -> str:
     return str(exc)
 
 
+_STATIC_DIR = Path(__file__).resolve().parent / "www_static"
+# Whitelist: file name -> Content-Type. A request path only ever selects a key.
+_STATIC_FILES = {
+    "manifest.webmanifest": "application/manifest+json",
+    "sw.js": "text/javascript; charset=utf-8",
+    "icon-192.png": "image/png",
+    "icon-512.png": "image/png",
+    "icon-maskable-512.png": "image/png",
+    "apple-touch-icon.png": "image/png",
+}
+_STATIC_ROUTES = {
+    "/manifest.webmanifest": "manifest.webmanifest",
+    "/sw.js": "sw.js",
+    **{f"/static/{n}": n for n in _STATIC_FILES},
+}
+
+
 def _questions(store: Store, project: str | None) -> list[Question]:
     return store.tree(
         project=project,
@@ -55,7 +75,13 @@ PAGE = """\
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14161a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <title>cactus</title>
 <style>
   :root { color-scheme: dark; }
@@ -118,14 +144,32 @@ PAGE = """\
   }
   .step { padding: 2px 0; }
   .verdict { padding: 4px 0; border-top: 1px dashed #2a2d34; }
+  #back, #offline { display: none; }
+  #offline { padding: 6px 10px; background: #3a1030; color: #e06ae0; }
+  body.offline #offline { display: block; }
   @media (max-width: 640px) {
-    body { flex-direction: column; }
-    #rail { width: 100%; max-width: 100%; height: 40vh; }
-    #card { height: 60vh; }
+    body {
+      flex-direction: column; height: 100dvh;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right)
+               env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+    #rail { width: 100%; max-width: 100%; min-width: 0; flex: 1; border-right: 0; }
+    #card { width: 100%; flex: 1; min-width: 0; }
+    body.view-rail #card, body.view-card #rail { display: none; }
+    #back {
+      display: block; min-height: 44px; width: 100%; margin: 0 0 12px 0;
+      text-align: left; font-size: 16px;
+    }
+    .row { min-height: 44px; padding: 10px; }
+    button { min-height: 44px; padding: 10px 14px; font-size: 16px; }
+    textarea, input[type=text] { font-size: 16px; }
+    pre { overflow-x: auto; max-width: 100%; }
+    #toast { left: 12px; right: 12px; max-width: none; bottom: calc(12px + env(safe-area-inset-bottom)); }
   }
 </style>
 </head>
-<body>
+<body class="view-rail">
+<div id="offline">board offline</div>
 <div id="rail"></div>
 <div id="card">select a row</div>
 <div id="toast"></div>
@@ -136,6 +180,13 @@ let rows = [];
 let selectedRef = null;
 let lastKeys = new Set();
 let multiPicked = new Set();
+
+function setView(v) {
+  document.body.classList.toggle("view-rail", v === "rail");
+  document.body.classList.toggle("view-card", v === "card");
+}
+
+function goBack() { setView("rail"); }
 
 function toast(text) {
   const el = document.createElement("div");
@@ -158,8 +209,15 @@ function notifyArrival(newRows) {
 }
 
 async function fetchFeed() {
-  const res = await fetch("/api/feed");
-  const doc = await res.json();
+  let doc;
+  try {
+    const res = await fetch("/api/feed");
+    doc = await res.json();
+    document.body.classList.remove("offline");
+  } catch (e) {
+    document.body.classList.add("offline");
+    return;
+  }
   const seen = new Set(doc.questions.map(q => q.ref));
   const fresh = doc.questions.filter(q => !lastKeys.has(q.ref));
   if (lastKeys.size > 0) notifyArrival(fresh);
@@ -177,9 +235,10 @@ async function fetchFeed() {
     }
   }
 
-  if (!selectedRef && rows.length > 0) {
+  if (!selectedRef && rows.length > 0 && !window.matchMedia("(max-width: 640px)").matches) {
     selectedRef = rows[0].ref;
   }
+  if (!selectedRef) setView("rail");
 
   render();
 }
@@ -224,7 +283,7 @@ function render() {
         esc(q.act) + badge(q.status) + '</div>' +
         (thread ? '<div class="row-thread">' + esc(thread) + '</div>' : "") +
         '<div class="row-text">' + esc(q.text) + '</div>';
-      row.onclick = () => { selectedRef = q.ref; render(); };
+      row.onclick = () => { selectedRef = q.ref; setView("card"); render(); };
       rail.appendChild(row);
     }
   }
@@ -251,7 +310,8 @@ function renderCard() {
   if (!q) { card.innerHTML = "select a row"; return; }
   multiPicked = new Set(q.recommend && q.kind === "multi" ? q.recommend : []);
 
-  let html = "<h1>" + esc(q.ref) + " — " + esc(q.act) + badge(q.status) + "</h1>";
+  let html = '<button id="back" onclick="goBack()">&larr; rail</button>';
+  html += "<h1>" + esc(q.ref) + " — " + esc(q.act) + badge(q.status) + "</h1>";
   html += '<div class="field"><div class="label">text</div>' + esc(q.text) + "</div>";
   if (q.context) {
     html += '<div class="field"><div class="label">context</div><pre>' + esc(q.context) + "</pre></div>";
@@ -448,6 +508,7 @@ function pollFallback() {
 
 fetchFeed();
 connectEvents();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 </script>
 </body>
 </html>
@@ -498,6 +559,25 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _send_static(self, name: str) -> None:
+        """Serve one whitelisted www_static file; the name never comes from the request."""
+        try:
+            data = (_STATIC_DIR / name).read_bytes()
+        except OSError:
+            self._send_json(404, {"error": "not found"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", _STATIC_FILES[name])
+        self.send_header("Content-Length", str(len(data)))
+        if name == "sw.js":
+            self.send_header("Service-Worker-Allowed", "/")
+            self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -565,6 +645,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/" or self.path.startswith("/?"):
                 self._send_html(PAGE)
+            elif self.path in _STATIC_ROUTES:
+                self._send_static(_STATIC_ROUTES[self.path])
             elif self.path.startswith("/api/feed"):
                 self._handle_feed()
             elif self.path.startswith("/api/events"):
