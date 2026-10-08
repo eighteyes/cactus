@@ -63,6 +63,15 @@ A webhook entry may carry `authorization` and `headers`. Those are credentials. 
 
 The Codex `session-start.sh` runs `cactus deliver herdr --agent <session_id>` inside a herdr pane. Nothing removes that entry.
 
+## macOS app
+
+	bash scripts/build-mac-app.sh                      # dist/Cactus.app + dist/Cactus-<version>.zip
+
+Ad-hoc signed by default (runs on this Mac only). `assets/icon-1024.png` becomes the icon when present.
+
+	CACTUS_SIGN_ID="Developer ID Application: NAME (TEAM)"   # Developer ID + hardened runtime
+	CACTUS_NOTARY_PROFILE=PROFILE                            # with SIGN_ID: notarytool --wait, then staple
+
 ## Health & verification
 
 	cactus --version                                   # cactus 0.3.0
