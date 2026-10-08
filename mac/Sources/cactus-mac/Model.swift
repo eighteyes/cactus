@@ -1,6 +1,7 @@
 // Model.swift — Codable mirrors of `cactus feed --json`, plus the poller.
 // Responsibilities:
-// - Decode Choice, Question, Cursor, Feed from the CLI's JSON shape.
+// - Decode Choice, Answer, Review, Step, Question, Cursor, Feed from the CLI's
+//   JSON shape (including allow_free, the verdict log, verify block, steps).
 // - Ignore unknown fields, treat absent optional fields as nil.
 // - Poller: ObservableObject that re-polls CactusCLI.feed() on a timer,
 //   0.5s while a panel is visible and 5s while hidden, only publishing a
@@ -13,6 +14,42 @@ struct Choice: Codable, Identifiable, Hashable {
     var description: String
 
     var id: String { label }
+}
+
+struct Answer: Codable, Hashable {
+    var selected: [String]
+    var text: String?
+    var skipped: Bool
+
+    /// `label — text`, `skipped`, or whichever part exists.
+    var summary: String {
+        if skipped { return "skipped" }
+        let labels = selected.joined(separator: ", ")
+        switch (labels.isEmpty, text?.isEmpty ?? true) {
+        case (false, false): return "\(labels) — \(text ?? "")"
+        case (false, true): return labels
+        default: return text ?? ""
+        }
+    }
+}
+
+struct Review: Codable, Hashable {
+    var lookAt: String?
+    var runCmd: String?
+    var passWhen: String?
+    var failWhen: String?
+    var thenDo: String?
+
+    enum CodingKeys: String, CodingKey {
+        case lookAt = "look_at", runCmd = "run_cmd"
+        case passWhen = "pass_when", failWhen = "fail_when", thenDo = "then_do"
+    }
+}
+
+struct Step: Codable, Hashable {
+    var n: Int
+    var text: String
+    var done: Bool
 }
 
 struct Question: Codable, Identifiable, Hashable {
@@ -33,6 +70,11 @@ struct Question: Codable, Identifiable, Hashable {
     var thread: String?
     var parent: String?
     var agent: String?
+    var allowFree: Bool = true
+    var updatedAt: String?
+    var answers: [Answer] = []
+    var review: Review?
+    var steps: [Step] = []
 
     /// Feed rows carry no rowid; `ref` (`LABEL:qN`) is unique across projects,
     /// `key` alone is unique only within one.
@@ -43,6 +85,9 @@ struct Question: Codable, Identifiable, Hashable {
         case recommend, confidence
         case recommendWhy = "recommend_why"
         case chosen, blocked, thread, parent, agent
+        case allowFree = "allow_free"
+        case updatedAt = "updated_at"
+        case answers, review, steps
     }
 
     /// Recommend is emitted by the store as either a bare label (single-select
@@ -73,7 +118,18 @@ struct Question: Codable, Identifiable, Hashable {
         thread = try c.decodeIfPresent(String.self, forKey: .thread)
         parent = try c.decodeIfPresent(String.self, forKey: .parent)
         agent = try c.decodeIfPresent(String.self, forKey: .agent)
+        allowFree = try c.decodeIfPresent(Bool.self, forKey: .allowFree) ?? true
+        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt)
+        answers = try c.decodeIfPresent([Answer].self, forKey: .answers) ?? []
+        review = try c.decodeIfPresent(Review.self, forKey: .review)
+        steps = try c.decodeIfPresent([Step].self, forKey: .steps) ?? []
     }
+
+    /// Persistent rows (review, plan, data) stay `live` and take repeated verdicts.
+    var isPersistent: Bool { ["review", "plan", "data"].contains(act) }
+    var isAnswered: Bool { status == "answered" }
+    /// Address a row by `LABEL:qN` so a bare key can't collide across projects.
+    var address: String { ref ?? key }
 
     /// Basename of `project`, for the rail's `project · key · text` line.
     var projectBasename: String {

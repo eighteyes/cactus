@@ -2,7 +2,7 @@
 // Responsibilities:
 // - Resolve the `cactus` binary once, via a login-shell PATH lookup, since a
 //   GUI app launched outside a terminal gets a bare PATH.
-// - Run `feed`, `answer`, and `clear` as subprocesses with `--json`, mirroring
+// - Run `feed`, `answer`, `undo`, and `clear` as subprocesses with `--json`, mirroring
 //   the precedent in src/cactus/mcp.py: cli.py stays the only validator.
 // - Decode stdout with Codable; a non-zero exit throws with the CLI's own
 //   stderr line rather than the process's exit code alone.
@@ -78,25 +78,32 @@ final class CactusCLI {
 
     func feed() async throws -> Feed {
         try await Task.detached(priority: .utility) { [self] in
-            let data = try run(["feed", "--json"])
+            let data = try run(["feed", "--json", "-s", "open,live,elaborate,answered"])
             return try JSONDecoder().decode(Feed.self, from: data)
         }.value
     }
 
-    /// `cactus answer KEY [TEXT] [-s LABEL] [--skip]`.
-    func answer(key: String, label: String?, text: String?, skip: Bool) async throws {
+    /// `cactus answer KEY [TEXT] [-s LABEL]... [--skip]`.
+    func answer(key: String, labels: [String], text: String?, skip: Bool) async throws {
         var arguments = ["answer", key, "--json"]
-        if let label {
+        for label in labels {
             arguments += ["-s", label]
         }
         if skip {
             arguments.append("--skip")
         }
         if let text, !text.isEmpty {
-            arguments.append(text)
+            arguments += ["--", text]
         }
         _ = try await Task.detached(priority: .utility) { [self] in
             try run(arguments)
+        }.value
+    }
+
+    /// `cactus undo KEY`: withdraw the latest answer or verdict (reopen).
+    func undo(key: String) async throws {
+        _ = try await Task.detached(priority: .utility) { [self] in
+            try run(["undo", key, "--json"])
         }.value
     }
 
