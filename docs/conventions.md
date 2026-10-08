@@ -12,7 +12,7 @@ Open every Python module and root hook script with a header naming the file, a o
 
 - tier: observed
 - scope: `src/cactus/*.py`, `hooks/*.sh`, `tests/conftest.py`
-- exemplar: src/cactus/poke.py:1
+- exemplar: `src/cactus/poke.py` (module docstring)
 - exceptions: src/cactus/acp.py (docstring has no name line or Responsibilities list)
 
 **sqlite-only-in-store**
@@ -21,7 +21,7 @@ Import sqlite3 and run SQL only in store.py; every other module goes through Sto
 
 - tier: observed
 - scope: `src/cactus/*.py`
-- exemplar: src/cactus/store.py:19
+- exemplar: `src/cactus/store.py` `import sqlite3`
 
 **store-read-then-write-begin-immediate**
 
@@ -29,7 +29,7 @@ Wrap a Store write that reads then writes, or makes several writes, in an explic
 
 - tier: observed
 - scope: `src/cactus/store.py`
-- exemplar: src/cactus/store.py:897
+- exemplar: `src/cactus/store.py` `Store.ask`
 
 **schema-additive-on-open**
 
@@ -37,7 +37,7 @@ Change the schema on open with ALTER TABLE ADD COLUMN only; put any table rebuil
 
 - tier: observed
 - scope: `src/cactus/store.py`
-- exemplar: src/cactus/store.py:498
+- exemplar: `src/cactus/store.py` `Store._migrate`
 
 **cli-exit-constants**
 
@@ -45,7 +45,7 @@ Return EXIT_OK/EXIT_ERROR/EXIT_TIMEOUT/EXIT_EMPTY (0/1/2/3) from cmd_* functions
 
 - tier: observed
 - scope: `src/cactus/cli.py`
-- exemplar: src/cactus/cli.py:302
+- exemplar: `src/cactus/cli.py` `_no_match`
 
 **cli-stderr-one-line**
 
@@ -53,7 +53,7 @@ Report a CLI refusal or failure as one stderr line prefixed `cactus: `, routing 
 
 - tier: observed
 - scope: `src/cactus/cli.py`
-- exemplar: src/cactus/cli.py:749
+- exemplar: `src/cactus/cli.py` `cmd_answer`
 
 **cli-gates-ownership**
 
@@ -61,7 +61,7 @@ Check row ownership in cli.py (_refuse_if_not_owner and cmd_* gates); Store meth
 
 - tier: observed
 - scope: `src/cactus/cli.py`, `src/cactus/store.py`
-- exemplar: src/cactus/cli.py:1000
+- exemplar: `src/cactus/cli.py` `cmd_review`
 
 **lazy-side-leaf-imports**
 
@@ -69,8 +69,8 @@ Import poke, shell, and the Textual/web surfaces (tui, watch, www, monitor) insi
 
 - tier: observed
 - scope: `src/cactus/cli.py`, `src/cactus/tui.py`
-- exemplar: src/cactus/cli.py:743
-- exceptions: src/cactus/www.py:26 imports poke at top level (outside scope)
+- exemplar: `src/cactus/cli.py` `cmd_answer`
+- exceptions: `src/cactus/www.py` `from .poke import` imports poke at top level (outside scope)
 
 **delivery-fails-soft-after-answer**
 
@@ -78,7 +78,7 @@ Deliver/poke after a saved answer inside try/except PokeError and report the fai
 
 - tier: observed
 - scope: `src/cactus/cli.py`, `src/cactus/tui.py`, `src/cactus/www.py`
-- exemplar: src/cactus/cli.py:748
+- exemplar: `src/cactus/cli.py` `cmd_answer`
 
 **tests-isolated-via-conftest**
 
@@ -86,7 +86,7 @@ Run tests against conftest's scratch CACTUS_DB, inert CACTUS_POKE, and records/r
 
 - tier: observed
 - scope: `tests/**/*.py`
-- exemplar: tests/test_deliver.py:45
+- exemplar: `tests/test_deliver.py` `test_deliver_herdr_webhook_show_off`
 
 **Conflicts**
 
@@ -101,15 +101,15 @@ NOT BINDING. Below the evidence bar; a reviewer does not enforce these.
 Write files other processes read with a same-directory temp file then os.replace.
 
 - scope: `src/cactus/*.py`
-- exemplar: src/cactus/poke.py:143
-- below bar: 3 conforming sites (poke.py:143, garden.py:75, record.py:310) but 2+ exceptions: tui.py:131 tui.json and sky.py:588 sky.toml write in place
+- exemplar: `src/cactus/poke.py` `write_delivery`
+- below bar: 3 conforming sites (`poke.py` `write_delivery`, `garden.py` `save`, `record.py` `write_record`) but 2+ exceptions: `tui.py` `_save_tui_settings` tui.json and `sky.py` `SkyConfig.dump` sky.toml write in place
 
 *renamed-api-keeps-alias*
 
 Keep a back-compat alias when renaming a public function.
 
 - scope: `src/cactus/*.py`
-- exemplar: src/cactus/poke.py:183
+- exemplar: `src/cactus/poke.py` `poke_webhook_if_mapped`
 - below bar: 1 site (poke_webhook_if_mapped = deliver_if_mapped)
 
 *xfail-not-delete*
@@ -117,7 +117,7 @@ Keep a back-compat alias when renaming a public function.
 Mark a bug-exposing test xfail with its reason; never delete it.
 
 - scope: `tests/**/*.py`
-- exemplar: tests/test_field.py:677
+- exemplar: `tests/test_field.py` `test_frame_time_at_100x20_with_3_seeds_stays_under_4ms`
 - below bar: 1 xfail site in tests; stated in CLAUDE.md, not a CONVENTION: marker
 
 *one-test-file-per-module*
@@ -125,7 +125,7 @@ Mark a bug-exposing test xfail with its reason; never delete it.
 Keep one tests/test_<module>.py per src module.
 
 - scope: `tests/*.py`
-- exemplar: tests/test_poke.py:1
+- exemplar: `tests/test_poke.py` (module docstring)
 - below bar: exceptions exceed 1: test_deliver.py, test_puffs.py, test_hooks.py do not map one-to-one to modules
 
 *cite-row-key-in-comments*
@@ -141,7 +141,7 @@ Cite the deciding cactus row key (qNNN) in comments that explain a design choice
 Import `from __future__ import annotations` in every module after the header.
 
 - scope: `src/cactus/*.py`
-- exemplar: src/cactus/store.py:14
+- exemplar: `src/cactus/store.py` `from __future__ import annotations`
 - below bar: 2 exceptions: src/cactus/__init__.py and src/cactus/__main__.py lack it; style, not behavior
 
 *env-override-external-commands*
@@ -149,8 +149,8 @@ Import `from __future__ import annotations` in every module after the header.
 Give every external command a CACTUS_* env override holding a template with {placeholder} substitution, falling back to the built-in default.
 
 - scope: `src/cactus/poke.py`, `src/cactus/shell.py`, `src/cactus/cli.py`
-- exemplar: src/cactus/poke.py:193
-- below bar: 2 exceptions: src/cactus/shell.py:30 clipboard copy (pbcopy/wl-copy/xclip/xsel) and src/cactus/shell.py:204 `_vcs` (git) have no override
+- exemplar: `src/cactus/poke.py` `poke_command`
+- below bar: 2 exceptions: `src/cactus/shell.py` `CLIPBOARD_TOOLS` clipboard copy (pbcopy/wl-copy/xclip/xsel) and `src/cactus/shell.py` `_vcs` (git) have no override
 
 *hook-stdin-first-and-gates*
 

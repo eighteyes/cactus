@@ -50,16 +50,16 @@ Run from the checkout against a scratch inbox. Never the default DB: it is the l
 ## Conventions
 
 - New files open with a name / description / Responsibilities header (`src/cactus/poke.py`, `hooks/stop_fork.py`). Older files lack one (`plugins/cactus/hooks/*.sh`, `src/cactus/acp.py`).
-- `Store` is the only SQLite caller. Read-then-insert runs under `BEGIN IMMEDIATE` (`src/cactus/store.py:897`). Multi-write state changes share one transaction so pollers never see half (`:1013`).
-- cli validates and gates ownership; Store stays mechanism (`_refuse_if_not_owner`, `src/cactus/cli.py:968`).
-- Exit codes: 0 ok, 1 error, 2 `--wait` timeout, 3 no match (`src/cactus/cli.py:30`). argparse errors forced to 1 (`_ArgumentParser`, `cli.py:1617`).
-- Errors: one `cactus: ...` stderr line through `_msg(exc)` (`cli.py:286`).
-- Side leaves and Textual import lazily at the call site (`cli.py:743`, `cli.py:1966`).
-- Program launches take an env override with `{placeholders}`: `CACTUS_POKE`, `CACTUS_VISIT`, `CACTUS_PAGER`, `CACTUS_EDITOR`, `CACTUS_OPEN`. `CACTUS_POKE_WEBHOOKS` moves the delivery map file. No override: clipboard (`shell.copy`), webhook POST (`poke.py:196`).
-- Schema changes are additive on open; rebuilds sit behind `cactus migrate --yes` (`store.py:489 _migrate`, `:647 needs_key_rebuild`).
-- After-commit side effects fail soft: records and delivery never roll back the write (`store.py:1597 _record`; `cli.py:749`).
-- Shared config writes are atomic temp + `os.replace` (`poke.py:125 write_delivery`).
-- Renames keep an alias (`poke_webhook_if_mapped = deliver_if_mapped`, `poke.py:183`).
+- `Store` is the only SQLite caller. Read-then-insert runs under `BEGIN IMMEDIATE` (`src/cactus/store.py` `Store.ask`). Multi-write state changes share one transaction so pollers never see half (`Store.answer`).
+- cli validates and gates ownership; Store stays mechanism (`src/cactus/cli.py` `_refuse_if_not_owner`).
+- Exit codes: 0 ok, 1 error, 2 `--wait` timeout, 3 no match (`src/cactus/cli.py` `EXIT_OK`, `EXIT_ERROR`, `EXIT_TIMEOUT`, `EXIT_EMPTY`). argparse errors forced to 1 (`cli.py` `_ArgumentParser`).
+- Errors: one `cactus: ...` stderr line through `_msg(exc)` (`cli.py` `_msg`).
+- Side leaves and Textual import lazily at the call site (`cli.py` `cmd_answer`, `main`).
+- Program launches take an env override with `{placeholders}`: `CACTUS_POKE`, `CACTUS_VISIT`, `CACTUS_PAGER`, `CACTUS_EDITOR`, `CACTUS_OPEN`. `CACTUS_POKE_WEBHOOKS` moves the delivery map file. No override: clipboard (`shell.copy`), webhook POST (`poke.py` `_post_webhook`).
+- Schema changes are additive on open; rebuilds sit behind `cactus migrate --yes` (`store.py` `Store._migrate`, `Store.needs_key_rebuild`).
+- After-commit side effects fail soft: records and delivery never roll back the write (`store.py` `Store._record`; `cli.py` `cmd_answer`).
+- Shared config writes are atomic temp + `os.replace` (`poke.py` `write_delivery`).
+- Renames keep an alias (`poke_webhook_if_mapped = deliver_if_mapped`, `poke.py` `poke_webhook_if_mapped`).
 - Decisions cite the row key: `q469` in `hooks/stop_fork.py`, `q430` in CLAUDE.md.
 - Hooks read stdin into `input` before importing `cactus_identity`. Most exit 0 when `cactus` is missing or `cactus project-status --json` says disabled; Codex `session-start.sh` prints a disabled line instead.
 
@@ -69,32 +69,32 @@ Full list: [docs/conventions.md](docs/conventions.md). Terms: [docs/glossary.md]
 
 **Ask -> wait -> answer (blocking)**
 
-    cli.py:1930 main
-      scope.py:34 resolve_project
-      store.py:463 Store.__init__        WAL :476, busy_timeout :478
-      cli.py:360 cmd_ask                 validation refusals
-      store.py:775 Store.ask             BEGIN IMMEDIATE :897, per-project q{N}
-      cli.py:535 _post_then_wait         prints key
-      store.py:1960 wait_for_answer      polls until status leaves open/elaborate; exit 2 on timeout
+    cli.py main
+      scope.py resolve_project
+      store.py Store.__init__        WAL, busy_timeout
+      cli.py cmd_ask                 validation refusals
+      store.py Store.ask             BEGIN IMMEDIATE, per-project q{N}
+      cli.py _post_then_wait         prints key
+      store.py Store.wait_for_answer polls until status leaves open/elaborate; exit 2 on timeout
 
 **Human answer -> delivery (the mod)**
 
-    tui.py:3651 _submit_answer
-      store.py:946 Store.answer          BEGIN IMMEDIATE :1013; _record -> record.py:293 write_record
-      tui.py:2645 _auto_poke_webhook
-      poke.py:149 deliver_if_mapped
-        poke.py:102 delivery_entry       <- poke.py:86 load_webhooks
-        herdr entry:   poke.py:283 poke(webhook=False) -> CACTUS_POKE or `herdr agent prompt` to the row's pane
-        webhook entry: poke.py:196 _post_webhook
+    tui.py CactusApp._submit_answer
+      store.py Store.answer          BEGIN IMMEDIATE; _record -> record.py write_record
+      tui.py CactusApp._auto_poke_webhook
+      poke.py deliver_if_mapped
+        poke.py delivery_entry       <- poke.py load_webhooks
+        herdr entry:   poke.py poke(webhook=False) -> CACTUS_POKE or `herdr agent prompt` to the row's pane
+        webhook entry: poke.py _post_webhook
 
-CLI path: `cli.py:715 cmd_answer` -> same `deliver_if_mapped` (`cli.py:745`); failure prints `cactus: answer saved; webhook poke failed: ...`. HTTP path: `www.py:606`.
+CLI path: `cli.py` `cmd_answer` -> same `deliver_if_mapped` (called from `cmd_answer`); failure prints `cactus: answer saved; webhook poke failed: ...`. HTTP path: `www.py` `_Handler._handle_answer`.
 
 **Register delivery**
 
     plugins/cactus/hooks/session-start.sh     only when HERDR_PANE_ID is set
       cactus deliver herdr --agent ID
-      cli.py:1294 cmd_deliver                 bare form reads; exit 3 if none
-      poke.py:125 write_delivery              atomic, chmod 600, other entries kept
+      cli.py cmd_deliver             bare form reads; exit 3 if none
+      poke.py write_delivery         atomic, chmod 600, other entries kept
 
 No DB change. Verb: `cactus deliver [herdr | webhook URL | off] --agent ID`.
 

@@ -5,99 +5,99 @@ One name per concept. The name is the one the code uses. Sites are `file:line`.
 **Inbox**
 
 row
-: One question an agent posted. The code type is `Question`. `src/cactus/store.py:317`
+: One question an agent posted. The code type is `Question`. `src/cactus/store.py` `Question`
 
 key
-: `qN`, numbered per project after `cactus migrate --yes`; global `q{rowid}` before. `LABEL:qN` or `/abs/path:qN` names a row in another project. `src/cactus/store.py:896`, `src/cactus/store.py:1707`
+: `qN`, numbered per project after `cactus migrate --yes`; global `q{rowid}` before. `LABEL:qN` or `/abs/path:qN` names a row in another project. `src/cactus/store.py` `Store.ask`, `Store.resolve_ref`
 
 project
-: Git toplevel of the asking cwd, or the cwd itself. `src/cactus/scope.py:34`
+: Git toplevel of the asking cwd, or the cwd itself. `src/cactus/scope.py` `resolve_project`
 
 thread
-: Named group of rows, unique per agent, not per project. `src/cactus/store.py:322`
+: Named group of rows, unique per agent, not per project. `src/cactus/store.py` `Question.thread`
 
 agent
-: The row's owner: the conversation id passed as `--agent`. `src/cactus/store.py:328`
+: The row's owner: the conversation id passed as `--agent`. `src/cactus/store.py` `Question.agent`
 
 pane
-: The herdr pane id stamped on a row at ask time (`w3B:p3`). Poke and visit target it. `src/cactus/store.py:332`
+: The herdr pane id stamped on a row at ask time (`w3B:p3`). Poke and visit target it. `src/cactus/store.py` `Question.pane`
 
 act
-: What the row asks for: `ask`, `steer`, `run`, `notify`, `review`, `plan`, `data`. `src/cactus/store.py:58`
+: What the row asks for: `ask`, `steer`, `run`, `notify`, `review`, `plan`, `data`. `src/cactus/store.py` `ACTS`
 
 kind
-: How the answer is collected: `choice`, `multi`, `text`, `confirm`. `src/cactus/store.py:40`
+: How the answer is collected: `choice`, `multi`, `text`, `confirm`. `src/cactus/store.py` `KINDS`
 
 status
-: `open`, `live`, `elaborate`, `answered`, `cleared`. `src/cactus/store.py:43`
+: `open`, `live`, `elaborate`, `answered`, `cleared`. `src/cactus/store.py` `STATUSES`
 
 persistent row
-: A `review`, `plan`, or `data` row. Born `live`, answerable repeatedly. `src/cactus/store.py:62`
+: A `review`, `plan`, or `data` row. Born `live`, answerable repeatedly. `src/cactus/store.py` `PERSISTENT_ACTS`
 
 one-shot row
-: Any other act. One answer moves it to `answered`. `src/cactus/store.py:1004`
+: Any other act. One answer moves it to `answered`. `src/cactus/store.py` `Store.answer`
 
 blocked
-: Whether the agent waits on the row. Defaults per act; `--no-block` overrides. `src/cactus/store.py:69`
+: Whether the agent waits on the row. Defaults per act; `--no-block` overrides. `src/cactus/store.py` `DEFAULT_BLOCKED`
 
 answer
-: One entry in a row's append-only answers log. `src/cactus/store.py:270`
+: One entry in a row's append-only answers log. `src/cactus/store.py` `Answer`
 
 verdict
-: An answer on a persistent row. The latest one is the row's answer. `src/cactus/store.py:155`
+: An answer on a persistent row. The latest one is the row's answer. `src/cactus/store.py` `SCHEMA`
 
 chosen
-: The option a `steer` row already acts on. The human only vetoes. `src/cactus/store.py:335`
+: The option a `steer` row already acts on. The human only vetoes. `src/cactus/store.py` `Question.chosen`
 
 recommend
-: The agent's advisory pick. Still waits for the human. `src/cactus/store.py:351`
+: The agent's advisory pick. Still waits for the human. `src/cactus/store.py` `Question.recommend`
 
 elaborate
-: Status: the human asked for a rewrite. Takes no answer until `cactus edit` or a withdraw (`u`, `cactus elaborate --withdraw`). `src/cactus/store.py:1399`, `src/cactus/store.py:1426`
+: Status: the human asked for a rewrite. Takes no answer until `cactus edit` or a withdraw (`u`, `cactus elaborate --withdraw`). `src/cactus/store.py` `Store.elaborate_request`, `Store.unelaborate`
 
 heard state
-: `sent` / `heard` / responded, measured against the latest verdict. `src/cactus/store.py:372`
+: `sent` / `heard` / responded, measured against the latest verdict. `src/cactus/store.py` `Question.heard_state`
 
 cursor
-: Change token `(max id, max updated_at, row count)` pollers compare. `src/cactus/store.py:1947`
+: Change token `(max id, max updated_at, row count)` pollers compare. `src/cactus/store.py` `Store.cursor`
 
 decision record
-: Markdown copy of a row in `<project>/.ai/cactus/q{N}-{id}-{slug}.md`. `src/cactus/record.py:293`
+: Markdown copy of a row in `<project>/.ai/cactus/q{N}-{id}-{slug}.md`. `src/cactus/record.py` `write_record`
 
 rehome
-: Move this pane's rows to a new `--agent`. `src/cactus/store.py:2002`
+: Move this pane's rows to a new `--agent`. `src/cactus/store.py` `Store.rehome`
 
 auto pick
-: The auto-decider's proposal on a row. Never an answer. `src/cactus/store.py:366`
+: The auto-decider's proposal on a row. Never an answer. `src/cactus/store.py` `Question.auto_pick`
 
 **Delivery (the mod)**
 
 poke
-: Contentless nudge to a row's owner: `CACTUS_POKE`, then webhook, then a herdr prompt to the pane. `src/cactus/poke.py:283`
+: Contentless nudge to a row's owner: `CACTUS_POKE`, then webhook, then a herdr prompt to the pane. `src/cactus/poke.py` `poke`
 
 reachable
-: A row `poke` can reach: an owner plus an override, a webhook, or a pane. `src/cactus/poke.py:336`
+: A row `poke` can reach: an owner plus an override, a webhook, or a pane. `src/cactus/poke.py` `reachable`
 
 visit
-: Focus the human's herdr view on a row's pane. `src/cactus/poke.py:348`
+: Focus the human's herdr view on a row's pane. `src/cactus/poke.py` `visit`
 
 delivery map
-: Per-agent JSON file at `CACTUS_POKE_WEBHOOKS`, default `~/.config/cactus/poke-webhooks.json`. Written atomically, mode 0600. `src/cactus/poke.py:125`
+: Per-agent JSON file at `CACTUS_POKE_WEBHOOKS`, default `~/.config/cactus/poke-webhooks.json`. Written atomically, mode 0600. `src/cactus/poke.py` `write_delivery`
 
 delivery entry
-: One agent's map value, any JSON object; unknown keys kept. `cactus deliver` writes `{"herdr": true}` or `{"url": URL}`. `src/cactus/poke.py:102`
+: One agent's map value, any JSON object; unknown keys kept. `cactus deliver` writes `{"herdr": true}` or `{"url": URL}`. `src/cactus/poke.py` `delivery_entry`
 
 herdr entry
-: `{"herdr": true}` with no `url`. After an answer, prompts the row's pane; `CACTUS_POKE` overrides; no pane, silent skip. `src/cactus/poke.py:112`, `src/cactus/poke.py:172`
+: `{"herdr": true}` with no `url`. After an answer, prompts the row's pane; `CACTUS_POKE` overrides; no pane, silent skip. `src/cactus/poke.py` `is_herdr_entry`, `deliver_if_mapped`
 
 webhook entry
-: Any entry that is not a herdr entry. After an answer, POSTs `{agent, message}`; ignores `CACTUS_POKE`. No string `url`: error. `src/cactus/poke.py:117`, `src/cactus/poke.py:197`
+: Any entry that is not a herdr entry. After an answer, POSTs `{agent, message}`; ignores `CACTUS_POKE`. No string `url`: error. `src/cactus/poke.py` `webhook_entry`, `_post_webhook`
 
 deliver
-: After an answer, push to an agent with a delivery entry. Unregistered agents get nothing. `src/cactus/poke.py:149`
+: After an answer, push to an agent with a delivery entry. Unregistered agents get nothing. `src/cactus/poke.py` `deliver_if_mapped`
 
 `cactus deliver`
-: Set, read, or remove an agent's delivery entry. Bare form prints it, exit 3 if none. `src/cactus/cli.py:1294`
+: Set, read, or remove an agent's delivery entry. Bare form prints it, exit 3 if none. `src/cactus/cli.py` `cmd_deliver`
 
 **Hooks**
 
@@ -124,7 +124,7 @@ open-row gate
 
 **Drift**
 
-- delivery map vs webhook map: same file. `poke.py` docstrings, errors, and `CACTUS_POKE_WEBHOOKS` say webhook; it also holds herdr entries. `src/cactus/poke.py:81`, `src/cactus/poke.py:95`
-- deliver vs poke: `poke_webhook_if_mapped` is a back-compat alias of `deliver_if_mapped`. `src/cactus/poke.py:183`
-- auto delivery vs CLAUDE.md: CLAUDE.md says the poke on an answer reaches webhook-mapped agents only and ignores `CACTUS_POKE`. Code also delivers to herdr entries, and those honor `CACTUS_POKE`. `CLAUDE.md:434`, `src/cactus/poke.py:172`
-- row vs question: CLI and docs say row; the type and table are `questions`. `src/cactus/store.py:317`
+- delivery map vs webhook map: same file. `poke.py` docstrings, errors, and `CACTUS_POKE_WEBHOOKS` say webhook; it also holds herdr entries. `src/cactus/poke.py` `webhooks_path`, `load_webhooks`
+- deliver vs poke: `poke_webhook_if_mapped` is a back-compat alias of `deliver_if_mapped`. `src/cactus/poke.py` `poke_webhook_if_mapped`
+- auto delivery vs CLAUDE.md: CLAUDE.md says the poke on an answer reaches webhook-mapped agents only and ignores `CACTUS_POKE`. Code also delivers to herdr entries, and those honor `CACTUS_POKE`. `CLAUDE.md (Invariants, the push-delivery bullet)`, `src/cactus/poke.py` `deliver_if_mapped`
+- row vs question: CLI and docs say row; the type and table are `questions`. `src/cactus/store.py` `Question`
