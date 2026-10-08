@@ -2640,9 +2640,9 @@ class CactusApp(App[int]):
         """Run a single-file row's action immediately, or arm a digit pick.
 
         A one-file row has nothing to pick, so `f`/`F` runs it straight away.
-        A multi-file row opens an fzf list on `f` when fzf is available,
-        otherwise (and always on `F`) it arms `file_pending` and waits ~1.5s for the
-        digit that names which one — `action_select_choice` intercepts it.
+        A multi-file row arms `file_pending` and waits ~1.5s for the digit
+        that names which one — `action_select_choice` intercepts it. A second
+        `f` while armed for view (`ff`) opens the fzf list instead.
         """
         q = self._current_question()
         if q is None or not q.files:
@@ -2651,14 +2651,26 @@ class CactusApp(App[int]):
         if len(q.files) == 1:
             self._run_file_action(q, mode, 0)
             return
-        from .shell import fzf_available
+        if (
+            mode == "view"
+            and self.file_pending == "view"
+            and self.file_pending_key == q.key
+        ):
+            from .shell import fzf_available
 
-        if mode == "view" and fzf_available():
-            self._run_file_list(q)
+            self._cancel_file_pending()
+            if fzf_available():
+                self._run_file_list(q)
+            else:
+                self.flash = "fzf not found"
+                self._rebuild_card()
             return
+        self._cancel_file_pending()
         self.file_pending = mode
         self.file_pending_key = q.key
-        self.flash = f"file 1-{len(q.files)}?"
+        self.flash = (
+            f"1-{len(q.files)} file · f list" if mode == "view" else f"file 1-{len(q.files)}?"
+        )
         self.file_pending_timer = self.set_timer(
             1.5, partial(self._disarm_file_pending, q.key)
         )
@@ -3022,7 +3034,13 @@ class CactusApp(App[int]):
             # leave a stale digit waiting to fire against a different row.
             if self._step_buffer and not (len(event.key) == 1 and event.key.isdigit()):
                 self._cancel_step_buffer()
-            if self.file_pending is not None and not (len(event.key) == 1 and event.key.isdigit()):
+            # `f` while armed for view is `ff` (the fzf list) — it must reach
+            # its binding still armed.
+            if (
+                self.file_pending is not None
+                and not (len(event.key) == 1 and event.key.isdigit())
+                and not (event.key == "f" and self.file_pending == "view")
+            ):
                 self._cancel_file_pending()
                 self._rebuild_card()
             if not self.free_text_mode and not self.elaborating:

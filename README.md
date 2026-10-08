@@ -172,7 +172,7 @@ cactus --version
 ```
 
 `f`/`F` in the TUI preview (pager) / edit (editor) a row's attached file; a
-row with more than one lists its files in fzf for `f` (digit pick for `F`, or without fzf).
+row with more than one arms a digit (`f1` opens the first) and `ff` lists them in fzf (preview below, ctrl-c cancels). `F` edits by digit.
 
 Full reference: `cactus --agent-help`.
 

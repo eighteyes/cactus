@@ -469,7 +469,7 @@ async def test_view_edit_two_file_row_digit_picks_the_file(
     assert f"{q.key} has no file" not in app.flash
 
 
-async def test_view_two_file_row_opens_fzf_list_with_the_files(
+async def test_ff_opens_fzf_list_with_the_files(
     store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     script, log = _logging_script(tmp_path)
@@ -486,9 +486,90 @@ async def test_view_two_file_row_opens_fzf_list_with_the_files(
         await pilot.pause()
         await pilot.press("f")
         await pilot.pause()
+        assert app.file_pending == "view"
+        assert not log.exists()
+        await pilot.press("f")
+        await pilot.pause()
         assert app.file_pending is None
 
     assert log.read_text().strip() == f"{one} {two}"
+
+
+async def test_f1_opens_first_file_in_pager_not_fzf(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, log = _logging_script(tmp_path)
+    monkeypatch.setenv("CACTUS_FZF", str(script))
+    (tmp_path / "p").mkdir()
+    pager, pager_log = _logging_script(tmp_path / "p")
+    monkeypatch.setenv("CACTUS_PAGER", f"{pager} {{path}}")
+
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    store.ask("two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+        assert app.file_pending is None
+
+    assert not log.exists()
+    assert pager_log.read_text().strip() == str(one)
+
+
+async def test_ff_without_fzf_flashes_and_disarms(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CACTUS_FZF", "off")
+
+    one = tmp_path / "one.txt"
+    one.write_text("1")
+    two = tmp_path / "two.txt"
+    two.write_text("2")
+    store.ask("two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)])
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.file_pending == "view"
+        await pilot.press("f")
+        await pilot.pause()
+        assert app.file_pending is None
+        assert "fzf not found" in app.flash
+
+
+def test_pick_file_argv_stacks_preview_aborts_on_ctrl_c_and_restores_sigint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import signal
+    import subprocess
+
+    from cactus import shell
+
+    monkeypatch.delenv("CACTUS_FZF", raising=False)
+    seen: dict = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["handler"] = signal.getsignal(signal.SIGINT)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    before = signal.getsignal(signal.SIGINT)
+    shell.pick_file(["/a", "/b"])
+
+    argv = seen["argv"]
+    assert argv[argv.index("--preview-window") + 1] == "down,60%"
+    assert "ctrl-c:abort" in argv
+    assert seen["handler"] == signal.SIG_IGN
+    assert signal.getsignal(signal.SIGINT) == before
 
 
 async def test_edit_two_file_row_still_arms_digit_pick_with_fzf_on(
@@ -533,26 +614,6 @@ async def test_view_one_file_row_skips_fzf(
 
     assert not log.exists()
     assert pager_log.read_text().strip() == str(target)
-
-
-async def test_view_two_file_row_without_fzf_arms_digit_pick(
-    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("CACTUS_FZF", raising=False)
-    monkeypatch.setenv("PATH", str(tmp_path))  # no fzf anywhere
-
-    one = tmp_path / "one.txt"
-    one.write_text("1")
-    two = tmp_path / "two.txt"
-    two.write_text("2")
-    store.ask("two files", project=project, cwd=project, agent=AGENT, files=[str(one), str(two)])
-
-    app = CactusApp(store, project=project)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        await pilot.press("f")
-        await pilot.pause()
-        assert app.file_pending == "view"
 
 
 async def test_view_file_disarmed_by_an_unrelated_key(

@@ -541,14 +541,15 @@ scope.
   `Store.set_files`, which refuses a `cleared` row like `set_review`/
   `set_steps`. The TUI's `f`/`F` bind only on a row with files
   (`check_action`); a one-file row runs immediately, a multi-file row's `f`
-  opens an fzf list of its files (`shell.pick_file`: diff-vs-HEAD or glow/bat
-  preview, enter pages the file, esc returns; `CACTUS_FZF` is a command
-  template with `{files}`, `off` disables, tests set it `off`) and without fzf,
-  like `F`, arms
-  `file_pending` ("view"/"edit") and takes the next digit via
+  arms `file_pending` ("view"; `F` arms "edit") and takes the next digit
+  (`f1` opens the first file), or a second `f` (`ff`) opens an fzf list of
+  its files (`shell.pick_file`: diff-vs-HEAD or glow/bat preview stacked
+  below the list, enter pages the file, esc/ctrl-c return; SIGINT is ignored
+  in the parent meanwhile; no fzf flashes `fzf not found`; `CACTUS_FZF` is a
+  command template with `{files}`, `off` disables, tests set it `off`), taking the digit via
   `action_select_choice` (which `check_action` also lets through while armed,
-  even on a row with no choices of its own) — any other key, or a row move,
-  disarms it (`on_event`'s pre-dispatch hook, mirroring the plan-step
+  even on a row with no choices of its own) — any other key (bar the `f` of
+  `ff`), or a row move, disarms it (`on_event`'s pre-dispatch hook, mirroring the plan-step
   buffer). Both actions run the external program under `App.suspend()`,
   falling back on `SuspendNotSupported` (the headless test driver);
   `CACTUS_PAGER`/`CACTUS_EDITOR` override the pager/editor template with

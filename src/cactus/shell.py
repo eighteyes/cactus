@@ -17,12 +17,15 @@ Responsibilities:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import shutil
 import subprocess
+import signal
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Iterator
 
@@ -198,8 +201,25 @@ def _fzf_open() -> str:
     return f'case {{}} in *.md) {md or other};; *) {other};; esac'
 
 
+@contextlib.contextmanager
+def _sigint_ignored() -> Iterator[None]:
+    """Ignore SIGINT in this process while a foreground child owns the tty.
+
+    The child shares the process group, so ctrl-c reaches us too. Main thread
+    only (signal.signal refuses elsewhere); the old handler is restored.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def pick_file(files: list[str]) -> str:
-    """List `files` in fzf with a preview; enter pages one, esc returns.
+    """List `files` in fzf with a preview; enter pages one, esc/ctrl-c return.
 
     CACTUS_FZF overrides the command: a template split with shlex, each
     `{files}` argument expanded to every path (paths are appended when none
@@ -217,16 +237,20 @@ def pick_file(files: list[str]) -> str:
                 argv = [*argv[:at], *files, *argv[at + 1:]]
             else:
                 argv = [*argv, *files]
-            subprocess.call(argv)
+            with _sigint_ignored():
+                subprocess.call(argv)
         else:
             argv = [
                 "fzf", "--preview", _fzf_preview(),
-                "--preview-window", "right,60%",
+                "--preview-window", "down,60%",
                 "--bind", f"enter:execute({_fzf_open()})",
+                "--bind", "ctrl-c:abort",
             ]
-            subprocess.run(
-                argv, input="\n".join(files) + "\n", text=True, stdout=subprocess.DEVNULL
-            )
+            with _sigint_ignored():
+                subprocess.run(
+                    argv, input="\n".join(files) + "\n", text=True,
+                    stdout=subprocess.DEVNULL,
+                )
     except FileNotFoundError:
         raise ShellError(f"{argv[0]}: not found") from None
     except OSError as exc:
