@@ -43,3 +43,27 @@ B2 mac-package: an installable app.
 **Order:** A1 and A2 run in parallel in worktrees (both touch www.py, different regions), merged by lead. B1 and B2 run in parallel in the shared checkout (disjoint files).
 
 **Done:** each job a commit with a passing check, verified by lead; a cactus review row per project for the human.
+
+**B3 mac-design** (human, 2026-10-09: "put it on ctrl-space ... basic app design, make it match the tui at least")
+- Default hotkey ⌃Space (kVK_Space + controlKey); the `hotkeyKeyCode`/`hotkeyModifiers` defaults override still wins. macOS input-source shortcuts (60/61) are off on this Mac, so ⌃Space is free here; the README line notes the conflict for other Macs.
+- Match the TUI: same layout (rail of rows left, card right, key bar docked at the card's bottom), same colours (lifted from tui.py `CSS`, line 699 on), monospace type, rail rows a fixed block height with the active row marked the way the TUI marks it, card titled like the TUI's border title, key bar listing the keys valid for the focused row.
+- Reference first: render the TUI headless (Textual `run_test` + `save_screenshot`) against a scratch DB seeded with one choice, multi, text, review and plan row; save SVGs to .ai/tmp/mac-design/. Build the SwiftUI to match them.
+- Out: the sky/garden field, settings, projects page, answers view.
+
+**B4 mac-keys** (human, 2026-10-09: arrows don't switch questions; "wire tab for next question")
+- Next/previous question: ↓/↑, j/k, Tab/⇧Tab. Tab works from inside the text field too: leaves it, keeps the draft, moves on.
+- Rest of the job comes from .ai/tests/user-monkey-cactus-app.md.
+- Fix every firm surprise in .ai/tests/user-monkey-cactus-app.md (fb7ac72), lead decisions:
+  - #1/#2 movement as above; ⇧Tab previous.
+  - #3 Esc in the text field returns key focus to the panel (still visible); a second Esc hides.
+  - #4 hide drops typing mode; drafts stay per row.
+  - #5 key bar while typing shows only the field's keys (enter submit, esc leave, tab next).
+  - #6 a human clear needs a human verb: new `cactus retire KEY...` in cli.py, no `--agent`, no ownership gate, `Store.clear(record=True)` like the TUI's `c`; exits 3 on a missing key. `cactus clear` stays the agent verb. App's `c` calls `retire`.
+  - #7 digits toggle plan steps (`cactus plan KEY --done N` / `--undone N`, no --agent).
+  - #8 the same digit again unpicks a single choice.
+  - #9 a per-session undo stack like the TUI's: answer, skip, retire, step toggle; `u` pops it, whatever row is selected. Undoing a retire: `cactus retire --undo KEY` (Store.reopen, withdraw_pass on a pass-closed row).
+  - #10 `p`/`f` on a review row, and enter, submit the highlighted pick with any typed text.
+  - #11 hide only when another app becomes active (NSApplication didResignActive), not on window resignKey.
+  - #12 an unbound key flashes `no key X here` in the status line.
+  - #13/#14 try to reproduce; fix if found, else leave as notes.
+  - Human, 2026-10-09: "auto advance on select". Match the TUI (tui.py:3572 action_select_choice, 3883 _advance_after): a digit on a single-choice or confirm row submits at once (with any typed draft) and the cursor moves to the next open row at the same index; answered rows leave the list. Multi rows keep toggle + enter, and enter-submit advances the same way. This replaces #8 (unpick): `u` undoes a wrong pick.

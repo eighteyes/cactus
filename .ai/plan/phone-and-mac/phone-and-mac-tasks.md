@@ -6,4 +6,6 @@
 - [ ] A3 ios-app: parked (Xcode + Apple account)
 - [x] B1 mac-parity: multi, text, recommend, review/plan, reopen
 - [x] B2 mac-package: build-mac-app.sh, Cactus.app, sign/notarize gates
+- [x] B3 mac-design: ⌃Space, match the TUI
+- [x] B4 mac-keys: arrows, tab, esc, retire, undo stack, auto-advance (2145aea)
 - [ ] lead: cactus review row per project
