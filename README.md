@@ -153,6 +153,8 @@ cactus --watch        # read-only feed
 cactus --www          # localhost web surface (--host tailscale for a phone: token login, see `cactus www-token`)
 ```
 
+The Mac menu-bar app (`mac/`) opens its panel on ⌃Space; if another app or an input-source shortcut already owns it, override with the `hotkeyKeyCode`/`hotkeyModifiers` defaults.
+
 Agents:
 
 ```sh

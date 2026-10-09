@@ -1,6 +1,6 @@
 // Panel.swift — the floating, non-activating window that hosts the rail+card UI.
 // Responsibilities:
-// - An NSPanel styled as a HUD: nonactivating, floating, titleless, key-able.
+// - An NSPanel styled like the TUI (dark, no HUD material): nonactivating, floating, titleless, key-able.
 // - toggle() shows/hides it, centered on the screen under the mouse pointer.
 // - Hide on Esc and on losing key status, so it behaves like a popover.
 
@@ -12,11 +12,13 @@ final class CactusPanel: NSPanel {
 
     convenience init<Content: View>(rootView: Content) {
         self.init(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
-            styleMask: [.nonactivatingPanel, .hudWindow, .resizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 460),
+            styleMask: [.nonactivatingPanel, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        self.backgroundColor = NSColor(red: 0x12 / 255, green: 0x12 / 255, blue: 0x12 / 255, alpha: 1)
+        self.appearance = NSAppearance(named: .darkAqua)
         self.titleVisibility = .hidden
         self.titlebarAppearsTransparent = true
         self.isMovableByWindowBackground = true
