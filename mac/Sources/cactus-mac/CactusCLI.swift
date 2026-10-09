@@ -2,7 +2,7 @@
 // Responsibilities:
 // - Resolve the `cactus` binary once, via a login-shell PATH lookup, since a
 //   GUI app launched outside a terminal gets a bare PATH.
-// - Run `feed`, `answer`, `undo`, and `clear` as subprocesses with `--json`, mirroring
+// - Run `feed`, `answer`, `undo`, `retire`, and `plan` as subprocesses with `--json`, mirroring
 //   the precedent in src/cactus/mcp.py: cli.py stays the only validator.
 // - Decode stdout with Codable; a non-zero exit throws with the CLI's own
 //   stderr line rather than the process's exit code alone.
@@ -78,7 +78,7 @@ final class CactusCLI {
 
     func feed() async throws -> Feed {
         try await Task.detached(priority: .utility) { [self] in
-            let data = try run(["feed", "--json", "-s", "open,live,elaborate,answered"])
+            let data = try run(["feed", "--json", "-s", "open,live,elaborate"])
             return try JSONDecoder().decode(Feed.self, from: data)
         }.value
     }
@@ -107,9 +107,20 @@ final class CactusCLI {
         }.value
     }
 
-    func clear(key: String) async throws {
+    /// `cactus retire KEY` (the human's clear, no ownership gate), or
+    /// `--undo` to restore it.
+    func retire(key: String, undo: Bool = false) async throws {
+        let arguments = ["retire", key, "--json"] + (undo ? ["--undo"] : [])
         _ = try await Task.detached(priority: .utility) { [self] in
-            try run(["clear", key])
+            try run(arguments)
+        }.value
+    }
+
+    /// `cactus plan KEY --done N` / `--undone N`: tick or untick a 1-based step.
+    func setStep(key: String, n: Int, done: Bool) async throws {
+        let arguments = ["plan", key, done ? "--done" : "--undone", String(n), "--json"]
+        _ = try await Task.detached(priority: .utility) { [self] in
+            try run(arguments)
         }.value
     }
 }

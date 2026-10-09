@@ -154,6 +154,7 @@ cactus --www          # localhost web surface (--host tailscale for a phone: tok
 ```
 
 The Mac menu-bar app (`mac/`) opens its panel on ⌃Space; if another app or an input-source shortcut already owns it, override with the `hotkeyKeyCode`/`hotkeyModifiers` defaults.
+Keys: ↑/↓, j/k, Tab/⇧Tab move; a digit answers (toggles on a multi, ticks a plan step) and advances; enter submits; i types (esc leaves, tab moves on); s skip; c retire; u undo; p/f pass/fail; esc hides.
 
 Agents:
 

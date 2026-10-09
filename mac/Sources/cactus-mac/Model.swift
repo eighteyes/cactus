@@ -190,6 +190,11 @@ final class Poller: ObservableObject {
         start(interval: visible ? 0.5 : 5.0)
     }
 
+    /// Poll now, outside the timer: after the app's own write.
+    func refresh() {
+        tick()
+    }
+
     private func tick() {
         Task {
             do {

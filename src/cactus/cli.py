@@ -1243,6 +1243,55 @@ def cmd_reopen(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     return EXIT_OK
 
 
+def cmd_retire(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Retire rows as the human does (TUI `c`), or restore them with --undo.
+
+    A human verb like `answer`: no --agent, no ownership gate, and the clear
+    writes its decision record. `cactus clear` stays the agent verb. A missing
+    ref refuses the whole call before any row changes. --undo restores
+    cleared rows through `Store.reopen(withdraw_pass=True)`, so a pass-closed
+    review goes back `live` without its pass, the same as the TUI's `u`.
+    """
+    try:
+        refs = [(k, *store.resolve_ref(k, project)) for k in args.keys]
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    rows = [(raw, rproj, rkey, store.get(rkey, project=rproj)) for raw, rproj, rkey in refs]
+    missing = [raw for raw, _, _, q in rows if q is None]
+    if missing:
+        print(f"cactus: no such question: {', '.join(missing)}", file=sys.stderr)
+        return EXIT_EMPTY
+
+    if args.undo:
+        not_cleared = [raw for raw, _, _, q in rows if q.status != "cleared"]
+        if not_cleared:
+            print(f"cactus: not cleared, nothing to restore: {', '.join(not_cleared)}",
+                  file=sys.stderr)
+            return EXIT_ERROR
+        results = [store.reopen(rkey, project=rproj, withdraw_pass=True)
+                   for _, rproj, rkey, _ in rows]
+        if args.json:
+            json.dump([q.as_dict() for q in results], sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        else:
+            _print_questions(results, as_json=False, show_project=False)
+        return EXIT_OK
+
+    count = 0
+    by_project: dict[str, list[str]] = {}
+    for _, rproj, rkey, _ in rows:
+        by_project.setdefault(rproj, []).append(rkey)
+    for rproj, rkeys in by_project.items():
+        count += store.clear(keys=rkeys, project=rproj, record=True)
+    if args.json:
+        json.dump({"cleared": count}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print(f"cleared {count}")
+    return EXIT_OK
+
+
 def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """Emit the actionable inbox as one document, for a projector to render.
 
@@ -1866,6 +1915,12 @@ def build_parser() -> argparse.ArgumentParser:
     ro.add_argument("keys", nargs="+")
     ro.add_argument("--agent", help="required to reopen a row you own")
     ro.set_defaults(fn=cmd_reopen)
+
+    rt = verb("retire", help="retire rows as the human (TUI c); --undo restores them")
+    rt.add_argument("keys", nargs="+")
+    rt.add_argument("--undo", action="store_true",
+                    help="restore cleared rows (a pass-closed review loses its pass)")
+    rt.set_defaults(fn=cmd_retire)
 
     fd = verb(
         "feed", help="the actionable inbox as one JSON document, for a projector",

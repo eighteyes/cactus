@@ -888,3 +888,42 @@ def test_www_token_prints_path_and_rotates(cli) -> None:
     again = cli("www-token")
     assert first.stdout == again.stdout
     assert cli("www-token", "--rotate").stdout != first.stdout
+
+
+def test_retire_clears_another_agents_row_without_agent(cli):
+    cli("ask", "--no-wait", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    r = cli("retire", "q1", "--json")
+    assert r.returncode == 0 and json.loads(r.stdout) == {"cleared": 1}
+    assert _row(cli)["status"] == "cleared"
+
+
+def test_retire_refuses_whole_call_on_a_missing_ref(cli):
+    cli("ask", "--no-wait", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    r = cli("retire", "q1", "q99")
+    assert r.returncode == 3 and len(r.stderr.strip().splitlines()) == 1
+    assert _row(cli)["status"] == "open"
+
+
+def test_retire_takes_a_qualified_ref(cli, project):
+    cli("ask", "--no-wait", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    assert cli("retire", f"{project}:q1").returncode == 0
+    assert _row(cli)["status"] == "cleared"
+
+
+def test_retire_undo_restores_and_refuses_uncleared(cli):
+    cli("ask", "--no-wait", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    assert cli("retire", "--undo", "q1").returncode == 1  # not cleared
+    cli("answer", "q1", "-s", "a")
+    cli("retire", "q1")
+    r = cli("retire", "--undo", "q1", "--json")
+    assert r.returncode == 0 and json.loads(r.stdout)[0]["status"] == "answered"
+    assert cli("retire", "--undo", "q99").returncode == 3
+
+
+def test_retire_undo_withdraws_a_closing_pass(cli):
+    cli("ask", "check", "--act", "review", "--no-wait", "--agent", AGENT_A)
+    cli("answer", "q1", "-s", "pass")
+    assert _row(cli)["status"] == "cleared"
+    assert cli("retire", "--undo", "q1").returncode == 0
+    row = _row(cli)
+    assert row["status"] == "live" and row["answer"] is None

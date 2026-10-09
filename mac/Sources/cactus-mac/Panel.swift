@@ -2,10 +2,18 @@
 // Responsibilities:
 // - An NSPanel styled like the TUI (dark, no HUD material): nonactivating, floating, titleless, key-able.
 // - toggle() shows/hides it, centered on the screen under the mouse pointer.
-// - Hide on Esc and on losing key status, so it behaves like a popover.
+// - Hide on Esc, and (via AppDelegate) when another app becomes active —
+//   never on a bare key-status change, which a focus shuffle inside the panel
+//   can trigger.
+// - Post panelShown/panelHidden so the view can reset its typing mode.
 
 import AppKit
 import SwiftUI
+
+extension Notification.Name {
+    static let cactusPanelShown = Notification.Name("cactusPanelShown")
+    static let cactusPanelHidden = Notification.Name("cactusPanelHidden")
+}
 
 final class CactusPanel: NSPanel {
     var onVisibilityChange: ((Bool) -> Void)?
@@ -31,11 +39,6 @@ final class CactusPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    override func resignKey() {
-        super.resignKey()
-        hidePanel()
-    }
-
     override func cancelOperation(_ sender: Any?) {
         // Esc.
         hidePanel()
@@ -60,11 +63,16 @@ final class CactusPanel: NSPanel {
         NSApp.activate(ignoringOtherApps: true)
         makeKeyAndOrderFront(nil)
         onVisibilityChange?(true)
+        NotificationCenter.default.post(name: .cactusPanelShown, object: self)
     }
 
-    private func hidePanel() {
+    func hidePanel() {
+        guard isVisible else { return }
         orderOut(nil)
+        // Hand activation back to the app behind, so typing resumes there.
+        if NSApp.isActive { NSApp.hide(nil) }
         onVisibilityChange?(false)
+        NotificationCenter.default.post(name: .cactusPanelHidden, object: self)
     }
 
     private func screenUnderMouse() -> NSScreen? {

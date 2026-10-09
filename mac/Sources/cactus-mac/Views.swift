@@ -8,13 +8,19 @@
 //   row allowing free text) get a field; review rows show the verify block,
 //   verdict history, p/f pass/fail; plan rows show steps and take text verdicts;
 //   answered rows show the answer and `u` undoes it.
-// - Keyboard: j/k move row, digit selects/toggles, Enter submits, s skips,
-//   c clears, i types, u undoes, Esc leaves the field then hides (panel).
-//   While the text field has focus every shortcut is off.
+// - Keyboard: j/k, arrows, Tab/Shift-Tab move row (Tab also from the field,
+//   keeping its draft); a digit on a single-choice/confirm row submits at
+//   once (auto-advance, as the TUI), toggles on a multi, ticks a plan step;
+//   Enter submits; every submit reloads and keeps the cursor index, so the
+//   next open row slides under it; s skips, c retires, i types, u pops the session undo
+//   stack; Esc leaves the field, a second Esc hides. While typing only
+//   enter/esc/tab act. An unbound key flashes `no key X here`.
+// - Drafts are kept per row; hiding the panel ends typing mode.
 // - Renders question/context/choice text as plain strings, never Markdown.
 // - Key bar docked at the card's bottom, listing keys valid for the focused row.
 // - Shows CactusCLI errors in a status line.
 
+import AppKit
 import SwiftUI
 
 /// Colours lifted from the TUI's rendered SVG (.ai/tmp/mac-design/tui-0.svg).
@@ -51,8 +57,13 @@ struct ContentView: View {
     @State private var selectedChoice: String?
     @State private var toggled: Set<String> = []
     @State private var draft = ""
+    @State private var drafts: [String: String] = [:]
+    @State private var currentID: String?
     @FocusState private var fieldFocused: Bool
     @State private var errorMessage: String?
+    @State private var flash: String?
+    @State private var undoStack: [UndoEntry] = []
+    @State private var focusAfterReload: String?
     @FocusState private var isFocused: Bool
 
     private var questions: [Question] { poller.questions }
@@ -77,12 +88,23 @@ struct ContentView: View {
         .focused($isFocused)
         .onAppear { isFocused = true }
         .onKeyPress(action: handleKeyPress)
-        .onChange(of: selectedRow) { _, _ in resetChoice() }
+        .onChange(of: selectedRow) { _, _ in rowChanged() }
         .onChange(of: questions) { _, _ in
+            if let address = focusAfterReload,
+               let index = questions.firstIndex(where: { $0.address == address }) {
+                focusAfterReload = nil
+                selectedRow = index
+            }
             if selectedRow >= questions.count {
                 selectedRow = max(0, questions.count - 1)
             }
-            resetChoice()
+            rowChanged()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cactusPanelHidden)) { _ in
+            leaveField()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cactusPanelShown)) { _ in
+            leaveField()
         }
     }
 
@@ -214,10 +236,14 @@ struct ContentView: View {
                                 .background(Theme.rail)
                                 .focused($fieldFocused)
                                 .onKeyPress(.escape) {
-                                    fieldFocused = false
+                                    leaveField()
                                     return .handled
                                 }
-                                .onSubmit { submitText() }
+                                .onKeyPress(.tab) {
+                                    moveRow(NSEvent.modifierFlags.contains(.shift) ? -1 : 1)
+                                    return .handled
+                                }
+                                .onSubmit { submitSelection() }
                         }
                     }
                     .padding(.horizontal, 16)
@@ -289,14 +315,16 @@ struct ContentView: View {
 
     /// Keys valid for the focused row, the TUI's `_keybar_items` in miniature.
     private func keyBarItems(_ q: Question?) -> [(String, String)] {
+        if typing { return [("enter", "submit"), ("esc", "leave"), ("tab", "next")] }
         guard let q else { return [("j/k", "move")] }
         var items: [(String, String)] = []
         if q.isAnswered {
-            return [("u", "undo"), ("c", "clear"), ("j/k", "move")]
+            return [("u", "undo"), ("c", "clear"), ("j/k/tab", "move")]
         }
         if q.act == "review" {
             items += [("p", "pass"), ("f", "fail")]
         } else if q.act == "plan" {
+            if !q.steps.isEmpty { items.append(("1-\(min(q.steps.count, 9))", "step")) }
             items.append(("i", "note"))
         } else if q.kind == "multi" {
             items.append(("1-\(max(q.choices.count, 1))", "toggle"))
@@ -309,8 +337,8 @@ struct ContentView: View {
         }
         if q.allowFree && q.act != "plan" { items.append(("i", "type")) }
         items += [("s", "skip"), ("c", "clear")]
-        if !q.answers.isEmpty { items.append(("u", "undo")) }
-        items += [("j/k", "move"), ("esc", "hide")]
+        if !undoStack.isEmpty { items.append(("u", "undo")) }
+        items += [("j/k/tab", "move"), ("esc", "hide")]
         return items
     }
 
@@ -331,6 +359,8 @@ struct ContentView: View {
         return HStack {
             if let message = errorMessage ?? poller.lastError {
                 Text(message).foregroundStyle(.red).lineLimit(1)
+            } else if let flash {
+                Text(flash).foregroundStyle(Theme.accent).lineLimit(1)
             } else {
                 Text("\(open) open · \(live) live").lineLimit(1)
             }
@@ -348,12 +378,25 @@ struct ContentView: View {
         return questions[selectedRow]
     }
 
-    private func resetChoice() {
+    /// On a row move or a feed change: when the focused row is a different
+    /// one, park the old draft, load the new row's, reset picks, leave the
+    /// field. The same row keeps its picks and draft across a poll.
+    private func rowChanged() {
+        let newID = currentQuestion?.id
+        guard newID != currentID else { return }
+        if let currentID { drafts[currentID] = draft.isEmpty ? nil : draft }
+        currentID = newID
         let recommended = currentQuestion?.recommend ?? []
         selectedChoice = recommended.first
         toggled = currentQuestion?.kind == "multi" ? Set(recommended) : []
-        draft = ""
+        draft = newID.flatMap { drafts[$0] } ?? ""
+        leaveField()
+    }
+
+    /// Typing mode off, key focus back on the panel root.
+    private func leaveField() {
         fieldFocused = false
+        isFocused = true
     }
 
     private func truncate(_ text: String, _ limit: Int) -> String {
@@ -364,51 +407,135 @@ struct ContentView: View {
 
     // MARK: keyboard
 
+    /// One undoable action from this session, newest last (the TUI's undo stack).
+    enum UndoEntry {
+        var address: String {
+            switch self {
+            case let .answer(address, _), let .retire(address, _), let .step(address, _, _, _):
+                return address
+            }
+        }
+
+        case answer(address: String, key: String)
+        case retire(address: String, key: String)
+        case step(address: String, key: String, n: Int, wasDone: Bool)
+
+        var label: String {
+            switch self {
+            case let .answer(_, key): return "answer on \(key)"
+            case let .retire(_, key): return "retire of \(key)"
+            case let .step(_, key, n, _): return "step \(n) on \(key)"
+            }
+        }
+    }
+
     private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        // While typing the field's own handlers take esc and tab; the rest is text.
         if typing { return .ignored }
+        if press.modifiers.contains(.command) || press.modifiers.contains(.control) {
+            return .ignored
+        }
         errorMessage = nil
+        flash = nil
+        // Shift-Tab arrives as the backtab character on macOS.
+        if press.characters == "\u{19}" {
+            moveRow(-1)
+            return .handled
+        }
         switch press.key {
+        case .downArrow:
+            moveRow(1)
+            return .handled
+        case .upArrow:
+            moveRow(-1)
+            return .handled
+        case .tab:
+            moveRow(press.modifiers.contains(.shift) ? -1 : 1)
+            return .handled
+        case .return:
+            submitSelection()
+            return .handled
+        case .escape:
+            return .ignored  // the panel's cancelOperation hides it
+        default:
+            break
+        }
+        let ch = press.characters
+        switch ch {
         case "j":
             moveRow(1)
             return .handled
         case "k":
             moveRow(-1)
             return .handled
-        case .return:
-            submitSelection()
-            return .handled
         case "s":
             submitSkip()
             return .handled
         case "i":
-            guard let question = currentQuestion, showsField(question) else { return .ignored }
+            guard let question = currentQuestion, showsField(question) else { return unbound(ch) }
             fieldFocused = true
             return .handled
         case "u":
-            submitUndo()
+            popUndo()
             return .handled
-        case "p":
-            return submitVerdict("pass")
-        case "f":
-            return submitVerdict("fail")
+        case "p", "f":
+            return submitVerdict(ch == "p" ? "pass" : "fail") ? .handled : unbound(ch)
         case "c":
-            submitClear()
+            submitRetire()
             return .handled
         default:
             break
         }
-        if let scalar = press.characters.unicodeScalars.first,
+        if let scalar = ch.unicodeScalars.first,
            let digit = scalar.properties.numericValue,
            digit >= 1, digit <= 9 {
-            selectChoice(at: Int(digit) - 1)
-            return .handled
+            return pressDigit(Int(digit)) ? .handled : unbound(ch)
         }
-        return .ignored
+        return unbound(ch)
+    }
+
+    /// Flash why a key did nothing, the TUI's gated-key flash.
+    private func unbound(_ characters: String) -> KeyPress.Result {
+        let printable = characters.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value < 0xF700 }
+        let name = characters == " " ? "space" : (printable && !characters.isEmpty ? characters : "that")
+        flash = "no key \(name) here"
+        return .handled
     }
 
     private func moveRow(_ delta: Int) {
         guard !questions.isEmpty else { return }
         selectedRow = max(0, min(questions.count - 1, selectedRow + delta))
+        // Same row (an edge): still leave the field so the keys navigate.
+        leaveField()
+    }
+
+    /// A digit: tick a plan step, toggle a multi choice, else submit the
+    /// choice at once with any typed draft (the TUI's action_select_choice).
+    private func pressDigit(_ n: Int) -> Bool {
+        guard let question = currentQuestion, !question.isAnswered else { return false }
+        if question.act == "plan", let step = question.steps.first(where: { $0.n == n }) {
+            toggleStep(question, step)
+            return true
+        }
+        guard question.choices.indices.contains(n - 1) else { return false }
+        if question.kind == "multi" {
+            selectChoice(at: n - 1)
+        } else {
+            record(question, labels: [question.choices[n - 1].label], text: draft)
+        }
+        return true
+    }
+
+    private func toggleStep(_ question: Question, _ step: Step) {
+        let entry = UndoEntry.step(address: question.address, key: question.key,
+                                   n: step.n, wasDone: step.done)
+        run({
+            try await cli.setStep(key: question.address, n: step.n, done: !step.done)
+        }) {
+            undoStack.append(entry)
+            flash = "step \(step.n) \(step.done ? "undone" : "done")"
+            poller.refresh()
+        }
     }
 
     private func selectChoice(at index: Int) {
@@ -418,10 +545,11 @@ struct ContentView: View {
         if question.kind == "multi" {
             if toggled.contains(label) { toggled.remove(label) } else { toggled.insert(label) }
         } else {
-            selectedChoice = label
+            record(question, labels: [label], text: draft)
         }
     }
 
+    /// Enter, outside the field or in it: the pick(s) plus any typed text.
     private func submitSelection() {
         guard let question = currentQuestion else { return }
         if question.isAnswered { return }
@@ -430,7 +558,7 @@ struct ContentView: View {
             if draft.isEmpty {
                 if showsField(question) { fieldFocused = true } else { errorMessage = "nothing to submit" }
             } else {
-                submitText()
+                record(question, labels: [], text: draft)
             }
             return
         }
@@ -449,61 +577,92 @@ struct ContentView: View {
         } else {
             labels = []
         }
-        let text = draft
-        run {
-            try await cli.answer(key: question.address, labels: labels, text: text, skip: false)
-        }
+        record(question, labels: labels, text: draft)
     }
 
-    private func submitText() {
-        guard let question = currentQuestion, !draft.isEmpty else { return }
-        let text = draft
-        draft = ""
-        fieldFocused = false
-        run {
-            try await cli.answer(key: question.address, labels: [], text: text, skip: false)
-        }
-    }
-
-    /// Review rows only: p/f record the pass or fail verdict by label.
-    private func submitVerdict(_ label: String) -> KeyPress.Result {
+    /// Review rows only: p/f record pass or fail with any typed text.
+    private func submitVerdict(_ label: String) -> Bool {
         guard let question = currentQuestion, question.act == "review", !question.isAnswered,
-              question.choices.contains(where: { $0.label == label }) else { return .ignored }
-        run {
-            try await cli.answer(key: question.address, labels: [label], text: nil, skip: false)
-        }
-        return .handled
+              question.choices.contains(where: { $0.label == label }) else { return false }
+        record(question, labels: [label], text: draft)
+        return true
     }
 
-    private func submitUndo() {
-        guard let question = currentQuestion else { return }
-        guard question.isAnswered || !question.answers.isEmpty else {
-            errorMessage = "nothing to undo"
-            return
+    /// Answer the row, push it on the undo stack, drop its draft, reload now.
+    private func record(_ question: Question, labels: [String], text: String) {
+        leaveField()
+        run({
+            try await cli.answer(key: question.address, labels: labels, text: text, skip: false)
+        }) {
+            undoStack.append(.answer(address: question.address, key: question.key))
+            drafts[question.id] = nil
+            if currentID == question.id { draft = "" }
+            flash = "recorded " + (labels.isEmpty ? "text" : labels.joined(separator: ", "))
+            poller.refresh()
         }
-        run {
-            try await cli.undo(key: question.address)
+    }
+
+    /// `u`: pop the newest session action and reverse it, whatever row is
+    /// selected; an entry whose reversal fails (row purged, already undone)
+    /// is skipped, like the TUI's action_undo.
+    private func popUndo() {
+        Task {
+            while let entry = undoStack.popLast() {
+                do {
+                    try await undo(entry)
+                    flash = "undid \(entry.label)"
+                    focusAfterReload = entry.address
+                    poller.refresh()
+                    return
+                } catch {
+                    continue
+                }
+            }
+            flash = "nothing to undo"
+        }
+    }
+
+    private func undo(_ entry: UndoEntry) async throws {
+        switch entry {
+        case let .answer(address, _):
+            try await cli.undo(key: address)
+        case let .retire(address, _):
+            try await cli.retire(key: address, undo: true)
+        case let .step(address, _, n, wasDone):
+            try await cli.setStep(key: address, n: n, done: wasDone)
         }
     }
 
     private func submitSkip() {
         guard let question = currentQuestion else { return }
-        run {
+        leaveField()
+        run({
             try await cli.answer(key: question.address, labels: [], text: nil, skip: true)
+        }) {
+            undoStack.append(.answer(address: question.address, key: question.key))
+            flash = "skipped \(question.key)"
+            poller.refresh()
         }
     }
 
-    private func submitClear() {
+    private func submitRetire() {
         guard let question = currentQuestion else { return }
-        run {
-            try await cli.clear(key: question.address)
+        leaveField()
+        run({
+            try await cli.retire(key: question.address)
+        }) {
+            undoStack.append(.retire(address: question.address, key: question.key))
+            flash = "retired \(question.key)"
+            poller.refresh()
         }
     }
 
-    private func run(_ operation: @escaping () async throws -> Void) {
+    private func run(_ operation: @escaping () async throws -> Void,
+                     onSuccess: (() -> Void)? = nil) {
         Task {
             do {
                 try await operation()
+                onSuccess?()
             } catch {
                 errorMessage = "\(error)"
             }

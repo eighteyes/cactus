@@ -493,6 +493,13 @@ scope.
   answers. Exit 0 once the result is recorded, whatever the command's own
   code; no command exits 1. Missing key exits 3 on all three.
   `shell.parse_exit_code` is shared with the TUI.
+- `cactus retire KEY...` is the human's clear (TUI `c`, the Mac app's `c`):
+  no `--agent`, no ownership gate, `Store.clear(record=True)`, refs as
+  `get`/`answer` take them; any missing ref refuses the whole call before a
+  row changes, exit 3. `--undo` restores cleared rows via
+  `Store.reopen(withdraw_pass=True)` (a pass-closed review returns `live`
+  without its pass) and refuses a row that is not cleared, exit 1. `cactus
+  clear` stays the agent verb, ownership-gated, no record.
 - `cactus deliver {herdr,webhook URL,off} --agent ID` (push-delivery, q462)
   writes the caller's own entry in the delivery map
   (`poke-webhooks.json`, `CACTUS_POKE_WEBHOOKS`): `{"herdr": true}` or

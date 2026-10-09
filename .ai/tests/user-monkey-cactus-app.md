@@ -119,3 +119,41 @@ Harness note: a visible panel is not reported as the frontmost app by System Eve
 | 12 | silent wrong keys | `Views.swift:405-406` falls through to `.ignored`; `errorMessage` only set by explicit refusals |
 | 13 | intermittent u | not mapped; candidate: `Views.swift:368` `if typing { return .ignored }`, stale `fieldFocused` after `submitText` (`Views.swift:452-460`) |
 | 14 | q1 answered | not mapped |
+
+## Re-run
+
+date: 2026-10-09, after mac-keys (B4). Same driver and seed (`.ai/tmp/monkey/seed.sh`, scratch DB, binary launched with `CACTUS_DB`). Keys sent only while `count windows of process "cactus-mac"` was 1. The walk stopped partway: the human was at the keyboard (HID idle 0-2 s), and every reopen popped the panel up under them.
+
+Spec change during the work: auto-advance, as in the TUI. A digit on a single-choice or confirm row submits at once (with any draft). Answered rows leave the list (the feed no longer asks for `answered`) and the cursor keeps its index, so the next row slides under it. #8 (unpick) is dropped; `u` undoes a wrong pick.
+
+### Tested
+
+| # | Sequence | Result |
+|---|---|---|
+| 1 | on q1: Down, Down, Up, `s` | q2 skipped. Pass. |
+| 1 | `u` | q2 back to open, cursor on q2. Pass. |
+| 2 | Tab, Tab, Shift-Tab, `s` | q3 skipped (q2 → q3 → q4 → q3). Pass. |
+| 11 | panel open, human switched to VS Code / Chrome / Grok Bot | panel hid each time; the key gate stopped every later key. Pass. |
+| 14 | three cold and warm launches, Down/Down/Up | not reproduced. One early run recorded `red` on q1 from the app itself, under the old pick-then-enter code; a key log on the next two runs showed only arrow events. Likely cause: the panel takes key focus on show, so a `1`/Enter the human types in another app lands in it. |
+
+### Untested: human walk
+
+Seed a fresh scratch DB with `.ai/tmp/monkey/seed.sh`, launch the binary with that `CACTUS_DB`, open with Ctrl-Space. Each sequence starts on the row named.
+
+| # | Start | Keys | Pass when |
+|---|---|---|---|
+| 3 | q3 | `i` `z` Esc `j` | Esc leaves the field (panel stays), `j` moves to q4 |
+| 3 | q3 | `i` Esc Esc | first Esc leaves the field, second hides the panel |
+| 2/3 | q3 | `i` `y` Tab Shift-Tab | Tab leaves the field and moves to q4; back on q3 the field still holds `y` |
+| 4 | q3 | `i` `x` Esc Esc, Ctrl-Space, `j` | panel reopens with the field unfocused; `j` moves, nothing typed |
+| 5 | q3 | `i` | key bar reads `enter submit  esc leave  tab next` |
+| 13 | q3 | `i` `jus1` Enter `u` | Enter records `jus1`, the row leaves; `u` brings it back open with the cursor on it |
+| 6 | q1 | `c` then `u` | `c` retires q1 (flash `retired q1`), `u` restores it |
+| 7 | q6 | `1` `2` `u` | steps 1 and 2 ticked; `u` unticks step 2 only |
+| 9 | q5 | `p` then `u` | pass closes q5 (it leaves the list); `u` brings it back `live` with no verdict |
+| 10 | q5 | `i` `ok` Enter, then `f` | Enter records text `ok`; `f` records `fail` (with any draft); q5 stays live, cursor stays on it |
+| 12 | q6 | `z`, `y`, Left | status line flashes `no key z here`, `no key y here`, `no key that here` |
+| auto | q1 | `2` | q1 answered `green`, cursor now on q2 |
+| auto | q4 | `i`, then `1` | `i` flashes `no key i here` (no-free row has no field); `1` answers `yes` and advances |
+| auto | q2 | `1` `3` Enter | q2 answered `cheese, olives`, cursor on the next row |
+| auto | any | the above, then `u` repeatedly | each `u` reverses one action, newest first, then `nothing to undo` |
