@@ -1110,6 +1110,16 @@ export const register: Register = on => {
     )
   })
 
+  // A pane taller than its window turns the arrows into scroll keys. Their
+  // ui.scroll carries a direction (by -1 / +1) and no pointer, where the wheel
+  // has one: take those as previous/next question and keep the window still.
+  // The wheel and page keys still scroll.
+  on('ui.scroll', async ($, e, next) => {
+    if (e.requestId !== PANE || e.origin.kind !== 'person' || e.pointer !== undefined || Math.abs(e.by) !== 1) return next(e)
+    await step($, e.by)
+    return { deny: 'cactus-pane: arrows move between questions' }
+  })
+
   // Arrows and tab are the person's focus steps. Only question headers may
   // take them; the keys below the list stay reachable by hotkey (and `i` puts
   // the ring in the input), so a step onto them is refused and the ring stays.
