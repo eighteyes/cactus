@@ -1,14 +1,16 @@
-// Views.swift — SwiftUI rail + card UI for the cactus panel, styled like the TUI.
+// Views.swift — SwiftUI rail + card UI for the cactus panel, native macOS sidebar look.
 // Responsibilities:
-// - Theme: the TUI's resolved Textual colours (read from a rendered SVG), monospace.
-// - Stacked for the 420pt sidebar: rail on top (40%), card below, key bar at
-//   its bottom. Rail: fixed 4-line blocks (key, text, kind line), `▸` and a blue fill
-//   on the active one, a project header above. Card: rounded accent
-//   border titled `answering  KEY`, `project:key`, then full text, context, choices numbered 1-9, recommend
-//   preselected and marked with a star; multi rows toggle, text rows (and any
-//   row allowing free text) get a field; review rows show the verify block,
-//   verdict history, p/f pass/fail; plan rows show steps and take text verdicts;
-//   answered rows show the answer and `u` undoes it.
+// - Forced-dark native look over the panel's `.sidebar` material: SF Pro text,
+//   SF Mono for keys and commands, tokens from Style.swift, pieces from
+//   Components.swift.
+// - Stacked for the 420pt sidebar: rail on top (40%), card below, keycap
+//   footer at the bottom. Rail: project header with open/live counts, then
+//   one RailRow per question (accent pill on the active one). Card:
+//   CardHeader, full text, context, choices numbered 1-9, recommend
+//   preselected and starred; multi rows toggle, text rows (and any row
+//   allowing free text) get a field; review rows show the verify block,
+//   verdict history, p/f pass/fail; plan rows show steps and take text
+//   verdicts; answered rows show the answer and `u` undoes it.
 // - Keyboard: j/k, arrows, Tab/Shift-Tab move row (Tab also from the field,
 //   keeping its draft); a digit on a single-choice/confirm row submits at
 //   once (auto-advance, as the TUI), toggles on a multi, ticks a plan step;
@@ -18,36 +20,12 @@
 //   enter/esc/tab act. An unbound key flashes `no key X here`.
 // - Drafts are kept per row; hiding the panel ends typing mode.
 // - Renders question/context/choice text as plain strings, never Markdown.
-// - Key bar docked at the card's bottom, listing keys valid for the focused row.
-// - Shows CactusCLI errors in a status line.
+// - Footer lists only the keys valid for the focused row.
+// - Flashes show as a capsule toast above the footer that fades after 2s;
+//   CactusCLI errors show there in red until the next key.
 
 import AppKit
 import SwiftUI
-
-/// Colours lifted from the TUI's rendered SVG (.ai/tmp/mac-design/tui-0.svg).
-enum Theme {
-    static let card = Color(hex: 0x121212)      // card / app background
-    static let rail = Color(hex: 0x272727)      // rail background
-    static let panel = Color(hex: 0x242F38)     // project head, status bar
-    static let selected = Color(hex: 0x0178D4)  // active rail block
-    static let selectedText = Color(hex: 0xDDEDF9)
-    static let accent = Color(hex: 0xFFA62B)    // card border, title, project name
-    static let text = Color(hex: 0xE0E0E0)
-    static let muted = Color(hex: 0xA8A8A8)
-    static func mono(_ size: CGFloat = 12, bold: Bool = false) -> Font {
-        .system(size: size, weight: bold ? .bold : .regular, design: .monospaced)
-    }
-}
-
-extension Color {
-    init(hex: UInt32) {
-        self.init(
-            red: Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >> 8) & 0xFF) / 255,
-            blue: Double(hex & 0xFF) / 255
-        )
-    }
-}
 
 struct ContentView: View {
     @ObservedObject var poller: Poller
@@ -75,17 +53,20 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 rail
                     .frame(height: geometry.size.height * 0.4)
-                    .background(Theme.rail)
+                Rectangle().fill(Style.separator).frame(height: 1)
                 card
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                statusBar
+                    .overlay(alignment: .bottom) { toast }
+                Rectangle().fill(Style.separator).frame(height: 1)
+                footer
             }
         }
-        .font(Theme.mono())
-        .foregroundStyle(Theme.text)
-        .background(Theme.card)
+        .font(Style.body)
+        .foregroundStyle(Style.label)
+        .environment(\.colorScheme, .dark)
         .frame(minWidth: 380, minHeight: 440)
         .focusable()
+        .focusEffectDisabled()
         .focused($isFocused)
         .onAppear { isFocused = true }
         .onKeyPress(action: handleKeyPress)
@@ -101,6 +82,14 @@ struct ContentView: View {
             }
             rowChanged()
         }
+        .task(id: flash) {
+            // The flash toast fades after 2s; a newer flash restarts the clock.
+            guard flash != nil else { return }
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled {
+                withAnimation(.easeOut(duration: 0.25)) { flash = nil }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .cactusPanelHidden)) { _ in
             leaveField()
         }
@@ -112,49 +101,54 @@ struct ContentView: View {
     // MARK: rail
 
     private var rail: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(currentQuestion?.projectBasename ?? "cactus")
-                .foregroundStyle(Theme.accent)
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-                .frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
-                .background(Theme.panel)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(questions.enumerated()), id: \.element.id) { index, question in
-                        railRow(question, isSelected: index == selectedRow)
-                            .onTapGesture { selectedRow = index }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(verbatim: currentQuestion?.projectBasename ?? "cactus")
+                    .font(Style.metaStrong)
+                    .foregroundStyle(Style.secondary)
+                    .textCase(.uppercase)
+                    .lineLimit(1)
+                Spacer()
+                Text(countsLine)
+                    .font(Style.meta)
+                    .foregroundStyle(Style.tertiary)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(questions.enumerated()), id: \.element.id) { index, question in
+                            RailRow(question: question, meta: railMeta(question),
+                                    isSelected: index == selectedRow)
+                                .id(question.id)
+                                .onTapGesture { selectedRow = index }
+                        }
+                        if questions.isEmpty {
+                            Text("No open questions")
+                                .font(Style.body)
+                                .foregroundStyle(Style.secondary)
+                                .padding(10)
+                        }
                     }
-                    if questions.isEmpty {
-                        Text("no open questions")
-                            .foregroundStyle(Theme.muted)
-                            .padding(8)
-                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+                }
+                .onChange(of: selectedRow) { _, _ in
+                    if let id = currentQuestion?.id { proxy.scrollTo(id) }
                 }
             }
         }
     }
 
-    /// One fixed-height block: `▸ key`, text, kind line (the TUI's QuestionBlock).
-    private func railRow(_ question: Question, isSelected: Bool) -> some View {
-        let marker = isSelected ? "▸" : " "
-        return VStack(alignment: .leading, spacing: 0) {
-            Text("\(marker) \(question.key)")
-            Text("  " + truncate(question.text, 52))
-            Text("  " + truncate(kindLine(question), 52))
-            Spacer(minLength: 0)
-        }
-        .font(Theme.mono(12, bold: isSelected))
-        .lineLimit(1)
-        .foregroundStyle(isSelected ? Theme.selectedText : Theme.muted)
-        .opacity(question.isAnswered ? 0.6 : 1)
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64, alignment: .topLeading)
-        .background(isSelected ? Theme.selected : Color.clear)
-        .contentShape(Rectangle())
+    private var countsLine: String {
+        let open = questions.filter { $0.status == "open" }.count
+        let live = questions.filter { $0.status == "live" }.count
+        return "\(open) open · \(live) live"
     }
 
-    private func kindLine(_ q: Question) -> String {
+    /// The rail row's secondary line: act, answer shape, status.
+    private func railMeta(_ q: Question) -> String {
         let shape: String
         if q.act == "plan" {
             shape = "\(q.steps.filter(\.done).count)/\(q.steps.count) steps"
@@ -170,48 +164,29 @@ struct ContentView: View {
         var parts = [q.act, shape]
         if q.status == "live" { parts.append("live") }
         else if q.status == "elaborate" { parts.append("wants more") }
-        if q.status == "open" { parts.append(q.blocked == true ? "BLOCKING" : "not blocking") }
+        else if q.status == "answered" { parts.append("answered") }
+        if let age = Style.age(q.updatedAt) { parts.append(age) }
         return parts.joined(separator: " · ")
     }
 
     // MARK: card
 
     private var card: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            cardBody
-            keyBar
-        }
-        .padding(.top, 8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 6).stroke(Theme.accent, lineWidth: 1)
-        )
-        .overlay(alignment: .topLeading) {
-            Text(cardTitle)
-                .foregroundStyle(Theme.accent)
-                .padding(.horizontal, 4)
-                .background(Theme.card)
-                .offset(x: 10, y: -9)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 10)
-    }
-
-    private var cardTitle: String {
-        currentQuestion.map { "answering  \($0.key)" } ?? "answering"
-    }
-
-    private var cardBody: some View {
         Group {
             if let question = currentQuestion {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("\(question.projectBasename):\(question.key)")
-                            .foregroundStyle(Theme.muted)
-                        Text(question.text)
+                    VStack(alignment: .leading, spacing: 12) {
+                        CardHeader(question: question)
+                        Text(verbatim: question.text)
+                            .font(Style.question)
+                            .foregroundStyle(Style.label)
+                            .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                         if let context = question.context, !context.isEmpty {
-                            Text(context)
-                                .foregroundStyle(Theme.muted)
+                            Text(verbatim: context)
+                                .font(Style.body)
+                                .foregroundStyle(Style.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .textSelection(.enabled)
                         }
                         if let review = question.review {
@@ -221,7 +196,7 @@ struct ContentView: View {
                             stepsBlock(question.steps)
                         }
                         if !question.choices.isEmpty && !question.isAnswered {
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: 6) {
                                 ForEach(Array(question.choices.enumerated()), id: \.element.id) { index, choice in
                                     choiceRow(choice, number: index + 1, question: question)
                                 }
@@ -231,62 +206,113 @@ struct ContentView: View {
                             verdictHistory(question.answers)
                         }
                         if showsField(question) {
-                            TextField("type an answer, enter submits", text: $draft)
-                                .textFieldStyle(.plain)
-                                .padding(4)
-                                .background(Theme.rail)
-                                .focused($fieldFocused)
-                                .onKeyPress(.escape) {
-                                    leaveField()
-                                    return .handled
-                                }
-                                .onKeyPress(.tab) {
-                                    moveRow(NSEvent.modifierFlags.contains(.shift) ? -1 : 1)
-                                    return .handled
-                                }
-                                .onSubmit { submitSelection() }
+                            answerField
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 14)
+                    .padding(.bottom, 40)  // room for the toast
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                Text("no open questions")
-                    .foregroundStyle(Theme.muted)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 8) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 28))
+                        .foregroundStyle(Style.tertiary)
+                    Text("No open questions")
+                        .foregroundStyle(Style.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    private var answerField: some View {
+        TextField("", text: $draft, prompt: Text("Type an answer — ↩ to send")
+            .foregroundStyle(Style.tertiary))
+            .textFieldStyle(.plain)
+            .font(Style.body)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: Style.pillRadius)
+                    .fill(Color.black.opacity(0.25))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Style.pillRadius)
+                    .stroke(fieldFocused ? Style.accent.opacity(0.8) : Style.separator,
+                            lineWidth: fieldFocused ? 2 : 1)
+            )
+            .focused($fieldFocused)
+            .onKeyPress(.escape) {
+                leaveField()
+                return .handled
+            }
+            .onKeyPress(.tab) {
+                moveRow(NSEvent.modifierFlags.contains(.shift) ? -1 : 1)
+                return .handled
+            }
+            .onSubmit { submitSelection() }
     }
 
     private func reviewBlock(_ review: Review) -> some View {
         let rows: [(String, String?)] = [
-            ("look at", review.lookAt), ("run", review.runCmd),
-            ("pass", review.passWhen), ("fail", review.failWhen),
-            ("then", review.thenDo),
+            ("Look at", review.lookAt), ("Run", review.runCmd),
+            ("Pass", review.passWhen), ("Fail", review.failWhen),
+            ("Then", review.thenDo),
         ]
-        return VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 6) {
             ForEach(rows.filter { !($0.1 ?? "").isEmpty }, id: \.0) { row in
-                Text("  " + row.0.padding(toLength: 8, withPad: " ", startingAt: 0) + (row.1 ?? ""))
-                    .textSelection(.enabled)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(row.0)
+                        .font(Style.metaStrong)
+                        .foregroundStyle(Style.secondary)
+                        .frame(width: 52, alignment: .leading)
+                    Text(verbatim: row.1 ?? "")
+                        .font(row.0 == "Run" ? Style.mono(12) : Style.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: Style.choiceRadius).fill(Style.fill))
     }
 
     private func stepsBlock(_ steps: [Step]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             ForEach(steps, id: \.n) { step in
-                Text("  \(step.n))  \(step.done ? "[x]" : "[ ]") \(step.text)")
-                    .textSelection(.enabled)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: step.done ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(step.done ? Style.accent : Style.tertiary)
+                    Text("\(step.n)")
+                        .font(Style.mono(11))
+                        .foregroundStyle(Style.secondary)
+                    Text(verbatim: step.text)
+                        .foregroundStyle(step.done ? Style.secondary : Style.label)
+                        .strikethrough(step.done, color: Style.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
         }
     }
 
     private func verdictHistory(_ answers: [Answer]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("verdicts").foregroundStyle(Theme.muted)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Verdicts")
+                .font(Style.metaStrong)
+                .foregroundStyle(Style.secondary)
             ForEach(Array(answers.enumerated()), id: \.offset) { index, answer in
-                Text("  \(index + 1). \(answer.summary)")
-                    .textSelection(.enabled)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(index + 1)")
+                        .font(Style.mono(11))
+                        .foregroundStyle(Style.tertiary)
+                    Text(verbatim: answer.summary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
         }
     }
@@ -298,21 +324,19 @@ struct ContentView: View {
     }
 
     private func choiceRow(_ choice: Choice, number: Int, question: Question) -> some View {
-        let isRecommended = question.recommend?.contains(choice.label) ?? false
-        let isSelected = question.kind == "multi"
-            ? toggled.contains(choice.label) : selectedChoice == choice.label
-        let box = question.kind == "multi" ? (isSelected ? "[x]" : "[ ]") : (isSelected ? "●" : " ")
-        var line = "\(number))  \(box) \(choice.label)"
-        if isRecommended { line += " ★" }
-        if !choice.description.isEmpty { line += "  — \(choice.description)" }
-        return Text(line)
-            .padding(.vertical, 1)
-            .background(isSelected ? Theme.selected.opacity(0.35) : Color.clear)
-            .contentShape(Rectangle())
-            .onTapGesture { selectChoice(at: number - 1) }
+        let isMulti = question.kind == "multi"
+        return ChoiceRow(
+            number: number,
+            label: choice.label,
+            description: choice.description,
+            isRecommended: question.recommend?.contains(choice.label) ?? false,
+            isPicked: isMulti ? toggled.contains(choice.label) : selectedChoice == choice.label,
+            isMulti: isMulti,
+            onTap: { selectChoice(at: number - 1) }
+        )
     }
 
-    // MARK: key bar
+    // MARK: footer
 
     /// Keys valid for the focused row, the TUI's `_keybar_items` in miniature.
     private func keyBarItems(_ q: Question?) -> [(String, String)] {
@@ -343,34 +367,25 @@ struct ContentView: View {
         return items
     }
 
-    private var keyBar: some View {
-        Text(keyBarItems(currentQuestion).map { "\($0.0) \($0.1)" }.joined(separator: "  "))
-            .foregroundStyle(Theme.muted)
-            .lineLimit(3)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 4)
+    private var footer: some View {
+        KeycapFooter(items: keyBarItems(currentQuestion))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: status bar
+    // MARK: toast
 
-    private var statusBar: some View {
-        let open = questions.filter { $0.status == "open" }.count
-        let live = questions.filter { $0.status == "live" }.count
-        return HStack {
-            if let message = errorMessage ?? poller.lastError {
-                Text(message).foregroundStyle(.red).lineLimit(1)
-            } else if let flash {
-                Text(flash).foregroundStyle(Theme.accent).lineLimit(1)
-            } else {
-                Text("\(open) open · \(live) live").lineLimit(1)
-            }
-            Spacer()
+    @ViewBuilder
+    private var toast: some View {
+        if let message = errorMessage ?? poller.lastError {
+            Toast(message: message, isError: true)
+                .padding(.bottom, 8)
+        } else if let flash {
+            Toast(message: flash)
+                .padding(.bottom, 8)
+                .transition(.opacity)
         }
-        .padding(.horizontal, 8)
-        .frame(height: 20)
-        .background(Theme.panel)
     }
 
     // MARK: state helpers
@@ -399,12 +414,6 @@ struct ContentView: View {
     private func leaveField() {
         fieldFocused = false
         isFocused = true
-    }
-
-    private func truncate(_ text: String, _ limit: Int) -> String {
-        let flattened = text.replacingOccurrences(of: "\n", with: " ")
-        if flattened.count <= limit { return flattened }
-        return String(flattened.prefix(limit - 1)) + "…"
     }
 
     // MARK: keyboard

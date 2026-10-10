@@ -1,7 +1,8 @@
 // Panel.swift — the floating, non-activating sidebar that hosts the rail+card UI.
 // Responsibilities:
-// - An NSPanel styled like the TUI (dark, no HUD material): nonactivating, floating, titleless, key-able,
-//   joins every Space.
+// - An NSPanel styled as a native macOS sidebar: forced dark (darkAqua),
+//   behind-window `.sidebar` material, rounded leading corners, soft shadow;
+//   nonactivating, floating, titleless, key-able, joins every Space.
 // - Dock to the right edge of the screen under the mouse: full visibleFrame
 //   height (menu bar and Dock respected), `width` points wide; slide in/out,
 //   no slide under Reduce Motion.
@@ -38,7 +39,9 @@ final class CactusPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        self.backgroundColor = NSColor(red: 0x12 / 255, green: 0x12 / 255, blue: 0x12 / 255, alpha: 1)
+        self.isOpaque = false
+        self.backgroundColor = .clear
+        self.hasShadow = true
         self.appearance = NSAppearance(named: .darkAqua)
         self.titleVisibility = .hidden
         self.titlebarAppearsTransparent = true
@@ -47,7 +50,7 @@ final class CactusPanel: NSPanel {
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.hidesOnDeactivate = false
         self.isReleasedWhenClosed = false
-        self.contentView = NSHostingView(rootView: rootView)
+        self.contentView = Style.sidebarBackground(hosting: NSHostingView(rootView: rootView))
     }
 
     override var canBecomeKey: Bool { true }
