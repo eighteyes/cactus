@@ -3,9 +3,12 @@
 // - Decode Choice, Answer, Review, Step, Question, Cursor, Feed from the CLI's
 //   JSON shape (including allow_free, the verdict log, verify block, steps).
 // - Ignore unknown fields, treat absent optional fields as nil.
+// - AutoPick, RunResult (the row's `auto` and `result` blocks), ProjectRow
+//   (`cactus projects --json`).
 // - Poller: ObservableObject that re-polls CactusCLI.feed() on a timer,
 //   0.5s while a panel is visible and 5s while hidden, only publishing a
-//   fresh `questions` array when the feed's cursor actually moved.
+//   fresh `questions` array (and re-reading `projects`) when the feed's
+//   cursor actually moved.
 
 import Foundation
 
@@ -20,6 +23,12 @@ struct Answer: Codable, Hashable {
     var selected: [String]
     var text: String?
     var skipped: Bool
+    var createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case selected, text, skipped
+        case createdAt = "created_at"
+    }
 
     /// `label — text`, `skipped`, or whichever part exists.
     var summary: String {
@@ -52,6 +61,59 @@ struct Step: Codable, Hashable {
     var done: Bool
 }
 
+/// The auto-decider's proposal: accepted with `A`, never applied on its own.
+struct AutoPick: Codable, Hashable {
+    var pick: String?
+    var confidence: String?
+    var reason: String?
+}
+
+/// A `run`/review row's captured command outcome.
+struct RunResult: Codable, Hashable {
+    var exit: Int?
+    var tail: [String]?
+    var log: String?
+}
+
+/// One row of `cactus projects --json`.
+struct ProjectRow: Codable, Identifiable, Hashable {
+    var project: String
+    var enabled: Bool
+    var openCount: Int
+    var liveCount: Int
+    var dueCount: Int
+    var staleCount: Int
+    var newestOpen: String?
+    var lastActivity: String?
+
+    var id: String { project }
+    var basename: String { (project as NSString).lastPathComponent }
+
+    enum CodingKeys: String, CodingKey {
+        case project, enabled
+        case openCount = "open_count", liveCount = "live_count"
+        case dueCount = "due_count", staleCount = "stale_count"
+        case newestOpen = "newest_open", lastActivity = "last_activity"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        project = try c.decode(String.self, forKey: .project)
+        // SQLite hands `enabled` back as 0/1.
+        if let flag = try? c.decode(Bool.self, forKey: .enabled) {
+            enabled = flag
+        } else {
+            enabled = (try c.decodeIfPresent(Int.self, forKey: .enabled) ?? 1) != 0
+        }
+        openCount = try c.decodeIfPresent(Int.self, forKey: .openCount) ?? 0
+        liveCount = try c.decodeIfPresent(Int.self, forKey: .liveCount) ?? 0
+        dueCount = try c.decodeIfPresent(Int.self, forKey: .dueCount) ?? 0
+        staleCount = try c.decodeIfPresent(Int.self, forKey: .staleCount) ?? 0
+        newestOpen = try c.decodeIfPresent(String.self, forKey: .newestOpen)
+        lastActivity = try c.decodeIfPresent(String.self, forKey: .lastActivity)
+    }
+}
+
 struct Question: Codable, Identifiable, Hashable {
     var key: String
     var ref: String?
@@ -75,6 +137,13 @@ struct Question: Codable, Identifiable, Hashable {
     var answers: [Answer] = []
     var review: Review?
     var steps: [Step] = []
+    var cwd: String?
+    var pane: String?
+    var session: String?
+    var files: [String] = []
+    var site: String?
+    var auto: AutoPick?
+    var result: RunResult?
 
     /// Feed rows carry no rowid; `ref` (`LABEL:qN`) is unique across projects,
     /// `key` alone is unique only within one.
@@ -88,6 +157,7 @@ struct Question: Codable, Identifiable, Hashable {
         case allowFree = "allow_free"
         case updatedAt = "updated_at"
         case answers, review, steps
+        case cwd, pane, session, files, site, auto, result
     }
 
     /// Recommend is emitted by the store as either a bare label (single-select
@@ -123,11 +193,23 @@ struct Question: Codable, Identifiable, Hashable {
         answers = try c.decodeIfPresent([Answer].self, forKey: .answers) ?? []
         review = try c.decodeIfPresent(Review.self, forKey: .review)
         steps = try c.decodeIfPresent([Step].self, forKey: .steps) ?? []
+        cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        pane = try c.decodeIfPresent(String.self, forKey: .pane)
+        session = try c.decodeIfPresent(String.self, forKey: .session)
+        files = try c.decodeIfPresent([String].self, forKey: .files) ?? []
+        site = try c.decodeIfPresent(String.self, forKey: .site)
+        auto = try c.decodeIfPresent(AutoPick.self, forKey: .auto)
+        result = try c.decodeIfPresent(RunResult.self, forKey: .result)
     }
 
     /// Persistent rows (review, plan, data) stay `live` and take repeated verdicts.
     var isPersistent: Bool { ["review", "plan", "data"].contains(act) }
     var isAnswered: Bool { status == "answered" }
+    /// The row's command: a review's or run row's `run_cmd`.
+    var command: String? {
+        guard let cmd = review?.runCmd, !cmd.isEmpty else { return nil }
+        return cmd
+    }
     /// Address a row by `LABEL:qN` so a bare key can't collide across projects.
     var address: String { ref ?? key }
 
@@ -157,6 +239,7 @@ struct Feed: Codable {
 @MainActor
 final class Poller: ObservableObject {
     @Published var questions: [Question] = []
+    @Published var projects: [ProjectRow] = []
     @Published var lastError: String?
 
     private var timer: Timer?
@@ -202,6 +285,7 @@ final class Poller: ObservableObject {
                 lastError = nil
                 if feed.cursor != lastCursor {
                     lastCursor = feed.cursor
+                    projects = try await cli.projects()
                     questions = feed.questions
                 }
             } catch {

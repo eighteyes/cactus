@@ -500,6 +500,19 @@ scope.
   `Store.reopen(withdraw_pass=True)` (a pass-closed review returns `live`
   without its pass) and refuses a row that is not cleared, exit 1. `cactus
   clear` stays the agent verb, ownership-gated, no record.
+- `cactus visit KEY` is `v`: `poke.visit(q.pane, session=q.session)` from the
+  row's own stamps, so a caller with no herdr env (the Mac app) reaches the
+  same pane. Human verb, no `--agent`; no pane or a `PokeError` exits 1,
+  missing key 3. `--json` is `{pane, session, raise_error}`.
+- `cactus history [--project DIR] [--limit N]` is the answers view (`a`):
+  `Store.history`, newest verdict first, `--json` a list of `as_dict`; none
+  is `no match`, exit 3.
+- `cactus preview KEY` is `o`: `shell.file_preview` over each of the row's
+  files; no files exits 1, missing key 3; `--json` is `{lines}`.
+- `cactus project poke --cwd DIR` is `p` on the projects page: one herdr
+  prompt per pane in `Store.project_panes`, carrying
+  `tui._project_poke_message` (stale keys included), `webhook=False`;
+  exit 1 when no pane is stamped or every prompt failed.
 - `cactus deliver {herdr,webhook URL,off} --agent ID` (push-delivery, q462)
   writes the caller's own entry in the delivery map
   (`poke-webhooks.json`, `CACTUS_POKE_WEBHOOKS`): `{"herdr": true}` or

@@ -22,7 +22,7 @@ from typing import Any, Sequence
 from urllib.parse import urlparse
 
 from . import __version__, tradeoffs
-from .scope import project_display, resolve_project
+from .scope import project_display, project_label, resolve_project
 from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
                     DECOMPOSE_INSTRUCTION, DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
                     Question, Store, default_db_path)
@@ -1292,6 +1292,109 @@ def cmd_retire(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     return EXIT_OK
 
 
+def _human_row(args: argparse.Namespace, store: Store, project: str) -> Question | int:
+    """Load a human verb's KEY, or return the exit code after printing why."""
+    ref = _human_ref(args, store, project)
+    if isinstance(ref, int):
+        return ref
+    q = store.get(ref[1], project=ref[0])
+    if q is None:
+        print(f"cactus: no such question: {args.key}", file=sys.stderr)
+        return EXIT_EMPTY
+    return q
+
+
+def cmd_visit(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Jump herdr to the pane that asked a row (TUI `v`).
+
+    A human verb: no --agent, no ownership gate. It works from the row's own
+    pane and session stamps, so a caller with no herdr environment (the Mac
+    app) reaches the same pane the TUI would.
+    """
+    from .poke import PokeError, visit
+
+    q = _human_row(args, store, project)
+    if isinstance(q, int):
+        return q
+    try:
+        visited = visit(q.pane, session=q.session)
+    except PokeError as exc:
+        print(f"cactus: {q.key}: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.json:
+        json.dump({"pane": q.pane, "session": q.session,
+                   "raise_error": visited.raise_error}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        note = f" (window not raised: {visited.raise_error})" if visited.raise_error else ""
+        print(f"visited {q.pane}{note}")
+    return EXIT_OK
+
+
+def cmd_history(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """A project's answered and cleared rows, newest verdict first (TUI `a`)."""
+    if args.project:
+        project, _ = resolve_project(args.project)
+    rows = store.history(project, limit=args.limit)
+    if not rows:
+        return _no_match()
+    if args.json:
+        json.dump([q.as_dict() for q in rows], sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    else:
+        _print_questions(rows, as_json=False, show_project=False)
+    return EXIT_OK
+
+
+def cmd_preview(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Print the inline preview of a row's files (TUI `o`): diff vs HEAD, else head."""
+    from .shell import file_preview
+
+    q = _human_row(args, store, project)
+    if isinstance(q, int):
+        return q
+    if not q.files:
+        print(f"cactus: {q.key} has no files", file=sys.stderr)
+        return EXIT_ERROR
+    lines = [line for path in q.files for line in file_preview(path)]
+    if args.json:
+        json.dump({"lines": lines}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print("\n".join(lines))
+    return EXIT_OK
+
+
+def _poke_project(store: Store, project: str, as_json: bool) -> int:
+    """`cactus project poke`: the projects page `p`, one herdr prompt per pane."""
+    from .poke import PokeError, poke
+    from .tui import _project_poke_message
+
+    reach = store.project_panes(project)
+    panes, skipped = reach["panes"], reach["skipped"]
+    label = project_label(project)
+    if not panes:
+        print(f"cactus: {label}: no herdr panes ({skipped} rows unstamped)", file=sys.stderr)
+        return EXIT_ERROR
+    failed = 0
+    for entry in panes:
+        try:
+            poke(entry["agent"], pane=entry["pane"], session=entry["session"],
+                 message=_project_poke_message(entry.get("stale", [])),
+                 timeout=5.0, webhook=False)
+        except PokeError:
+            failed += 1
+    poked = len(panes) - failed
+    if as_json:
+        json.dump({"project": project, "poked": poked, "failed": failed,
+                   "skipped": skipped}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print(f"poked {poked} {'pane' if poked == 1 else 'panes'} in {label}"
+              + (f" ({failed} failed)" if failed else ""))
+    return EXIT_OK if poked else EXIT_ERROR
+
+
 def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """Emit the actionable inbox as one document, for a projector to render.
 
@@ -1514,6 +1617,8 @@ def cmd_project(args: argparse.Namespace, store: Store, project: str, cwd: str) 
     """Inspect or change the current project's Cactus switch."""
     if args.cwd:
         project, _ = resolve_project(args.cwd)
+    if args.project_action == "poke":
+        return _poke_project(store, project, args.json)
     if args.project_action == "activate":
         store.set_project_enabled(project, True)
     elif args.project_action == "ignore":
@@ -1922,6 +2027,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="restore cleared rows (a pass-closed review loses its pass)")
     rt.set_defaults(fn=cmd_retire)
 
+    vs = verb("visit", help="jump herdr to the pane that asked a row (TUI v)")
+    vs.add_argument("key")
+    vs.set_defaults(fn=cmd_visit)
+
+    hs = verb("history", help="answered and cleared rows, newest verdict first (TUI a)")
+    hs.add_argument("--project", help="project directory (default: this one)")
+    hs.add_argument("--limit", type=int, default=200)
+    hs.set_defaults(fn=cmd_history)
+
+    pv = verb("preview", help="preview a row's files: diff vs HEAD, else head (TUI o)")
+    pv.add_argument("key")
+    pv.set_defaults(fn=cmd_preview)
+
     fd = verb(
         "feed", help="the actionable inbox as one JSON document, for a projector",
         description="Always emits JSON. --json is accepted as a no-op, for a "
@@ -2009,7 +2127,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps.set_defaults(fn=cmd_project_status)
 
     pj = verb("project", help="inspect or change this project's Cactus state")
-    pj.add_argument("project_action", nargs="?", choices=["status", "activate", "ignore"],
+    pj.add_argument("project_action", nargs="?", choices=["status", "activate", "ignore", "poke"],
                     default="status")
     pj.add_argument("--cwd", help="project directory to change (default: caller's cwd)")
     pj.set_defaults(fn=cmd_project)

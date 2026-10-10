@@ -13,6 +13,7 @@ Responsibilities:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from conftest import needs_project_switch
@@ -927,3 +928,68 @@ def test_retire_undo_withdraws_a_closing_pass(cli):
     assert cli("retire", "--undo", "q1").returncode == 0
     row = _row(cli)
     assert row["status"] == "live" and row["answer"] is None
+
+
+@pytest.fixture
+def no_herdr(monkeypatch):
+    """Rows asked outside herdr: the suite itself may run inside a pane."""
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    monkeypatch.delenv("HERDR_SESSION", raising=False)
+    return monkeypatch
+
+
+def _ask_in_pane(cli, monkeypatch, *argv, pane="w1:p2", session="s1"):
+    """`cactus ask --no-wait` from inside a herdr pane, so the row carries a pane stamp."""
+    with monkeypatch.context() as m:
+        m.setenv("HERDR_PANE_ID", pane)
+        m.setenv("HERDR_SESSION", session)
+        return cli("ask", "--no-wait", *argv, "--agent", AGENT_A)
+
+
+def test_visit_uses_the_rows_pane_and_session(cli, no_herdr):
+    _ask_in_pane(cli, no_herdr, "pick", "-c", "a", "-c", "b")
+    r = cli("visit", "q1", "--json")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == {"pane": "w1:p2", "session": "s1", "raise_error": None}
+
+
+def test_visit_refuses_a_row_with_no_pane_and_a_missing_key(cli, no_herdr):
+    cli("ask", "--no-wait", "pick", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    r = cli("visit", "q1")
+    assert r.returncode == 1 and "no pane" in r.stderr
+    r = cli("visit", "q9")
+    assert r.returncode == 3 and len(r.stderr.strip().splitlines()) == 1
+
+
+def test_history_lists_answered_rows_newest_verdict_first(cli, project):
+    cli("ask", "--no-wait", "one", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "two", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "three", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    assert cli("history").returncode == 3
+    cli("answer", "q2", "-s", "b")
+    cli("answer", "q1", "-s", "a")
+    r = cli("history", "--json")
+    assert r.returncode == 0, r.stderr
+    assert [q["key"] for q in json.loads(r.stdout)] == ["q1", "q2"]
+    r = cli("history", "--project", project, "--json", cwd="/")
+    assert [q["key"] for q in json.loads(r.stdout)] == ["q1", "q2"]
+
+
+def test_preview_prints_the_files_head(cli, project):
+    (Path(project) / "notes.txt").write_text("hello preview\n")
+    cli("ask", "--no-wait", "look", "--agent", AGENT_A, "-f", "notes.txt")
+    r = cli("preview", "q1", "--json")
+    assert r.returncode == 0, r.stderr
+    assert any("hello preview" in line for line in json.loads(r.stdout)["lines"])
+    cli("ask", "--no-wait", "bare", "--agent", AGENT_A)
+    assert cli("preview", "q2").returncode == 1
+    assert cli("preview", "q9").returncode == 3
+
+
+def test_project_poke_prompts_each_pane(cli, no_herdr, project):
+    cli("ask", "--no-wait", "unstamped", "--agent", AGENT_A)
+    assert cli("project", "poke", "--cwd", project).returncode == 1
+    _ask_in_pane(cli, no_herdr, "stamped")
+    r = cli("project", "poke", "--cwd", project, "--json")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["poked"] == 1 and json.loads(r.stdout)["skipped"] == 1

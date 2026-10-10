@@ -174,3 +174,40 @@ B5 walk, 2026-10-09. Scratch DB (`.ai/tmp/sidebar/s.db`: choice, multi, text, re
 Layout: docked right, full visibleFrame height, 420pt; rail on top (40%), card below, key bar wraps to two lines at its bottom, status bar under it.
 
 Not walked: Reduce Motion (no slide), a second display, the status-menu hide (same `hidePanel` as Esc and ⌃Space).
+
+## Commands
+
+B7 walk, 2026-10-09. Scratch DB, two temp git repos (alpha: 10 rows across every act, stamped pane `w9:p9` session `walk`; beta: one row). Binary launched with `CACTUS_DB`, `CACTUS_POKE='true {agent}'`, `CACTUS_VISIT='true {pane}'`, `CACTUS_VISIT_RAISE=off`, `CACTUS_RECORDS=0`. Human idle 679s before the first key; every key sent only while Cactus was front. Effect read back with `cactus get/list/projects --json`.
+
+	key	row	result	verified
+	open	-	beta first (newest arrival), header `[ ] switch`, `6 elsewhere`	screenshot
+	]	-	rail switches to alpha	screenshot
+	m 1 enter	q1 choice (rec blue)	answered `red, blue`; u reopened	DB
+	y	q2 confirm	answered `yes`; u reopened	DB
+	1 3 enter	q3 multi	answered `cheese, basil`	DB
+	R	q4 review	output streams into the card, result exit 0 + log saved; no verdict	DB + screenshot
+	C	q4	clipboard = run command	pbpaste
+	O	q4	log opens (Console)	front app
+	y / u	q4	pass closes the row; u returns it `live`, pass withdrawn	DB
+	1 / u	q5 plan	step 1 done / undone	DB
+	x / u	q5	cleared / back `live`	DB
+	1	q6 data	clipboard `hello world`, verdict `greeting`	DB + pbpaste
+	d / u	q7 notify	dismissed (skipped) / reopened	DB
+	o	q8 file	inline diff vs HEAD	screenshot
+	e hint enter / u	q8	`elaborate` with the hint / withdrawn, `open`	DB
+	D / u	q8	`elaborate` with the decompose text / withdrawn	DB
+	p	q8	`poked`	inert CACTUS_POKE only
+	v	q8	`visited w9:p9`	inert CACTUS_VISIT only
+	y	q9 run	exec ran, `approve` recorded, exit 0	DB
+	R esc	q11 review (60s loop)	streams, esc kills it, no orphan shell, panel stays	pgrep + screenshot
+	P j I / A	projects page	beta ignored / active	projects --json
+	*	beta	pinned; rail `BETA pinned`; `]` flashes `pinned — unpin with * on P`	UserDefaults + screenshot
+	p	projects page, beta	`poked 1 pane in beta`	inert CACTUS_POKE only
+	P * esc	beta	unpinned, UserDefaults key removed	defaults
+	a enter ]	answers	alpha history newest first, enter expands, ] rotates to beta (`No answers`)	screenshot
+	s / c / i text enter	beta q1	skipped / cleared / text answer; u undoes each	DB
+	f / F / w	q8	notes.txt opens (TextEdit), edit opens (TextEdit), site opens (Chrome)	front app
+
+Not walked: `A` (needs an auto-decider proposal; no decider running), a real herdr pane for `p`/`v`/project poke (the GUI app has no `HERDR_*` or `KITTY_LISTEN_ON`; visit and poke run from the row's pane/session and the login shell's PATH, but the herdr call and the kitty window raise were only exercised through the inert transports — the raise is skipped without `KITTY_LISTEN_ON`), multi-file `f1`/`ff`.
+
+Change from B4: `p`/`f` no longer pass/fail on a review row; they are poke and view-file as in the TUI. Pass/fail is `y`/`n` or `1`/`2`.
