@@ -993,3 +993,24 @@ def test_project_poke_prompts_each_pane(cli, no_herdr, project):
     r = cli("project", "poke", "--cwd", project, "--json")
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["poked"] == 1 and json.loads(r.stdout)["skipped"] == 1
+def test_get_text_shows_multiline_context_and_chosen(cli):
+    cli("ask", "which way", "--act", "steer", "--chosen", "a", "-c", "a", "-c", "b",
+        "--context", "first line\nsecond line", "--agent", AGENT_A)
+    out = cli("get", "q1").stdout
+    assert "context:" in out
+    assert "\t\t    first line\n" in out
+    assert "\t\t    second line\n" in out
+    assert "chosen: a" in out
+    assert out.index("context:") > out.index("which way")
+
+
+def test_get_text_omits_context_line_when_empty(cli):
+    cli("ask", "plain", "--no-wait", "--agent", AGENT_A, "-c", "a", "-c", "b")
+    out = cli("get", "q1").stdout
+    assert "context:" not in out and "chosen:" not in out
+
+
+def test_get_json_still_carries_context(cli):
+    cli("ask", "plain", "--no-wait", "--agent", AGENT_A, "-c", "a", "-c", "b",
+        "--context", "why")
+    assert json.loads(cli("get", "q1", "--json").stdout)[0]["context"] == "why"

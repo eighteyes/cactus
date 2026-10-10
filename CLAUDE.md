@@ -139,6 +139,9 @@ scope.
 - `_print_questions` (the text renderer behind `get`/`list`/`reopen`) shows
   a review row's verify block, a persistent row's whole verdict log (not
   just the latest), and a plan row's steps 1-based with `[x]`/`[ ]`.
+- `_print_questions` also prints a row's `context` (label line, then each
+  line indented under it; skipped when empty) and a steer's `chosen`, so a
+  text-reading agent sees what `--json` carries for the decision.
 - `WatchApp.on_mount` puts the scope label ahead of the db path in
   `sub_title` — Header truncates from the end, and a long path is the part
   that can afford to lose its tail.

@@ -237,6 +237,12 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         if q.thread:
             head += f"({q.thread})\t"
         print(f"{head}{indent}{q.text}")
+        if q.context and q.context.strip():
+            print(f"\t\t{indent}  context:")
+            for ctx_line in q.context.splitlines():
+                print(f"\t\t{indent}    {ctx_line}")
+        if q.chosen:
+            print(f"\t\t{indent}  chosen: {q.chosen}")
         for p in q.files:
             print(f"\t\t{indent}  {'file':<8}{p}")
         if q.site:
