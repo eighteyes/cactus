@@ -3,7 +3,8 @@
 // - Bootstrap NSApplication as a menu-bar-only (.accessory) app, no Dock icon.
 // - Own the long-lived pieces: CactusCLI, Poller, the floating Panel, the
 //   global HotKey, and the StatusItem, wiring them together.
-// - Hide the panel when the app resigns active.
+// - The sidebar stays up when another app becomes active; hotkey, status
+//   menu and Esc all toggle/hide it through CactusPanel.
 // - Run the app.
 
 import AppKit
@@ -30,13 +31,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             poller?.setVisible(visible)
         }
         self.panel = panel
-
-        // Hide when another app takes over, not on a key-status change.
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
-        ) { [weak panel] _ in
-            panel?.hidePanel()
-        }
 
         hotKey = HotKey { [weak panel] in
             panel?.toggle()

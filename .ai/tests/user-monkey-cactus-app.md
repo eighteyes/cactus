@@ -157,3 +157,20 @@ Seed a fresh scratch DB with `.ai/tmp/monkey/seed.sh`, launch the binary with th
 | auto | q4 | `i`, then `1` | `i` flashes `no key i here` (no-free row has no field); `1` answers `yes` and advances |
 | auto | q2 | `1` `3` Enter | q2 answered `cheese, olives`, cursor on the next row |
 | auto | any | the above, then `u` repeatedly | each `u` reverses one action, newest first, then `nothing to undo` |
+
+## Sidebar
+
+B5 walk, 2026-10-09. Scratch DB (`.ai/tmp/sidebar/s.db`: choice, multi, text, review), binary launched with `CACTUS_DB`, keys via System Events, front app read with `lsappinfo front`. Human idle (HIDIdleTime 20s+) throughout.
+
+	step	expected	front after	result
+	start, Finder active, panel hidden	—	Finder	ok
+	⌃Space	slides in, takes focus	Cactus	ok
+	click over to Finder	panel stays visible	Finder	ok
+	⌃Space	takes focus, no slide	Cactus	ok
+	⌃Space	slides out, Finder back	Finder	ok
+	⌃Space, then Esc	hides, Finder back	Finder	ok
+	⌃Space, switch to Finder, Esc	panel not key, Esc goes to Finder	Finder	ok
+
+Layout: docked right, full visibleFrame height, 420pt; rail on top (40%), card below, key bar wraps to two lines at its bottom, status bar under it.
+
+Not walked: Reduce Motion (no slide), a second display, the status-menu hide (same `hidePanel` as Esc and ⌃Space).

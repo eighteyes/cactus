@@ -1,8 +1,9 @@
 // Views.swift — SwiftUI rail + card UI for the cactus panel, styled like the TUI.
 // Responsibilities:
 // - Theme: the TUI's resolved Textual colours (read from a rendered SVG), monospace.
-// - Left rail: fixed 4-line blocks (key, text, kind line), `▸` and a blue fill
-//   on the active one, a project header above. Right card: rounded accent
+// - Stacked for the 420pt sidebar: rail on top (40%), card below, key bar at
+//   its bottom. Rail: fixed 4-line blocks (key, text, kind line), `▸` and a blue fill
+//   on the active one, a project header above. Card: rounded accent
 //   border titled `answering  KEY`, `project:key`, then full text, context, choices numbered 1-9, recommend
 //   preselected and marked with a star; multi rows toggle, text rows (and any
 //   row allowing free text) get a field; review rows show the verify block,
@@ -70,20 +71,20 @@ struct ContentView: View {
     private var typing: Bool { fieldFocused }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
                 rail
-                    .frame(width: 250)
+                    .frame(height: geometry.size.height * 0.4)
                     .background(Theme.rail)
                 card
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                statusBar
             }
-            statusBar
         }
         .font(Theme.mono())
         .foregroundStyle(Theme.text)
         .background(Theme.card)
-        .frame(minWidth: 760, minHeight: 440)
+        .frame(minWidth: 380, minHeight: 440)
         .focusable()
         .focused($isFocused)
         .onAppear { isFocused = true }
@@ -139,8 +140,8 @@ struct ContentView: View {
         let marker = isSelected ? "▸" : " "
         return VStack(alignment: .leading, spacing: 0) {
             Text("\(marker) \(question.key)")
-            Text("  " + truncate(question.text, 28))
-            Text("  " + truncate(kindLine(question), 28))
+            Text("  " + truncate(question.text, 52))
+            Text("  " + truncate(kindLine(question), 52))
             Spacer(minLength: 0)
         }
         .font(Theme.mono(12, bold: isSelected))
@@ -345,7 +346,8 @@ struct ContentView: View {
     private var keyBar: some View {
         Text(keyBarItems(currentQuestion).map { "\($0.0) \($0.1)" }.joined(separator: "  "))
             .foregroundStyle(Theme.muted)
-            .lineLimit(1)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 16)
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
