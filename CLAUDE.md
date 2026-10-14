@@ -564,8 +564,9 @@ scope.
   instantly. Any non-digit key, row move, or a digit that cannot extend to a
   valid step number (`0` as the first digit, or a two-digit buffer) fires or
   cancels immediately — `_handle_step_digit`/`_resolve_step_buffer`.
-- `files` is an additive JSON-list column on `questions`; `cactus ask`/`edit`/
-  `review`/`plan` all take `-f/--file` (repeatable), and the CLI resolves each
+- `files` is an additive JSON-list column on `questions`; `cactus ask`/`run`/
+  `edit`/`review`/`plan` all take `-f/--file` (repeatable; on `run` it is
+  context to preview before approving, never part of the command), and the CLI resolves each
   path to absolute against cwd before writing, refusing a missing path, a
   directory, or a duplicate after resolution — never the store's job.
   `Store.edit`'s `files` follows `choices`' whole-list-replace semantics
