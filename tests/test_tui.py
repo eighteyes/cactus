@@ -3187,6 +3187,100 @@ async def test_inline_field_claims_pending_seeds_and_caps(store: Store, project:
         assert garden.pending_count(store.path) == 5
 
 
+async def _hide_field(app: CactusApp, pilot) -> None:
+    """Hide the field strip the way `~` does."""
+    if app.tui_settings["field"]:
+        await pilot.press("tilde")
+        await pilot.pause()
+    assert not app.field.visible
+
+
+async def test_hidden_inline_field_does_not_advance(store: Store, project: str) -> None:
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _hide_field(app, pilot)
+        calls: list[float] = []
+        real = app.world.advance
+        app.world.advance = lambda dt: (calls.append(dt), real(dt))[1]
+        app._field_tick()
+        app._field_tick()
+        assert calls == []
+        await pilot.press("tilde")  # show again
+        await pilot.pause()
+        app._field_tick()
+        assert calls  # resumed
+
+
+async def test_seed_dropped_while_hidden_lands_after_show(store: Store, project: str) -> None:
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _hide_field(app, pilot)
+        base = len(app.world.seeds)
+        app.field.drop(3)
+        app.field.drop(4)
+        assert len(app.world.seeds) == base  # owed, not dropped
+        assert app.field.owed == [3, 4]
+        await pilot.press("tilde")
+        await pilot.pause()
+        assert app.field.owed == []
+        assert len(app.world.seeds) == base + 2
+
+
+async def test_pending_seeds_stay_queued_while_hidden(store: Store, project: str) -> None:
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _hide_field(app, pilot)
+        base = len(app.world.seeds)
+        garden.add_pending(store.path, 3)
+        app._sky_reload_last = None
+        app._field_tick()
+        assert garden.pending_count(store.path) == 3
+        assert len(app.world.seeds) == base
+        await pilot.press("tilde")
+        await pilot.pause()
+        app._field_tick()  # the poll clock was cleared while paused
+        assert garden.pending_count(store.path) == 0
+
+
+async def test_pile_only_field_keeps_running(store: Store, project: str) -> None:
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _hide_field(app, pilot)
+        await pilot.press("grave_accent")  # hidden: backtick flips pile-only
+        await pilot.pause()
+        app._field_tick()
+        assert app.field.visible
+
+
+def test_process_field_owes_seeds_while_hidden(scratch_env: dict[str, str], tmp_path: Path) -> None:
+    """Hidden, the child holds still (no frames) and the parent owes the
+    seeds; shown, the child resumes and the owed seed lands."""
+    field = ProcessField(garden_path=tmp_path / "garden.json", sky_path=tmp_path / "sky.toml",
+                         cols=20, rows=6, seed=1)
+    field.start()
+    try:
+        rows: dict[int, tuple] = {}
+        assert _drain_until(field, rows, lambda r: len(r) == 6, 20)
+        field.set_visible(False)
+        time.sleep(0.5)
+        field.drain()  # anything already in flight
+        field.drop(10)
+        assert field.owed == [10]
+        time.sleep(1.0)
+        assert not field._conn.poll(0)  # paused: no frames
+        field.set_pile_only(True)
+        field.set_visible(True)
+        assert field.owed == []
+        assert _drain_until(field, rows, lambda r: len(r) == 6, 20)
+    finally:
+        field.stop()
+    assert field._proc.exitcode == 0
+
+
 def _backdate(store: Store, key: str, hours: float) -> None:
     """Write `updated_at` directly, `hours` in the past, in `_now()`'s format."""
     from datetime import datetime, timedelta, timezone

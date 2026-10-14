@@ -676,8 +676,10 @@ scope.
   persisted, default off);
   backtick drops a seed while shown, or while hidden flips `pile_only`
   (persisted) to show the pile alone without the sky/birds/seeds. A hidden
-  garden still grows: the field timer keeps ticking and only the draw is
-  skipped, so an answer's seed still lands and reaches the file. `cactus
+  garden is paused: nothing advances or polls, and a seed dropped meanwhile
+  is owed (`field.owed`, columns) and falls on show, the field resuming
+  where it stopped; `pile_only` is shown, so it keeps running. Quitting
+  hidden queues the owed seeds in `garden-pending`. `cactus
   garden` prints the file's path, cell count, and drop count (or "empty");
   `--clear` removes it (`nothing to clear` if it was already gone).
 - Answers made outside a TUI key (`cactus answer`, `www` answer) queue a seed
@@ -685,8 +687,9 @@ scope.
   not in garden.json, whose every TUI save rewrites it). The field claims it
   on the `SKY_RELOAD_SECONDS` poll (`GardenSync.drop_pending`: inline in the
   TUI, process mode in the child), under `flock` so each seed drops once,
-  capped at `PENDING_SEED_CAP` (20) per poll, the rest left queued, shown or
-  hidden. TUI answers drop their own and never queue; `cmd_exec`'s run
+  capped at `PENDING_SEED_CAP` (20) per poll, the rest left queued; a hidden
+  (paused) field claims none, so they drop on the first poll after show.
+  TUI answers drop their own and never queue; `cmd_exec`'s run
   approval queues none, matching the TUI's `R`. `cactus garden` shows the count.
 - The field runs in one of two places (`fieldproc.py`), picked by
   `CactusApp(field_mode=...)`. `inline` (the default, so every `run_test`
@@ -707,8 +710,10 @@ scope.
   it waits; the parent reads on `loop.add_reader`, drains everything
   ready, acks each frame, and paints only the merged newest state.
   Commands send only on change: drop, resize, pile_only, visible (hidden:
-  the child keeps advancing, so a hidden garden still grows, but renders
-  nothing), fps, config, reseed, stop. `run_tui` calls
+  the child saves any unsaved landing, then blocks on the pipe, advancing
+  and polling nothing; shown, it resumes with no fast-forward, resends every
+  row and polls at once; the parent holds drops made while hidden and sends
+  them on show), fps, config, reseed, stop. `run_tui` calls
   `resource_tracker.ensure_running()` before `App.run()` — spawn after
   Textual swaps the std streams fails with `bad value(s) in fds_to_keep`;
   a spawn failure falls back to inline with a flash. `on_unmount` and

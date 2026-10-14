@@ -158,6 +158,8 @@ class InlineField:
 
     def __init__(self, world: World) -> None:
         self.world = world
+        self.visible = True
+        self.owed: list[int] = []  # columns dropped while hidden, owed on show
 
     @property
     def config(self) -> SkyConfig:
@@ -174,6 +176,9 @@ class InlineField:
         return self.world.rng.randrange(self.world.cols)
 
     def drop(self, col: int) -> None:
+        if not self.visible:
+            self.owed.append(col)
+            return
         self.world.drop(col)
 
     def resize(self, cols: int, rows: int) -> None:
@@ -186,12 +191,20 @@ class InlineField:
     def reseed(self, seed: int) -> None:
         self.world.reseed(seed)
 
+    def set_visible(self, visible: bool) -> None:
+        """Hidden pauses the World (the TUI's tick skips it); showing it
+        again drops the seeds owed from the pause."""
+        if visible == self.visible:
+            return
+        self.visible = visible
+        if visible:
+            owed, self.owed = self.owed, []
+            for col in owed:
+                self.world.drop(col)
+
     # The inline World is rendered on demand and paced by the TUI's timer;
     # these only matter to a child that renders on its own.
     def set_pile_only(self, pile_only: bool) -> None:
-        pass
-
-    def set_visible(self, visible: bool) -> None:
         pass
 
     def set_fps(self, fps: int) -> None:
@@ -242,6 +255,7 @@ class ProcessField:
         self._pile_rows = GROUND_ROWS + 1  # an empty pile, until a frame says otherwise
         self._pile_only = False
         self._visible = True
+        self.owed: list[int] = []  # columns dropped while hidden, owed on show
         self._fps = self.config.fps
         self._conn: Any = None
         self._proc: Any = None
@@ -317,6 +331,10 @@ class ProcessField:
 
     # ---- commands -------------------------------------------------------
 
+    @property
+    def visible(self) -> bool:
+        return self._visible
+
     def pile_rows(self) -> int:
         return self._pile_rows
 
@@ -324,6 +342,9 @@ class ProcessField:
         return random.randrange(max(self.cols, 1))
 
     def drop(self, col: int) -> None:
+        if not self._visible:
+            self.owed.append(col)
+            return
         self._send(("drop", col))
 
     def resize(self, cols: int, rows: int) -> None:
@@ -341,6 +362,10 @@ class ProcessField:
         if visible != self._visible:
             self._visible = visible
             self._send(("visible", visible))
+            if visible:
+                owed, self.owed = self.owed, []
+                for col in owed:
+                    self._send(("drop", col))
 
     def set_fps(self, fps: int) -> None:
         if fps != self._fps:
@@ -458,7 +483,8 @@ def _child_loop(conn: Any, state: dict[str, Any]) -> None:
                 visible = cmd[1]
                 if visible:
                     prev = None  # the parent's rows may be stale; resend them all
-                    next_t = min(next_t, time.monotonic())
+                    last = next_t = time.monotonic()  # resume, no fast-forward
+                    reload_last = last - SKY_RELOAD_SECONDS  # poll on the first frame
             elif kind == "fps":
                 interval = 1.0 / max(cmd[1], 1)
             elif kind == "config":
@@ -472,6 +498,13 @@ def _child_loop(conn: Any, state: dict[str, Any]) -> None:
                 if world.landed_since_save > 0:
                     garden_sync.save(world)
                 return
+        if not visible:
+            # Paused: no simulation, no polling. Block until a command; on
+            # show, resume from here (no fast-forward) and poll right away.
+            if world.landed_since_save > 0:
+                garden_sync.save(world)
+            conn.poll(None)
+            continue
         now = time.monotonic()
         if now < next_t:
             conn.poll(next_t - now)  # sleep until a command or the next frame

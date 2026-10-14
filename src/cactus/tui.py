@@ -1121,11 +1121,9 @@ class CactusApp(App[int]):
         self._apply_field_visibility()
 
     def _apply_field_visibility(self) -> None:
-        """Show/hide `#field` per `field`/`pile_only`. The timer keeps
-        running either way: a hidden garden still grows — every answer's
-        seed still falls and lands, and the landing still reaches
-        garden.json for the other TUIs — only the draw is skipped
-        (`_render_field` returns early while nothing is on screen)."""
+        """Show/hide `#field` per `field`/`pile_only`. Hidden pauses the
+        field: nothing advances, seeds dropped meanwhile are owed and fall on
+        show (`field.set_visible`)."""
         self._fit_field()
         self._sync_field_interval()
         self.call_after_refresh(self._render_field)
@@ -4003,8 +4001,17 @@ class CactusApp(App[int]):
         clamped so a stalled terminal (a suspended session, a slow poll)
         never makes the field jump — never exactly `TICK_SECONDS`, which is
         only this timer's sampling rate, not the physics' own step size.
-        Inline only: a field child paces and advances its own World."""
+        Inline only: a field child paces and advances its own World. A
+        hidden field is paused: see the early return below."""
         if self.world is None:
+            return
+        if not self.field.visible:
+            # Paused while hidden: no advance, no polling. The re-fit still
+            # runs, so a layout change that shows the field resumes it; the
+            # cleared clocks mean no fast-forward and an immediate poll.
+            self._field_last_time = None
+            self._sky_reload_last = None
+            self._render_field()
             return
         now = time.monotonic()
         last = self._field_last_time if self._field_last_time is not None else now
@@ -4124,6 +4131,13 @@ class CactusApp(App[int]):
             except (RuntimeError, OSError, ValueError):
                 pass
             self.field.stop()
+        owed = getattr(self.field, "owed", None)
+        if owed:
+            # Quit while hidden: hand the owed seeds to the next field.
+            try:
+                garden.add_pending(self._garden_path, len(owed))
+            except OSError:
+                pass
 
     def _render_field(self) -> None:
         try:
