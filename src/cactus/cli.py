@@ -616,6 +616,7 @@ def cmd_run(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
     session = os.environ.get("HERDR_SESSION") or None
 
     try:
+        files = _resolve_files(args.file, cwd=cwd)
         q = store.ask(
             text,
             project=project,
@@ -632,6 +633,7 @@ def cmd_run(args: argparse.Namespace, store: Store, project: str, cwd: str) -> i
             thread=args.thread,
             context=args.why,
             asked_by=os.environ.get("CACTUS_AGENT"),
+            files=files,
         )
         store.set_review(q.key, project=project, run_cmd=text)
         q = store.get(q.key, project=project)
@@ -1936,6 +1938,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="required: owning agent, a RESOLVED identity — not a bare pane id")
     rn.add_argument("--cwd", help="directory to run in (default: caller's cwd)")
     rn.add_argument("--why", help="context for the request")
+    rn.add_argument("-f", "--file", action="append",
+                    help="a file the human may preview for context; repeat for more")
     rn.add_argument("-t", "--thread", help="group under a named thread")
     rn.add_argument("--recommend", choices=["approve", "deny"],
                     help="an option to recommend")

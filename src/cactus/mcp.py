@@ -206,6 +206,7 @@ TOOLS: list[dict[str, Any]] = [
             "command": _prop("string", "The command, verbatim."),
             "why": _prop("string", "Why it is needed; becomes the row context."),
             "cwd": _prop("string", "Directory to run in."),
+            "files": {**_STR_LIST, "description": "File paths the human may preview for context before approving."},
             "thread": _prop("string", "Group under a named thread."),
             "recommend": _prop("string", "Your pick.", enum=["approve", "deny"]),
             "confidence": _prop("string", "Required with recommend.", enum=["low", "med", "high"]),
@@ -394,6 +395,7 @@ def _argv_for(name: str, a: dict[str, Any]) -> list[str] | None:
         argv = ["run", a["command"], "--agent", a.get("agent") or _default_agent()]
         _flag(argv, "--why", a.get("why"))
         _flag(argv, "--cwd", a.get("cwd"))
+        _repeat(argv, "-f", a.get("files"))
         _flag(argv, "-t", a.get("thread"))
         _flag(argv, "--recommend", a.get("recommend"))
         _flag(argv, "--confidence", a.get("confidence"))

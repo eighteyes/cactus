@@ -278,6 +278,25 @@ def test_ask_file_duplicate_exits_1(cli, project):
     assert "duplicate file:" in r.stderr
 
 
+def test_run_file_attaches_preview_files(cli, project):
+    import os
+
+    (open(os.path.join(project, "plan.md"), "w")).close()
+
+    r = cli("run", "make deploy", "--agent", AGENT_A, "-f", "plan.md", "--no-wait", "--json")
+    assert r.returncode == 0
+    doc = json.loads(r.stdout)
+    assert doc["act"] == "run"
+    assert doc["files"] == [os.path.join(project, "plan.md")]
+
+
+def test_run_file_missing_exits_1_without_a_row(cli):
+    r = cli("run", "make deploy", "--agent", AGENT_A, "-f", "nope.txt", "--no-wait")
+    assert r.returncode == 1
+    assert "no such file: nope.txt" in r.stderr
+    assert cli("list", "--json").returncode == 3
+
+
 def test_edit_file_replaces_whole_list(cli, project):
     import os
 
