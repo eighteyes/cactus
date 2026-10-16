@@ -484,6 +484,18 @@ scope.
   The MCP `cactus_ask`/`cactus_run` pass `--no-wait` unless `wait` is set,
   and the Codex session-start hook tells Codex to post `--no-wait`. The
   courier agent stays deleted (q412); `poke.wake_owner` was removed (q430).
+- `POST /api/voice` (voice-web) is the phone's hold-to-talk loop: `{audio_b64,
+  mime, key, project}` -> temp file -> `vhear` (`CACTUS_VHEAR`, `{path}`) ->
+  `voice.parse`, else `voice.interpret` (stub until W3), else "didn't catch
+  that" -> `voice.run` -> `vsay -o` (`CACTUS_VSAY`, `{path}` `{text}`) ->
+  `{ok, transcript, say, next_key, audio}`. `audio` is
+  `/api/voice/audio/<id>.wav`, kept 10 minutes under the same guard and token;
+  a render failure is `audio: null`, never an error, a `vhear` failure is 502.
+  Only Store calls touch the database: vhear, vsay and the interpreter run
+  outside them. `voice.run` refuses a `run` row ("that one needs the keyboard")
+  and never retires, execs, pokes or approves; `undo` follows `cactus undo`
+  (refuses an open, answerless or non-pass-cleared row). Tests set both
+  templates inert.
 - `www` guards every request (`_Handler._guard`), because a localhost POST is
   reachable from any page the human visits and approving a `run` row makes
   the agent execute it: Host must be loopback or the bound host (any Host on

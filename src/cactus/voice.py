@@ -8,6 +8,9 @@
 #   - resolve a pick to a real choice label on the target row, or say why it cannot
 #   - stay pure: no store, no subprocess, no clock; rows are read by attribute only
 #   - return None when nothing in the grammar matches (the caller may then interpret)
+#   - run: execute a Command through the Store calls /api/answer uses, refusing anything
+#     that executes (a `run` row's approve), and build the sentence to speak
+#   - interpret: the stub the claude -p interpreter (W3) fills in later
 
 from __future__ import annotations
 
@@ -189,3 +192,140 @@ def _target(rest: list[str], row: Any, rows: Sequence[Any]) -> tuple[Any, Comman
         found = _find(rows, rest[0])
         return (found, None) if found else (None, _none(f"no {rest[0]}"))
     return (row, None) if row is not None else (None, _none("no row selected"))
+
+
+KEYBOARD_ONLY = "that one needs the keyboard"
+DIDNT_CATCH = "didn't catch that"
+MAX_SPOKEN_CHOICES = 4
+_ORDINALS = ["one", "two", "three", "four"]
+
+
+def interpret(transcript: str, row: Any, rows: Sequence[Any] = ()) -> Command | None:
+    """The claude -p fallback for a transcript the grammar missed. Stub: W3 fills it."""
+    return None
+
+
+@dataclass(frozen=True)
+class Result:
+    """What running a Command did: the sentence to speak and the row to show next."""
+
+    say: str
+    next_key: str | None = None
+    ok: bool = True
+
+
+def describe(row: Any) -> str:
+    """`q14, <title>. One, a. Two, b.` -- title plus at most four choice labels."""
+    title = " ".join((getattr(row, "text", "") or "").split())
+    out = f"{row.key}, {title}."
+    labels = _labels(row)[:MAX_SPOKEN_CHOICES]
+    for word, label in zip(_ORDINALS, labels):
+        out += f" {word.capitalize()}, {label}."
+    return out
+
+
+def _next_row(rows: Sequence[Any], after: Any, key: str | None) -> Any | None:
+    """The row to show after acting on `key`: the one that took its place."""
+    if not rows:
+        return None
+    keys = [r.key for r in rows]
+    if key in keys:
+        i = keys.index(key)
+        return rows[i + 1] if i + 1 < len(rows) else rows[i]
+    if after is not None:
+        i = min(after, len(rows) - 1)
+        return rows[i]
+    return rows[0]
+
+
+def run(cmd: Command, store: Any, *, project: str | None = None, current: str | None = None,
+        rows: Sequence[Any] | None = None) -> Result:
+    """Execute `cmd` and report. `rows` is the actionable list before the command ran.
+
+    Nothing here retires, execs, pokes, or approves a `run` row: those say
+    KEYBOARD_ONLY. Store errors come back as a spoken sentence, never raised.
+    """
+    from .store import ACTIONABLE
+
+    def fresh() -> list[Any]:
+        return list(store.tree(project=project, status=ACTIONABLE, all_projects=project is None))
+
+    before = list(rows) if rows is not None else fresh()
+    keys = [r.key for r in before]
+    cur = current if current in keys else (keys[0] if keys else None)
+    cur_i = keys.index(cur) if cur in keys else 0
+
+    def then(lead: str, key: str | None, idx: int | None = None) -> Result:
+        after = fresh()
+        nxt = _next_row(after, idx if key not in [r.key for r in after] else None, key)
+        if nxt is None:
+            return Result(f"{lead} Nothing left.", None)
+        return Result(f"{lead} Next: {describe(nxt)}", nxt.key)
+
+    def show(row: Any, lead: str = "") -> Result:
+        return Result(f"{lead} {describe(row)}".strip(), row.key)
+
+    verb = cmd.verb
+    if verb == "none":
+        return Result(cmd.say, cur, ok=bool(not cmd.say))
+    if verb == "status":
+        n = len(before)
+        if not n:
+            return Result("Nothing due.", None)
+        nxt = before[cur_i]
+        return Result(f"{n} due. Next: {describe(nxt)}", nxt.key)
+    if verb in ("next", "previous"):
+        if not before:
+            return Result("Nothing due.", None)
+        step = 1 if verb == "next" else -1
+        row = before[(cur_i + step) % len(before)]
+        return show(row)
+
+    target = next((r for r in before if r.key == cmd.key), None)
+    if target is None and cmd.key:
+        try:
+            target = store.get(cmd.key, project=project)
+        except Exception:  # noqa: BLE001 - a miss is a sentence
+            target = None
+    if target is None:
+        return Result(f"no {cmd.key}" if cmd.key else DIDNT_CATCH, cur, ok=False)
+    idx = keys.index(target.key) if target.key in keys else cur_i
+    if verb == "read":
+        return show(target)
+
+    if getattr(target, "act", None) == "run":
+        return Result(KEYBOARD_ONLY, target.key, ok=False)
+
+    proj = getattr(target, "project", None) or project
+    try:
+        if verb in ("answer", "verdict"):
+            selected = [cmd.selected] if cmd.selected else []
+            store.answer(target.key, project=proj, selected=selected, text=cmd.text)
+            what = cmd.selected or cmd.text or ""
+            lead = f"{'Verdict' if verb == 'verdict' else 'Answered'} {what}."
+            return then(lead, target.key, idx)
+        if verb == "skip":
+            store.answer(target.key, project=proj, skipped=True)
+            return then("Skipped.", target.key, idx)
+        if verb == "undo":
+            # `cactus undo KEY` semantics: refuse a cleared row (unless pass-closed)
+            # and a row with no answer.
+            closed = getattr(target, "closed_by_pass", False)
+            if target.status == "cleared" and not closed:
+                return Result(f"{target.key} is cleared; restore it from the keyboard", target.key, ok=False)
+            if (target.status not in ("answered", "live") or target.answer is None) and not closed:
+                return Result(f"{target.key} has no answer to undo", target.key, ok=False)
+            store.reopen(target.key, project=proj, withdraw_pass=True)
+            return show(store.get(target.key, project=proj) or target, "Undone.")
+        if verb == "step":
+            n = cmd.n or 0
+            steps = getattr(target, "steps", None) or []
+            if not 1 <= n <= len(steps):
+                return Result(f"{target.key} has {len(steps)} steps, not {n}", target.key, ok=False)
+            done = not steps[n - 1].done
+            store.set_step_done(target.key, n - 1, done, project=proj)
+            return Result(f"Step {n} {'done' if done else 'open'}.", target.key)
+    except (ValueError, KeyError) as exc:
+        msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
+        return Result(str(msg), target.key, ok=False)
+    return Result(DIDNT_CATCH, cur, ok=False)

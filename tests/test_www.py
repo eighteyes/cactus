@@ -228,3 +228,113 @@ def test_run_serve_refuses_443_and_nonloopback_and_failed_serve(store, monkeypat
     assert run_www(store, host="0.0.0.0", port=0, serve=8443) == 1
     monkeypatch.setenv("CACTUS_TS_SERVE", "false")
     assert run_www(store, port=0, serve=8443) == 1
+
+
+# ---- voice: POST /api/voice and the audio route ------------------------------
+
+import base64
+import stat
+
+from cactus import www as www_mod
+
+
+@pytest.fixture
+def voice_env(tmp_path, monkeypatch):
+    """Inert vhear/vsay: vhear prints $VOICE_SAYS; vsay writes a few bytes to {path}."""
+    vhear = tmp_path / "vhear.sh"
+    vhear.write_text('#!/bin/sh\nprintf "%s" "$VOICE_SAYS"\n')
+    vsay = tmp_path / "vsay.sh"
+    vsay.write_text('#!/bin/sh\necho "$2" > "$TEXT_LOG"\nprintf RIFFxxxx > "$1"\n')
+    for f in (vhear, vsay):
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("CACTUS_VHEAR", f"{vhear} {{path}}")
+    monkeypatch.setenv("CACTUS_VSAY", f"{vsay} {{path}} {{text}}")
+    monkeypatch.setenv("TEXT_LOG", str(tmp_path / "said.txt"))
+    return tmp_path
+
+
+def _voice(req, q, says, monkeypatch, **extra):
+    monkeypatch.setenv("VOICE_SAYS", says)
+    body = {"audio_b64": base64.b64encode(b"fake").decode(), "mime": "audio/webm", "key": q.key,
+            "project": q.project, **extra}
+    status, data = req("POST", "/api/voice", json.dumps(body), {"Content-Type": "application/json"})
+    return status, json.loads(data)
+
+
+def test_voice_answers_by_grammar_and_serves_audio(www, voice_env, monkeypatch) -> None:
+    req, port, q, store = www
+    status, out = _voice(req, q, "one", monkeypatch)
+    assert status == 200 and out["ok"] and out["transcript"] == "one"
+    assert out["say"].startswith("Answered approve.")
+    assert out["next_key"] is None  # nothing left
+    assert store.get(q.key, project=q.project).status == "answered"
+    assert out["audio"].startswith("/api/voice/audio/") and out["audio"].endswith(".wav")
+    status, data = req("GET", out["audio"])
+    assert status == 200 and data.startswith(b"RIFF")
+    assert "Answered approve" in (voice_env / "said.txt").read_text()
+
+
+def test_voice_unknown_audio_id_is_404(www) -> None:
+    req, *_ = www
+    assert req("GET", "/api/voice/audio/" + "0" * 32 + ".wav")[0] == 404
+    assert req("GET", "/api/voice/audio/../../etc/passwd")[0] == 404
+
+
+def test_voice_audio_expires(www, voice_env, monkeypatch) -> None:
+    req, port, q, store = www
+    monkeypatch.setattr(www_mod, "AUDIO_TTL", -1.0)
+    _, out = _voice(req, q, "skip", monkeypatch)
+    assert out["audio"]
+    assert req("GET", out["audio"])[0] == 404
+
+
+def test_voice_didnt_catch_runs_nothing(www, voice_env, monkeypatch) -> None:
+    req, port, q, store = www
+    status, out = _voice(req, q, "purple monkey dishwasher", monkeypatch)
+    assert status == 200 and not out["ok"] and out["say"] == "didn't catch that"
+    assert store.get(q.key, project=q.project).status == "open"
+
+
+def test_voice_render_failure_is_null_audio_not_an_error(www, voice_env, monkeypatch) -> None:
+    req, port, q, store = www
+    monkeypatch.setenv("CACTUS_VSAY", "false {path} {text}")
+    status, out = _voice(req, q, "one", monkeypatch)
+    assert status == 200 and out["audio"] is None and out["ok"]
+
+
+def test_voice_run_row_needs_the_keyboard(www, voice_env, monkeypatch, project) -> None:
+    req, port, q, store = www
+    r = store.ask("rm -rf?", project=project, cwd=project, kind="confirm", act="run",
+                  choices=[Choice("approve"), Choice("deny")], agent="a1")
+    status, out = _voice(req, r, "yes", monkeypatch)
+    assert status == 200 and not out["ok"] and out["say"] == "that one needs the keyboard"
+    assert store.get(r.key, project=r.project).status == "open"
+
+
+def test_voice_rejects_bad_base64_and_text_plain(www, voice_env) -> None:
+    req, port, q, store = www
+    h = {"Content-Type": "application/json"}
+    assert req("POST", "/api/voice", json.dumps({"audio_b64": "!!"}), h)[0] == 400
+    assert req("POST", "/api/voice", json.dumps({}), h)[0] == 400
+    assert req("POST", "/api/voice", "{}", {"Content-Type": "text/plain"})[0] == 415
+
+
+def test_voice_vhear_failure_is_502(www, voice_env, monkeypatch) -> None:
+    req, port, q, store = www
+    monkeypatch.setenv("CACTUS_VHEAR", "false {path}")
+    status, _ = _voice(req, q, "one", monkeypatch)
+    assert status == 502
+    assert store.get(q.key, project=q.project).status == "open"
+
+
+def test_voice_interpret_stub_is_used_when_grammar_misses(www, voice_env, monkeypatch) -> None:
+    from cactus.voice import Command
+    req, port, q, store = www
+    monkeypatch.setattr("cactus.voice.interpret", lambda t, r, rows=(): Command("answer", r.key, selected="deny"))
+    status, out = _voice(req, q, "I guess no thanks", monkeypatch)
+    assert out["ok"] and store.get(q.key, project=q.project).answer.selected == ["deny"]
+
+
+def test_page_has_a_hold_to_talk_mic() -> None:
+    assert 'id="mic"' in PAGE and "pointerdown" in PAGE and "MediaRecorder" in PAGE
+    assert "/api/voice" in PAGE and "isSecureContext" in PAGE

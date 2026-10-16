@@ -94,3 +94,71 @@ def test_verbs_allowlist_covers_grammar():
 def test_command_is_frozen():
     with pytest.raises(Exception):
         Command("skip").verb = "undo"
+
+
+# ---- run / describe -----------------------------------------------------------
+
+from cactus.store import Choice
+from cactus.voice import KEYBOARD_ONLY, describe, interpret, run
+
+
+def test_interpret_stub_returns_none():
+    assert interpret("anything", CUR, ROWS) is None
+
+
+def test_describe_title_and_at_most_four_choices():
+    r = NS(key="q14", text="which  storage engine", choices=[NS(label=l) for l in "abcdef"])
+    assert describe(r) == "q14, which storage engine. One, a. Two, b. Three, c. Four, d."
+
+
+def _ask(store, project, text, **kw):
+    kw.setdefault("choices", [Choice("red"), Choice("green")])
+    return store.ask(text, project=project, cwd=project, kind="choice", agent="a1", **kw)
+
+
+def test_run_answer_then_speaks_next_row(store, project):
+    a, b = _ask(store, project, "first?"), _ask(store, project, "second?")
+    res = run(Command("answer", a.key, selected="green"), store, project=project, current=a.key)
+    assert res.ok and res.say.startswith("Answered green. Next: " + b.key) and res.next_key == b.key
+    assert store.get(a.key, project=project).status == "answered"
+
+
+def test_run_skip_and_undo(store, project):
+    a = _ask(store, project, "first?")
+    assert run(Command("skip", a.key), store, project=project).say.startswith("Skipped.")
+    res = run(Command("undo", a.key), store, project=project)
+    assert res.say.startswith("Undone.") and store.get(a.key, project=project).status == "open"
+
+
+def test_run_undo_refuses_open_and_cleared(store, project):
+    a = _ask(store, project, "first?")
+    assert "no answer to undo" in run(Command("undo", a.key), store, project=project).say
+    store.clear(keys=[a.key], project=project, record=False)
+    res = run(Command("undo", a.key), store, project=project)
+    assert not res.ok and "cleared" in res.say
+
+
+def test_run_refuses_run_rows(store, project):
+    r = store.ask("go?", project=project, cwd=project, kind="confirm", act="run",
+                  choices=[Choice("approve"), Choice("deny")], agent="a1")
+    res = run(Command("answer", r.key, selected="approve"), store, project=project)
+    assert res.say == KEYBOARD_ONLY and not res.ok
+    assert store.get(r.key, project=project).status == "open"
+
+
+def test_run_status_and_moves(store, project):
+    a, b = _ask(store, project, "first?"), _ask(store, project, "second?")
+    assert run(Command("status"), store, project=project, current=a.key).say.startswith("2 due.")
+    assert run(Command("next"), store, project=project, current=a.key).next_key == b.key
+    assert run(Command("previous"), store, project=project, current=a.key).next_key == b.key  # wraps
+
+
+def test_run_bad_label_is_spoken_not_raised(store, project):
+    a = _ask(store, project, "first?")
+    res = run(Command("answer", a.key, selected="purple"), store, project=project)
+    assert not res.ok and "purple" in res.say
+
+
+def test_run_none_speaks_its_reason(store, project):
+    assert run(Command("none", say="q1 has 2 choices, not 9"), store, project=project).say == "q1 has 2 choices, not 9"
+    assert run(Command("none"), store, project=project).say == ""

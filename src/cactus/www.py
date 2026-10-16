@@ -11,6 +11,10 @@ Responsibilities:
 - Serialize every store call behind one lock: Store's sqlite3 connection is
   opened with the default check_same_thread=True, so a ThreadingHTTPServer
   handler thread cannot touch it directly without one.
+- Serve the voice loop: POST /api/voice (audio in, transcript + spoken reply
+  out), GET /api/voice/audio/<id>.wav (the rendered reply, kept 10 minutes).
+  Only Store calls touch the database; vhear, vsay and the interpreter run
+  outside any store access.
 - Bind loopback only by default with no authentication — this is a human's
   own machine reaching its own inbox. A non-loopback bind (a phone over
   Tailscale) requires the `cactus_token` cookie on every route except
@@ -19,9 +23,13 @@ Responsibilities:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import json
 import os
+import re
+import tempfile
 import secrets
 import shlex
 import subprocess
@@ -34,7 +42,7 @@ from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from . import garden
+from . import garden, voice
 from .poke import PokeError, poke, deliver_if_mapped
 from .store import ACTIONABLE, AlreadyAnswered, Question, Store
 
@@ -117,6 +125,37 @@ def serve_argv(serve_port: int, local_port: int) -> list[str]:
     if tpl:
         return [a.format(port=serve_port, local=local) for a in shlex.split(tpl)]
     return ["tailscale", "serve", "--bg", f"--https={serve_port}", local]
+
+
+AUDIO_TTL = 600.0
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
+_AUDIO_PATH = re.compile(r"^/api/voice/audio/([0-9a-f]{32})\.wav$")
+_MIME_SUFFIX = {"webm": ".webm", "ogg": ".ogg", "mp4": ".m4a", "mpeg": ".mp3", "wav": ".wav", "x-wav": ".wav"}
+
+
+def _template_argv(env: str, default: str, **vals: str) -> list[str]:
+    """Shell-split a command template (env var, else default) and fill {names}."""
+    tpl = os.environ.get(env, "").strip() or default
+    return [a.format(**vals) for a in shlex.split(tpl)]
+
+
+def hear(path: str) -> str:
+    """Transcribe an audio file with `vhear` (`CACTUS_VHEAR`, `{path}`)."""
+    res = subprocess.run(_template_argv("CACTUS_VHEAR", "vhear {path}", path=path),
+                         capture_output=True, text=True, timeout=60)
+    if res.returncode != 0:
+        raise ValueError(f"vhear failed: {res.stderr.strip() or res.returncode}")
+    return res.stdout.strip()
+
+
+def render(text: str, out: str) -> bool:
+    """Render `text` to a wav at `out` with `vsay -o` (`CACTUS_VSAY`, `{path}` `{text}`)."""
+    try:
+        res = subprocess.run(_template_argv("CACTUS_VSAY", "vsay -o {path} {text}", path=out, text=text),
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError):
+        return False
+    return res.returncode == 0 and os.path.exists(out)
 
 
 def _msg(exc: BaseException) -> str:
@@ -247,6 +286,24 @@ PAGE = """\
     pre { overflow-x: auto; max-width: 100%; }
     #toast { left: 12px; right: 12px; max-width: none; bottom: calc(12px + env(safe-area-inset-bottom)); }
   }
+  #voice {
+    position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px; z-index: 5;
+    max-width: calc(100vw - 32px);
+  }
+  #mic {
+    width: 64px; height: 64px; border-radius: 50%; border: 1px solid #3a3f49;
+    background: #1c1f26; color: #d8dbe0; font-size: 26px; touch-action: none;
+    user-select: none; -webkit-user-select: none; cursor: pointer;
+  }
+  #mic.listening { background: #7a2b2b; border-color: #c95555; }
+  #mic.off { opacity: 0.5; }
+  #pill, #heard { background: #1c1f26; border: 1px solid #2a2d34; border-radius: 12px; padding: 6px 10px; }
+  #pill { color: #e08a8a; display: none; }
+  #pill.on { display: block; }
+  #heard { display: none; color: #b7bcc7; }
+  #heard.on { display: block; }
+  #heard b { color: #8b93a3; font-weight: normal; }
 </style>
 </head>
 <body class="view-rail">
@@ -254,6 +311,11 @@ PAGE = """\
 <div id="rail"></div>
 <div id="card">select a row</div>
 <div id="toast"></div>
+<div id="voice">
+  <div id="heard"></div>
+  <div id="pill">listening&hellip;</div>
+  <button id="mic" type="button" title="hold to talk" aria-label="hold to talk">&#127908;</button>
+</div>
 <script>
 "use strict";
 
@@ -587,6 +649,128 @@ function pollFallback() {
   setInterval(fetchFeed, 2000);
 }
 
+// ---- voice: hold the mic, release to send --------------------------------
+let micStream = null;
+let recorder = null;
+let chunks = [];
+let micHeld = false;
+let replyAudio = null;
+
+function micProblem() {
+  if (!window.isSecureContext) return "the mic needs https (open the board through --serve)";
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return "this browser has no microphone access";
+  if (typeof MediaRecorder === "undefined") return "this browser cannot record audio";
+  return null;
+}
+
+function setMicState(problem) {
+  const mic = document.getElementById("mic");
+  mic.classList.toggle("off", !!problem);
+  mic.title = problem || "hold to talk";
+}
+
+function showHeard(transcript, say) {
+  const el = document.getElementById("heard");
+  el.textContent = "";
+  const a = document.createElement("div");
+  const ab = document.createElement("b");
+  ab.textContent = "heard: ";
+  a.appendChild(ab);
+  a.appendChild(document.createTextNode(transcript || "(nothing)"));
+  const s = document.createElement("div");
+  const sb = document.createElement("b");
+  sb.textContent = "said: ";
+  s.appendChild(sb);
+  s.appendChild(document.createTextNode(say || ""));
+  el.appendChild(a);
+  el.appendChild(s);
+  el.classList.add("on");
+}
+
+function stopReply() {
+  if (replyAudio) { replyAudio.pause(); replyAudio = null; }
+}
+
+function playReply(url) {
+  stopReply();
+  if (!url) return;
+  replyAudio = new Audio(url);
+  replyAudio.play().catch(() => toast("tap the mic once to allow sound"));
+}
+
+function blobToB64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+async function sendVoice(blob, mime) {
+  const q = findSelected();
+  try {
+    const data = await api("/api/voice", {
+      audio_b64: await blobToB64(blob), mime: mime,
+      key: q ? q.key : null, project: q ? q.project : null,
+    });
+    showHeard(data.transcript, data.say);
+    playReply(data.audio);
+    await fetchFeed();
+    if (data.next_key) {
+      const nxt = rows.find(r => r.key === data.next_key && (!q || r.project === q.project)) ||
+        rows.find(r => r.key === data.next_key);
+      if (nxt) { selectedRef = nxt.ref; setView("card"); render(); }
+    }
+  } catch (e) { toast("voice: " + e.message); }
+}
+
+async function micDown(ev) {
+  ev.preventDefault();
+  const problem = micProblem();
+  if (problem) { toast(problem); setMicState(problem); return; }
+  if (micHeld || recorder) return;
+  micHeld = true;
+  stopReply();
+  try {
+    if (!micStream) micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    micHeld = false;
+    const why = "microphone blocked (" + (e && e.name ? e.name : "denied") + "): allow it in the site settings";
+    toast(why); setMicState(why);
+    return;
+  }
+  if (!micHeld) return;
+  chunks = [];
+  recorder = new MediaRecorder(micStream);
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  recorder.onstop = () => {
+    const mime = recorder.mimeType || "audio/webm";
+    const blob = new Blob(chunks, { type: mime });
+    recorder = null;
+    if (blob.size) sendVoice(blob, mime);
+  };
+  recorder.start();
+  document.getElementById("mic").classList.add("listening");
+  document.getElementById("pill").classList.add("on");
+}
+
+function micUp() {
+  micHeld = false;
+  document.getElementById("mic").classList.remove("listening");
+  document.getElementById("pill").classList.remove("on");
+  if (recorder && recorder.state === "recording") recorder.stop();
+}
+
+(function initMic() {
+  const mic = document.getElementById("mic");
+  mic.addEventListener("pointerdown", micDown);
+  mic.addEventListener("pointerup", micUp);
+  mic.addEventListener("pointercancel", micUp);
+  mic.addEventListener("contextmenu", (e) => e.preventDefault());
+  setMicState(micProblem());
+})();
+
 fetchFeed();
 connectEvents();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -786,6 +970,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_feed()
             elif self.path.startswith("/api/events"):
                 self._handle_events()
+            elif _AUDIO_PATH.match(urlsplit(self.path).path):
+                self._handle_voice_audio(_AUDIO_PATH.match(urlsplit(self.path).path).group(1))
             else:
                 self._send_json(404, {"error": "not found"})
         except (BrokenPipeError, ConnectionResetError):
@@ -808,6 +994,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_reopen()
             elif self.path == "/api/poke":
                 self._handle_poke()
+            elif self.path == "/api/voice":
+                self._handle_voice()
             else:
                 self._send_json(404, {"error": "not found"})
         except (BrokenPipeError, ConnectionResetError):
@@ -929,6 +1117,85 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"agent": agent, "ran": ran})
 
 
+    def _handle_voice_audio(self, audio_id: str) -> None:
+        path = self.server.audio_path(audio_id)  # type: ignore[attr-defined]
+        if path is None:
+            self._send_json(404, {"error": "not found"})
+            return
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            self._send_json(404, {"error": "not found"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_voice(self) -> None:
+        body = self._read_json()
+        try:
+            raw = base64.b64decode(body.get("audio_b64") or "", validate=True)
+        except (binascii.Error, ValueError):
+            self._send_json(400, {"error": "audio_b64 is not base64"})
+            return
+        if not raw:
+            self._send_json(400, {"error": "audio_b64 is required"})
+            return
+        if len(raw) > MAX_AUDIO_BYTES:
+            self._send_json(413, {"error": "audio too large"})
+            return
+        mime = str(body.get("mime") or "")
+        sub = mime.split(";")[0].split("/")[-1].strip().lower()
+        suffix = _MIME_SUFFIX.get(sub, ".webm")
+        key = body.get("key") or None
+        project = body.get("project") or self.server.project  # type: ignore[attr-defined]
+
+        # Slow, store-free work first: decode the audio with vhear.
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        try:
+            with tmp:
+                tmp.write(raw)
+            try:
+                transcript = hear(tmp.name)
+            except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                self._send_json(502, {"error": _msg(exc)})
+                return
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+        store = self._store()
+        rows = _questions(store, project)
+        cur = next((r for r in rows if r.key == key and (not body.get("project") or r.project == body.get("project"))), None)
+        if cur is None and key:
+            cur = next((r for r in rows if r.key == key), None)
+        cmd = voice.parse(transcript, cur, rows) if transcript else None
+        if cmd is None and transcript:
+            cmd = voice.interpret(transcript, cur, rows)  # may be slow: no store call inside
+        if cmd is None:
+            result = voice.Result(voice.DIDNT_CATCH, key, ok=False)
+        else:
+            result = voice.run(cmd, store, project=project, current=key, rows=rows)
+            if cmd.verb in ("answer", "verdict", "skip") and result.ok:
+                try:
+                    garden.add_pending(store.path)
+                except OSError:
+                    pass
+        audio = self.server.render_audio(result.say) if result.say else None  # type: ignore[attr-defined]
+        self._send_json(200, {
+            "ok": result.ok, "transcript": transcript, "say": result.say,
+            "next_key": result.next_key, "audio": audio,
+        })
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -945,6 +1212,54 @@ class _Server(ThreadingHTTPServer):
         # Each handler thread opens its own Store (see _Handler._store) since
         # a sqlite3 connection cannot cross threads; this holds those.
         self.local = threading.local()
+        self._audio: dict[str, tuple[str, float]] = {}
+        self._audio_lock = threading.Lock()
+        self._audio_dir: str | None = None
+
+    def _purge_audio(self) -> None:
+        now = time.monotonic()
+        for aid, (path, exp) in list(self._audio.items()):
+            if exp <= now:
+                del self._audio[aid]
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    def render_audio(self, text: str) -> str | None:
+        """Render `text` to a wav kept AUDIO_TTL seconds; the URL, or None on failure."""
+        with self._audio_lock:
+            self._purge_audio()
+            if self._audio_dir is None:
+                self._audio_dir = tempfile.mkdtemp(prefix="cactus-voice-")
+        aid = secrets.token_hex(16)
+        out = os.path.join(self._audio_dir, f"{aid}.wav")
+        if not render(text, out):
+            return None
+        with self._audio_lock:
+            self._audio[aid] = (out, time.monotonic() + AUDIO_TTL)
+        return f"/api/voice/audio/{aid}.wav"
+
+    def audio_path(self, aid: str) -> str | None:
+        with self._audio_lock:
+            self._purge_audio()
+            hit = self._audio.get(aid)
+        return hit[0] if hit else None
+
+    def server_close(self) -> None:
+        super().server_close()
+        with self._audio_lock:
+            for path, _ in self._audio.values():
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            self._audio.clear()
+        if self._audio_dir:
+            try:
+                os.rmdir(self._audio_dir)
+            except OSError:
+                pass
 
 
 def run_www(
