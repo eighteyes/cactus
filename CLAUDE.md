@@ -366,6 +366,14 @@ scope.
   401 with no cookie. The file is re-read per request, so `cactus www-token
   --rotate` kills old cookies live. `log_message` stays silent so the token
   never reaches stderr.
+- `--www --serve [PORT]` (default 8443) fronts the loopback bind with
+  `tailscale serve --bg --https=PORT` (`CACTUS_TS_SERVE` template over
+  `{port}`/`{local}`; `CACTUS_TS_NAME` overrides the tailnet name; tests set
+  both inert). It forces the A1 token gate on although the bind is loopback,
+  allows a `*.ts.net` Host only on a `serve` server, prints the https login
+  URL on stdout and the `tailscale serve --https=PORT off` undo line on
+  stderr (`--bg` outlives cactus). Port 443 is refused, a non-loopback
+  `--host` is refused.
 - Hook identity (`hooks/cactus_identity.py`, q327) resolves the hook payload's
   `session_id` first, then herdr's view of the pane, then `CACTUS_AGENT`.
   herdr infers a conversation id from the transcript file, which at

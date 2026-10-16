@@ -165,3 +165,66 @@ def test_rotate_invalidates_old_cookie(secured) -> None:
     assert new != token
     assert req("GET", "/api/feed", headers={"Cookie": pair})[0] == 401
     assert req("GET", "/api/feed", headers={"Cookie": f"cactus_token={new}"})[0] == 200
+
+
+# ---- --serve: tailscale serve in front of a loopback bind ------------------
+
+from cactus.www import run_www, serve_argv  # noqa: E402
+
+
+def _serve_server(store, serve):
+    token = make_token(store.path)
+    server = _Server(("127.0.0.1", 0), store.path, None, token, serve=serve)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, token
+
+
+def _get(port, path, host, cookie=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    h = {"Host": host}
+    if cookie:
+        h["Cookie"] = cookie
+    c.request("GET", path, headers=h)
+    r = c.getresponse()
+    r.read()
+    c.close()
+    return r.status
+
+
+def test_ts_net_host_allowed_only_when_served(store) -> None:
+    for serve, want in ((True, 200), (False, 403)):
+        server, token = _serve_server(store, serve)
+        port = server.server_address[1]
+        try:
+            assert _get(port, "/api/feed", "box.tail1.ts.net", f"cactus_token={token}") == want
+            assert _get(port, "/api/feed", "evil.example.com", f"cactus_token={token}") == 403
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def test_serve_argv_template_and_default(monkeypatch) -> None:
+    monkeypatch.delenv("CACTUS_TS_SERVE", raising=False)
+    assert serve_argv(8443, 8642) == ["tailscale", "serve", "--bg", "--https=8443", "http://127.0.0.1:8642"]
+    monkeypatch.setenv("CACTUS_TS_SERVE", "echo {port} {local}")
+    assert serve_argv(8443, 8642) == ["echo", "8443", "http://127.0.0.1:8642"]
+
+
+def test_run_serve_prints_https_login_and_undo(store, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("CACTUS_TS_SERVE", "true")
+    monkeypatch.setenv("CACTUS_TS_NAME", "box.tail1.ts.net")
+    monkeypatch.setattr(_Server, "serve_forever", lambda self: (_ for _ in ()).throw(KeyboardInterrupt()))
+    assert run_www(store, port=0, serve=8443) == 130
+    cap = capsys.readouterr()
+    token = make_token(store.path)
+    assert f"https://box.tail1.ts.net:8443/login?t={token}" in cap.out
+    assert "tailscale serve --https=8443 off" in cap.err
+
+
+def test_run_serve_refuses_443_and_nonloopback_and_failed_serve(store, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("CACTUS_TS_NAME", "box.tail1.ts.net")
+    monkeypatch.setenv("CACTUS_TS_SERVE", "true")
+    assert run_www(store, port=0, serve=443) == 1
+    assert run_www(store, host="0.0.0.0", port=0, serve=8443) == 1
+    monkeypatch.setenv("CACTUS_TS_SERVE", "false")
+    assert run_www(store, port=0, serve=8443) == 1

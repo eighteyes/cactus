@@ -23,6 +23,7 @@ import hmac
 import json
 import os
 import secrets
+import shlex
 import subprocess
 import sys
 import threading
@@ -89,6 +90,33 @@ def tailscale_ip() -> str:
     if out.returncode != 0 or not ip:
         raise ValueError("--host tailscale: `tailscale ip -4` gave no address (is Tailscale up?)")
     return ip
+
+
+def tailscale_dnsname() -> str:
+    """This machine's tailnet DNS name (`CACTUS_TS_NAME` overrides); ValueError when unavailable."""
+    forced = os.environ.get("CACTUS_TS_NAME", "").strip()
+    if forced:
+        return forced
+    try:
+        out = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=10)
+        name = str(json.loads(out.stdout)["Self"]["DNSName"]).rstrip(".")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"--serve: cannot read the tailnet name ({exc})") from exc
+    if not name:
+        raise ValueError("--serve: `tailscale status` gave no DNS name (is Tailscale up?)")
+    return name
+
+
+def serve_argv(serve_port: int, local_port: int) -> list[str]:
+    """The `tailscale serve` command mapping https:SERVE_PORT to the loopback bind.
+
+    `CACTUS_TS_SERVE` is a shell-split template over {port} and {local}
+    (tests point it at an inert command)."""
+    local = f"http://127.0.0.1:{local_port}"
+    tpl = os.environ.get("CACTUS_TS_SERVE", "").strip()
+    if tpl:
+        return [a.format(port=serve_port, local=local) for a in shlex.split(tpl)]
+    return ["tailscale", "serve", "--bg", f"--https={serve_port}", local]
 
 
 def _msg(exc: BaseException) -> str:
@@ -664,7 +692,8 @@ class _Handler(BaseHTTPRequestHandler):
             hostname = None
         bound = (self.server.bind_host or "").lower()  # type: ignore[attr-defined]
         wildcard = bound in ("0.0.0.0", "::", "")
-        if not wildcard and hostname not in _LOOPBACK_HOSTS and hostname != bound.strip("[]"):
+        served = bool(self.server.serve) and (hostname or "").endswith(".ts.net")  # type: ignore[attr-defined]
+        if not wildcard and not served and hostname not in _LOOPBACK_HOSTS and hostname != bound.strip("[]"):
             self._send_json(403, {"error": "host not allowed"})
             return False
         if not post:
@@ -904,13 +933,15 @@ class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(
-        self, addr: tuple[str, int], db_path: Any, project: str | None, token: str | None = None
+        self, addr: tuple[str, int], db_path: Any, project: str | None, token: str | None = None,
+        serve: bool = False,
     ) -> None:
         super().__init__(addr, _Handler)
         self.token = token  # None: loopback bind, no auth
         self.db_path = db_path
         self.project = project
         self.bind_host = addr[0]
+        self.serve = serve  # fronted by `tailscale serve`: its *.ts.net Host is allowed
         # Each handler thread opens its own Store (see _Handler._store) since
         # a sqlite3 connection cannot cross threads; this holds those.
         self.local = threading.local()
@@ -923,6 +954,7 @@ def run_www(
     host: str = "127.0.0.1",
     port: int = 8642,
     open_browser: bool = False,
+    serve: int | None = None,
 ) -> int:
     """Serve the web answering surface. Returns a process exit code.
 
@@ -938,11 +970,35 @@ def run_www(
         except ValueError as exc:
             print(f"cactus: {exc}", file=sys.stderr)
             return 1
-    token = None if is_loopback(host) else make_token(store.path)
-    server = _Server((host, port), store.path, project, token)
+    if serve is not None and serve == 443:
+        print("cactus: --serve never takes port 443 (already mapped); pick another", file=sys.stderr)
+        return 1
+    if serve is not None and not is_loopback(host):
+        print("cactus: --serve fronts a loopback bind; drop --host", file=sys.stderr)
+        return 1
+    token = None if is_loopback(host) and serve is None else make_token(store.path)
+    server = _Server((host, port), store.path, project, token, serve=serve is not None)
+    port = server.server_address[1]
     url = f"http://{host}:{port}"
     print(f"cactus: www on {url}", file=sys.stderr)
-    if token:
+    if serve is not None:
+        try:
+            name = tailscale_dnsname()
+            res = subprocess.run(serve_argv(serve, port), capture_output=True, text=True, timeout=30)
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            server.server_close()
+            print(f"cactus: {exc}", file=sys.stderr)
+            return 1
+        if res.returncode != 0:
+            server.server_close()
+            print(f"cactus: tailscale serve failed: {res.stderr.strip()}", file=sys.stderr)
+            return 1
+        https = f"https://{name}:{serve}"
+        print(f"cactus: undo with: tailscale serve --https={serve} off", file=sys.stderr)
+        print(f"{https}/login?t={token}")
+        sys.stdout.flush()
+        url = https
+    elif token:
         print(f"{url}/login?t={token}")
         sys.stdout.flush()
     if open_browser:

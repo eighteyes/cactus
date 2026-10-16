@@ -1855,6 +1855,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="serve a localhost web answering surface (human)")
     p.add_argument("--port", type=int, default=8642, help="with --www, port to bind (default: 8642)")
     p.add_argument("--host", default="127.0.0.1", help="with --www, host to bind (default: 127.0.0.1; 'tailscale' binds this machine's tailnet IPv4). A non-loopback bind requires a login token")
+    p.add_argument("--serve", nargs="?", type=int, const=8443, default=None, metavar="PORT",
+                   help="implies --www: bind loopback, map https PORT (default 8443) to it with `tailscale serve`, require the login token")
     p.add_argument("--open", action="store_true", help="with --www, open the browser once bound")
     p.add_argument("--monitor", action="store_true",
                    help="stream inbox events as plain lines, one per change")
@@ -2182,6 +2184,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(AGENT_HELP, end="")
         return EXIT_OK
 
+    if args.serve is not None:
+        args.www = True
     surfaces = [name for name, on in
                 (("--tui", args.tui), ("--watch", args.watch), ("--www", args.www),
                  ("--monitor", args.monitor))
@@ -2236,6 +2240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 host=args.host,
                 port=args.port,
                 open_browser=args.open,
+                serve=args.serve,
             )
         if args.monitor:
             if not (args.agent or "").strip():
