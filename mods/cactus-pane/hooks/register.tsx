@@ -1,9 +1,10 @@
 // cactus-pane: a live cactus inbox pane for the session's project.
-// - polls `cactus feed --json --here` and keeps the open/live/elaborate rows
+// - polls `cactus feed --json --here` and keeps the open/live/elaborate rows; each poll first stats the cactus db and
+//   its -wal, and spawns cactus only when they changed, 60s have passed, or it is the first poll
 // - draws a one-line rail per row and a TUI-style card for the selected one
 // - the card's buttons carry the TUI's row keys (1-9, y/n, s, i, c, x, d, e, b, r, m)
 // - acts through the `cactus` CLI, so cli.py stays the only validator
-// - /cactus-pane opens the pane focused; it also opens unasked at session start
+// - /cactus-pane opens the pane focused; it never opens unasked
 // - wakes this session when its own rows move, and turns its cactus waits off
 
 import { atom, read, update } from 'claude-code'
@@ -12,7 +13,9 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Answer, Row } from '../types'
 
 const PANE = 'cactus-pane'
-const POLL_MS = 3000
+const POLL_MS = 5000
+// A poll spawns cactus at least this often even when the db is unchanged: rows go stale by wall clock.
+const REFRESH_MS = 60_000
 const PREVIEW_LINES = 40
 const HISTORY = 3
 // Headers drawn at once, centred on the selection, so its card stays in view.
@@ -75,15 +78,58 @@ function verdict(a: Answer): string {
   return label || a.text || ''
 }
 
+// mtime+size of the cactus db and its -wal (a missing file reads 0:0), or null when the stat itself fails.
+async function dbSignature($: EngineInterface): Promise<string | null> {
+  try {
+    const db =
+      (await $.env.get('CACTUS_DB')) || `${(await $.env.get('HOME')) ?? ''}/.local/share/cactus/cactus.db`
+    const one = (path: string) =>
+      $.fs.stat(path).then(
+        st => `${st.mtimeMs}:${st.size}`,
+        (err: { code?: string }) => {
+          if (err?.code === 'ENOENT') return '0:0'
+          throw err
+        },
+      )
+    return `${await one(db)}|${await one(`${db}-wal`)}`
+  } catch {
+    return null
+  }
+}
+
+// What the last successful spawn saw: the db signature and when.
+let lastSig: string | null = null
+let lastSpawnAt = 0
+
+// The pane's title carries the open-question count: `cactus (3)`.
+function paneTitle(list: readonly Row[]): string {
+  const n = list.filter(r => r.status === 'open').length
+  return n > 0 ? `cactus (${n})` : 'cactus'
+}
+
+// Retitles the pane only while it is open: an open id retitles, a closed one
+// would open unasked.
+async function retitle($: EngineInterface, list: readonly Row[]): Promise<void> {
+  if (!(await $.ui.panes()).some(p => p.id === PANE)) return
+  await $.ui.open({ id: PANE, title: paneTitle(list) })
+}
+
 async function poll($: EngineInterface): Promise<void> {
+  const sig = await dbSignature($)
+  if (sig !== null && sig === lastSig && Date.now() - lastSpawnAt < REFRESH_MS) return
   const ran = await $.process.run(['cactus', 'feed', '--json', '--here'], {
     cwd: await $.session.cwd(),
   })
+  if (ran.exitCode === 0 || ran.exitCode === 3) {
+    lastSig = sig
+    lastSpawnAt = Date.now()
+  }
   if (ran.exitCode === 3) {
     if (lastCursor !== 'empty') {
       lastCursor = 'empty'
       await update($, rows, () => [])
       await update($, error, () => null)
+      await retitle($, []).catch(() => undefined)
       await wake($, []).catch(() => undefined)
     }
     return
@@ -98,6 +144,7 @@ async function poll($: EngineInterface): Promise<void> {
   lastCursor = cursor
   await update($, rows, () => doc.questions)
   await update($, error, () => null)
+  await retitle($, doc.questions).catch(() => undefined)
   await wake($, doc.questions).catch(() => undefined)
 }
 
@@ -634,7 +681,6 @@ export const register: Register = on => {
     })
     $.clock.every(POLL_MS, () => poll($))
     void poll($)
-    if (e.isInteractive) void $.ui.open({ id: PANE, title: 'cactus' })
 
     return next(e)
   })
@@ -642,7 +688,7 @@ export const register: Register = on => {
   on('command.run', { command: 'cactus-pane' }, async $ => {
     lastCursor = ''
     await poll($)
-    await $.ui.open({ id: PANE, title: 'cactus', focus: true })
+    await $.ui.open({ id: PANE, title: paneTitle(await read($, rows)), focus: true })
     const first = (await read($, selected)) ?? (await read($, rows))[0]?.key
     if (first !== undefined) await pinTop($, first)
 
