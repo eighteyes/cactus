@@ -8,7 +8,11 @@ Responsibilities:
 - Spill a full capture to a file when it is too long to read in a card.
 - Preview (`view`) or edit (`edit`) a row's attached file in the human's
   own pager/editor, resolved from CACTUS_PAGER/CACTUS_EDITOR or the usual
-  PAGER/VISUAL/EDITOR fallbacks.
+  PAGER/VISUAL/EDITOR fallbacks. The viewer resolves in `viewer_argv`:
+  CACTUS_PAGER, then a caller-supplied template (the `viewer` setting;
+  this leaf never reads config itself), then PAGER, then `less`.
+- Open files in a window of their own (`view_window`) for a caller with no
+  terminal: a herdr split, a kitty os-window, or the platform opener.
 - Open a row's site URL in the platform opener (`open_url`), overridable
   with CACTUS_OPEN.
 - Build an inline preview of an attached file: a diff against HEAD when the
@@ -18,6 +22,7 @@ Responsibilities:
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shlex
 import shutil
@@ -155,10 +160,67 @@ def _run_program(template: str, path: str) -> str:
     return f"{argv[0]} {path}"
 
 
-def view(path: str) -> str:
-    """Preview `path` in a pager: CACTUS_PAGER, else PAGER, else `less`."""
-    template = os.environ.get("CACTUS_PAGER") or os.environ.get("PAGER") or "less"
-    return _run_program(template, path)
+def _viewer_template(template: str | None) -> str:
+    """CACTUS_PAGER, else a real `template` (not empty/`auto`), else PAGER, else less."""
+    configured = (template or "").strip()
+    if configured.lower() == "auto":
+        configured = ""
+    return (os.environ.get("CACTUS_PAGER") or configured
+            or os.environ.get("PAGER") or "less")
+
+
+def viewer_argv(path: str, template: str | None = None) -> list[str]:
+    """The argv that views `path`. `template` is the `viewer` setting, if any."""
+    argv = shlex.split(_viewer_template(template))
+    if not argv:
+        raise ShellError("no program configured")
+    if any("{path}" in part for part in argv):
+        return [part.replace("{path}", path) for part in argv]
+    return [*argv, path]
+
+
+def view(path: str, template: str | None = None) -> str:
+    """Preview `path` in the viewer `viewer_argv` picks."""
+    return _run_program(_viewer_template(template), path)
+
+
+def view_window(paths: list[str], template: str | None = None) -> str:
+    """Show `paths` in a new window, for a caller with no terminal of its own.
+
+    CACTUS_VIEW_WINDOW is a `{cmd}` template (split with shlex, `{cmd}` one
+    argument: a `sh -c` line viewing each path in turn). Else a herdr pane
+    split beside $HERDR_PANE_ID, else a kitty os-window via $KITTY_LISTEN_ON,
+    else the platform opener. Returns a short description of what ran.
+    """
+    line = "; ".join(shlex.join(viewer_argv(p, template)) for p in paths)
+    override = os.environ.get("CACTUS_VIEW_WINDOW")
+    try:
+        if override is not None and override.strip():
+            argv = [part.replace("{cmd}", line) for part in shlex.split(override)]
+            subprocess.call(argv)
+            return f"{argv[0]} {len(paths)} files"
+        pane = os.environ.get("HERDR_PANE_ID")
+        if pane and _have("herdr"):
+            made = subprocess.run(
+                ["herdr", "pane", "split", "--pane", pane, "--direction", "right"],
+                capture_output=True, text=True, check=True,
+            )
+            new = json.loads(made.stdout)["result"]["pane"]["pane_id"]
+            subprocess.run(["herdr", "pane", "run", new, line], check=True)
+            return f"herdr pane {new}"
+        listen = os.environ.get("KITTY_LISTEN_ON")
+        if listen and _have("kitten"):
+            subprocess.run(
+                ["kitten", "@", "--to", listen, "launch", "--type=os-window",
+                 "sh", "-c", line], check=True,
+            )
+            return "kitty os-window"
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        for path in paths:
+            subprocess.run([opener, path], check=True)
+        return f"{opener} {len(paths)} files"
+    except (OSError, subprocess.CalledProcessError, KeyError, ValueError) as exc:
+        raise ShellError(f"view window failed: {exc}") from exc
 
 
 def _have(program: str) -> bool:
@@ -189,9 +251,10 @@ def _fzf_preview() -> str:
     )
 
 
-def _fzf_open() -> str:
+def _fzf_open(template: str | None = None) -> str:
     """Shell snippet bound to enter: the full pager for the highlighted `{}`."""
-    pager = os.environ.get("CACTUS_PAGER")
+    pager = os.environ.get("CACTUS_PAGER") or (
+        "" if (template or "auto").strip().lower() == "auto" else template.strip())
     if pager:
         return f"{pager} {{}}" if "{path}" not in pager else pager.replace("{path}", "{}")
     md = "glow -p {}" if _have("glow") else None
@@ -218,7 +281,7 @@ def _sigint_ignored() -> Iterator[None]:
         signal.signal(signal.SIGINT, previous)
 
 
-def pick_file(files: list[str]) -> str:
+def pick_file(files: list[str], template: str | None = None) -> str:
     """List `files` in fzf with a preview; enter pages one, esc/ctrl-c return.
 
     CACTUS_FZF overrides the command: a template split with shlex, each
@@ -243,7 +306,7 @@ def pick_file(files: list[str]) -> str:
             argv = [
                 "fzf", "--preview", _fzf_preview(),
                 "--preview-window", "down,60%",
-                "--bind", f"enter:execute({_fzf_open()})",
+                "--bind", f"enter:execute({_fzf_open(template)})",
                 "--bind", "ctrl-c:abort",
             ]
             with _sigint_ignored():

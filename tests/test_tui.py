@@ -3369,3 +3369,45 @@ async def test_fail_leaves_review_live_with_the_finished_prompt(
         await pilot.pause()
         assert store.get(rq.key, project=project).status == "live"
         assert "finished? x closes it" in str(app.query_one("#card-text", Static).content)
+
+
+async def test_viewer_setting_cycles_and_persists(store: Store, project: str, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    store.ask("hi", project=project, cwd=project, agent=AGENT)
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.tui_settings["viewer"] == "auto"
+        await pilot.press("?")
+        await pilot.pause()
+        await pilot.press("9")
+        await pilot.pause()
+        assert app.tui_settings["viewer"] == "glow -p {path}"
+    second = CactusApp(store, project=project)
+    async with second.run_test() as pilot:
+        await pilot.pause()
+        assert second.tui_settings["viewer"] == "glow -p {path}"
+        await pilot.press("?")
+        for _ in range(3):
+            await pilot.press("9")
+        await pilot.pause()
+        assert second.tui_settings["viewer"] == "auto"
+
+
+async def test_f_uses_the_viewer_setting_when_no_env_pager(store: Store, project: str, monkeypatch, tmp_path) -> None:
+    log = tmp_path / "log"
+    script = tmp_path / "v.sh"
+    script.write_text(f'#!/bin/sh\necho "$1" >> {log}\n')
+    script.chmod(0o755)
+    monkeypatch.delenv("CACTUS_PAGER", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    f = tmp_path / "f.md"
+    f.write_text("x")
+    store.ask("hi", project=project, cwd=project, agent=AGENT, files=[str(f)])
+    app = CactusApp(store, project=project)
+    app.tui_settings["viewer"] = f"{script} {{path}}"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+    assert log.read_text().split() == [str(f)]

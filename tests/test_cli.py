@@ -1033,3 +1033,53 @@ def test_get_json_still_carries_context(cli):
     cli("ask", "plain", "--no-wait", "--agent", AGENT_A, "-c", "a", "-c", "b",
         "--context", "why")
     assert json.loads(cli("get", "q1", "--json").stdout)[0]["context"] == "why"
+
+
+def _view_env(monkeypatch, scratch_env, tmp_path, viewer=None):
+    # the cli fixture overlays scratch_env on os.environ, so drop the key there
+    scratch_env.pop("CACTUS_PAGER", None)
+    monkeypatch.delenv("CACTUS_PAGER", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("PAGER", "true")
+    if viewer is not None:
+        (tmp_path / "xdg" / "cactus").mkdir(parents=True)
+        (tmp_path / "xdg" / "cactus" / "tui.json").write_text(json.dumps({"viewer": viewer}))
+
+
+def test_view_runs_the_configured_viewer_per_file(cli, scratch_env, monkeypatch, tmp_path):
+    log = tmp_path / "log"
+    script = tmp_path / "v.sh"
+    script.write_text(f'#!/bin/sh\necho "$1" >> {log}\n')
+    script.chmod(0o755)
+    _view_env(monkeypatch, scratch_env, tmp_path, f"{script} {{path}}")
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    a.write_text("x"); b.write_text("y")
+    r = cli("view", str(a), str(b))
+    assert r.returncode == 0, r.stderr
+    assert log.read_text().split() == [str(a), str(b)]
+
+
+def test_view_refuses_missing_and_directory_before_running(cli, scratch_env, monkeypatch, tmp_path):
+    log = tmp_path / "log"
+    script = tmp_path / "v.sh"
+    script.write_text(f'#!/bin/sh\necho "$1" >> {log}\n')
+    script.chmod(0o755)
+    _view_env(monkeypatch, scratch_env, tmp_path, f"{script} {{path}}")
+    ok = tmp_path / "ok.md"
+    ok.write_text("x")
+    r = cli("view", str(ok), str(tmp_path / "nope.md"))
+    assert r.returncode == 1 and "no such file" in r.stderr
+    r = cli("view", str(ok), str(tmp_path))
+    assert r.returncode == 1 and "directory" in r.stderr
+    assert not log.exists()
+
+
+def test_view_window_dispatches_through_the_override(cli, scratch_env, monkeypatch, tmp_path):
+    out = tmp_path / "out"
+    _view_env(monkeypatch, scratch_env, tmp_path, "glow -p {path}")
+    monkeypatch.setenv("CACTUS_VIEW_WINDOW", f"sh -c 'printf %s \"$0\" > {out}' {{cmd}}")
+    f = tmp_path / "f.md"
+    f.write_text("x")
+    r = cli("view", "--window", str(f))
+    assert r.returncode == 0, r.stderr
+    assert out.read_text() == f"glow -p {f}"

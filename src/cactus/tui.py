@@ -82,8 +82,9 @@ TUI_SETTINGS_DEFAULTS = {
     "orientation": "side", "figlet_header": False, "projects_pane": True,
     "field": False, "pile_only": False, "seed_release": "left",
     "keybar_align": "center", "keybar_order": "choices_first",
-    "decider_backend": "strands", "pinned_project": None,
+    "decider_backend": "strands", "pinned_project": None, "viewer": "auto",
 }
+VIEWER_PRESETS = ("auto", "glow -p {path}", "bat --paging=always {path}", "less {path}")
 DECIDER_BACKENDS = ("strands", "clef")
 KEYBAR_ALIGNS = ("left", "center", "right")
 KEYBAR_ORDERS = ("choices_first", "choices_last")
@@ -119,6 +120,8 @@ def _load_tui_settings() -> dict[str, Any]:
         settings["keybar_order"] = data["keybar_order"]
     if isinstance(data, dict) and data.get("decider_backend") in DECIDER_BACKENDS:
         settings["decider_backend"] = data["decider_backend"]
+    if isinstance(data, dict) and isinstance(data.get("viewer"), str) and data["viewer"].strip():
+        settings["viewer"] = data["viewer"].strip()
     if isinstance(data, dict) and isinstance(data.get("pinned_project"), str) and data["pinned_project"]:
         settings["pinned_project"] = data["pinned_project"]
     return settings
@@ -1194,6 +1197,7 @@ class CactusApp(App[int]):
             f"6  choice keys    1-9 before or after the rest    {order}",
             f"7  garden         sky strip under the card (~)    {garden}",
             f"8  auto-decider   strands / clef (local server)   {decider}",
+            f"9  viewer          file pager for f (tui.json)      {self.tui_settings['viewer']}",
             f"f  Figlet project header (cybermedium)            {figlet}",
             "",
             "esc or ?  return to the inbox",
@@ -1772,6 +1776,15 @@ class CactusApp(App[int]):
         i = KEYBAR_ALIGNS.index(self.tui_settings["keybar_align"])
         self.tui_settings["keybar_align"] = KEYBAR_ALIGNS[(i + 1) % len(KEYBAR_ALIGNS)]
         self._rebuild_keybar()
+        self._save_settings()
+        self._render_settings()
+
+    def _cycle_viewer(self) -> None:
+        """Cycle `viewer` through VIEWER_PRESETS; a hand-edited template not in
+        the list steps to the first preset."""
+        current = self.tui_settings["viewer"]
+        i = VIEWER_PRESETS.index(current) if current in VIEWER_PRESETS else -1
+        self.tui_settings["viewer"] = VIEWER_PRESETS[(i + 1) % len(VIEWER_PRESETS)]
         self._save_settings()
         self._render_settings()
 
@@ -2684,9 +2697,9 @@ class CactusApp(App[int]):
         try:
             try:
                 with self.suspend():
-                    ran = pick_file(list(q.files))
+                    ran = pick_file(list(q.files), self.tui_settings['viewer'])
             except SuspendNotSupported:
-                ran = pick_file(list(q.files))
+                ran = pick_file(list(q.files), self.tui_settings['viewer'])
         except ShellError as exc:
             self.flash = f"view failed: {exc}"
             self._rebuild_card()
@@ -2739,7 +2752,8 @@ class CactusApp(App[int]):
         from .shell import view as shell_view
 
         path = q.files[idx]
-        func = shell_view if mode == "view" else shell_edit
+        viewer = self.tui_settings['viewer']
+        func = (lambda p: shell_view(p, viewer)) if mode == "view" else shell_edit
         verb = "view" if mode == "view" else "edit"
         try:
             try:
@@ -3168,6 +3182,8 @@ class CactusApp(App[int]):
                 self._render_settings()
             elif event.key == "8":
                 self._cycle_decider_backend()
+            elif event.key == "9":
+                self._cycle_viewer()
             elif event.key == "f":
                 self._toggle_figlet_header()
             else:

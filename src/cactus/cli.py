@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import textwrap
+from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlparse
 
@@ -1339,6 +1340,51 @@ def cmd_visit(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
     return EXIT_OK
 
 
+def _viewer_setting() -> str | None:
+    """The `viewer` key of tui.json, read without importing Textual.
+
+    Same path rule as `tui._tui_settings_path`; any miss reads as unset.
+    """
+    root = (Path(os.environ["XDG_CONFIG_HOME"]) if os.environ.get("XDG_CONFIG_HOME")
+            else Path.home() / ".config")
+    try:
+        data = json.loads((root / "cactus" / "tui.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = data.get("viewer") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def cmd_view(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """View files in the configured viewer (TUI `f`); `--window` for a caller with no tty.
+
+    A human verb: no --agent. Every path is checked before anything runs.
+    """
+    from .shell import ShellError, view, view_window
+
+    paths = [os.path.abspath(p) for p in args.paths]
+    for given, path in zip(args.paths, paths):
+        if not os.path.exists(path):
+            print(f"cactus: no such file: {given}", file=sys.stderr)
+            return EXIT_ERROR
+        if os.path.isdir(path):
+            print(f"cactus: {given} is a directory", file=sys.stderr)
+            return EXIT_ERROR
+    template = _viewer_setting()
+    try:
+        if args.window:
+            ran = view_window(paths, template)
+        else:
+            ran = "; ".join(view(p, template) for p in paths)
+    except ShellError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.json:
+        json.dump({"paths": paths, "ran": ran}, sys.stdout)
+        sys.stdout.write("\n")
+    return EXIT_OK
+
+
 def cmd_history(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """A project's answered and cleared rows, newest verdict first (TUI `a`)."""
     if args.project:
@@ -2040,6 +2086,12 @@ def build_parser() -> argparse.ArgumentParser:
     vs = verb("visit", help="jump herdr to the pane that asked a row (TUI v)")
     vs.add_argument("key")
     vs.set_defaults(fn=cmd_visit)
+
+    vw = verb("view", help="view files in the configured viewer (TUI f)")
+    vw.add_argument("paths", nargs="+", metavar="PATH")
+    vw.add_argument("--window", action="store_true",
+                    help="open a new window (herdr split, kitty, or open) instead of this terminal")
+    vw.set_defaults(fn=cmd_view)
 
     hs = verb("history", help="answered and cleared rows, newest verdict first (TUI a)")
     hs.add_argument("--project", help="project directory (default: this one)")

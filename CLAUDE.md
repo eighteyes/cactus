@@ -1031,3 +1031,15 @@ scope.
   (kind stays `choice`; an empty submit is refused like a multi's), the card
   notes `pick several (m to go back)`, and the key bar reads `m one`. `m`
   again drops the toggles. The flip ends on answer, skip, clear, or undo.
+- Viewer (q649): `shell.viewer_argv(path, template=None)` resolves the file
+  viewer, first hit wins: `CACTUS_PAGER`, the `viewer` template (tui.json,
+  `{path}` or appended; absent/`auto` skips), `PAGER`, `less`. `shell` is a
+  side leaf and never reads config: the TUI passes `tui_settings["viewer"]`
+  (`f`, and `ff`'s fzf enter), and `cli._viewer_setting` reads tui.json
+  without importing Textual for `cactus view`. Settings `9` cycles
+  `VIEWER_PRESETS`. `cactus view PATH... [--window]` (human verb) checks
+  every path first (missing or directory: exit 1, nothing runs), then runs
+  the viewer per file; `--window` is for a caller with no tty
+  (`shell.view_window`): `CACTUS_VIEW_WINDOW` (`{cmd}` template; tests set
+  it inert) else a `herdr pane split` beside `$HERDR_PANE_ID` else `kitten @
+  launch --type=os-window` else `open`.
