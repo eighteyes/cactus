@@ -3898,7 +3898,10 @@ class CactusApp(App[int]):
                 self.multi_selected = self._default_multi_selection(self.focused_key)
             else:
                 self.focused_key = None
+            # `_load_questions` may have moved to the next project.
+            self._rebuild_project_banner()
             self._rebuild_project_head()
+            self._rebuild_projects_pane()
             await self._rebuild_rail_locked()
         if self._reload_pending:
             await self._reload()

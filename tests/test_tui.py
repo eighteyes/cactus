@@ -51,6 +51,7 @@ from cactus.fieldproc import ProcessField, text_rows
 from cactus.store import Choice, Store
 from cactus.scope import project_label
 from cactus.tui import CactusApp, FieldView, QuestionBlock
+from cactus import tui as tui_module
 
 # The projects pane (P / I / A) is a separate change; until it lands these
 # tests skip rather than fail, and start running the moment it does.
@@ -3369,3 +3370,31 @@ async def test_fail_leaves_review_live_with_the_finished_prompt(
         await pilot.pause()
         assert store.get(rq.key, project=project).status == "live"
         assert "finished? x closes it" in str(app.query_one("#card-text", Static).content)
+
+
+async def test_figlet_banner_follows_auto_advance_to_next_project(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = tmp_path / "xdg-config" / "cactus" / "tui.json"
+    settings.write_text('{"field": false, "figlet_header": true}', encoding="utf-8")
+    monkeypatch.setattr(tui_module, "_figlet_project_name", lambda label: f"BANNER {label}")
+    other = tmp_path / "other"
+    other.mkdir()
+    other_project = str(other)
+    last = store.ask("last here", project=project, cwd=project, agent=AGENT)
+    store.ask("waiting elsewhere", project=other_project, cwd=other_project, agent=AGENT)
+
+    app = CactusApp(store, project=None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.current_project = project
+        await app._reload(force=True)
+        await pilot.pause()
+        banner = app.query_one("#project-banner", Static)
+        assert f"BANNER {project_label(project)}" in str(banner.render())
+
+        await pilot.press("s")
+        await pilot.pause()
+        assert store.get(last.key, project=project).status != "open"
+        assert app.current_project == other_project
+        assert f"BANNER {project_label(other_project)}" in str(banner.render())
