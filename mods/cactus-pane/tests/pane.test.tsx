@@ -2,6 +2,8 @@
 // - a one-row feed draws the row's key, text and choice buttons
 // - pressing a choice runs `cactus answer KEY -s LABEL`
 // - a multi row toggles picks and sends them all from the input
+// - a poll spawns cactus only when the db or its wal changed
+// - the feed runs in the session root, so a shell cd cannot empty the pane
 
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
@@ -94,7 +96,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const calls: string[][] = []
     const fake = fakeCactus(ROW, calls)
     on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-    on('session.cwd', () => ({ value: '/repo' }))
+    on('session.root', () => ({ value: '/repo' }))
     on('session.id', () => ({ value: 'a1' }))
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('ui.toast', () => ({ value: undefined }))
@@ -115,7 +117,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const calls: string[][] = []
     const fake = fakeCactus({ ...ROW, kind: 'multi' }, calls)
     on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-    on('session.cwd', () => ({ value: '/repo' }))
+    on('session.root', () => ({ value: '/repo' }))
     on('session.id', () => ({ value: 'a1' }))
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('ui.toast', () => ({ value: undefined }))
@@ -137,7 +139,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const calls: string[][] = []
     const fake = fakeCactus(ROW, calls)
     on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-    on('session.cwd', () => ({ value: '/repo' }))
+    on('session.root', () => ({ value: '/repo' }))
     on('session.id', () => ({ value: 'a1' }))
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('ui.toast', () => ({ value: undefined }))
@@ -158,7 +160,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 async function mounted($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], row: typeof ROW, calls: string[][], surface: 'terminal' | 'desktop') {
   const fake = fakeCactus(row, calls)
   on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -242,7 +244,7 @@ test('j and k move the selection between questions', async ($, on) => {
     }
   }
   on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -329,7 +331,7 @@ test('a pass that closed a review wakes with the verdict, not a decline', async 
     n += 1
     return { value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n }, questions: [served] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -342,11 +344,38 @@ test('a pass that closed a review wakes with the verdict, not a decline', async 
   expect(all).not.toContain('declined')
 })
 
+test('polls spawn cactus only when the db or its wal changed', async ($, on) => {
+  const feeds: number[] = []
+  let wal = { mtimeMs: 1, size: 10 }
+  on('env.get', (_$, e) => ({ value: e.name === 'CACTUS_DB' ? '/db/cactus.db' : '/home/u' }))
+  on('fs.stat', (_$, e) => {
+    if (e.path === '/db/cactus.db') return { value: { kind: 'file', size: 5, mtimeMs: 1, isLink: false } }
+    if (e.path === '/db/cactus.db-wal') return { value: { kind: 'file', isLink: false, ...wal } }
+    throw new Error('unexpected stat')
+  })
+  on('process.run', (_$, e) => {
+    if (e.argv[1] === 'feed') feeds.push(1)
+    return { value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n: feeds.length }, questions: [ROW] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.command.run(RUN)
+  expect(feeds.length).toBe(1)
+  await $.command.run(RUN)
+  expect(feeds.length).toBe(1)
+  wal = { mtimeMs: 2, size: 20 }
+  await $.command.run(RUN)
+  expect(feeds.length).toBe(2)
+})
+
 async function emptyPane($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], bodyColumns: number) {
   on('process.run', () => ({
     value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n: 0 }, questions: [] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   await $.command.run(RUN)
@@ -377,7 +406,7 @@ test('a verdict on a review moves the pane to the next question', async ($, on) 
   on('process.run', () => ({
     value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n: 1 }, questions: [review, next] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -410,4 +439,25 @@ test('an open ask reads its act in the list', async ($, on) => {
   const calls: string[][] = []
   const ui = await mounted($, on, ROW, calls, 'terminal')
   expect((await ui.find({ key: 'q7:act' }))?.text).toContain('ask')
+})
+
+test('the feed runs in the session root, not a shell cwd that drifted below it', async ($, on) => {
+  const dirs: (string | undefined)[] = []
+  const fake = fakeCactus(ROW, [])
+  on('process.run', (_$, e) => {
+    if (e.argv[1] === 'feed') dirs.push(e.init?.cwd)
+    return { value: fake(e.argv) }
+  })
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.cwd', () => ({ value: '/repo/.ai/plan' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.command.run(RUN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  expect(dirs.length).toBeGreaterThan(0)
+  expect(dirs.every(d => d === '/repo')).toBe(true)
+  expect((await ui.find({ text: /Which auth backend/ }))?.text).toContain('q7')
 })

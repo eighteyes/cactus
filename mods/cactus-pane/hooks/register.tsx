@@ -114,11 +114,13 @@ async function retitle($: EngineInterface, list: readonly Row[]): Promise<void> 
   await $.ui.open({ id: PANE, title: paneTitle(list) })
 }
 
+// Runs in the session root, not the shell cwd: a `cd` into a subdirectory of a
+// non-git project would scope `--here` to that subdirectory and empty the pane.
 async function poll($: EngineInterface): Promise<void> {
   const sig = await dbSignature($)
   if (sig !== null && sig === lastSig && Date.now() - lastSpawnAt < REFRESH_MS) return
   const ran = await $.process.run(['cactus', 'feed', '--json', '--here'], {
-    cwd: await $.session.cwd(),
+    cwd: await $.session.root(),
   })
   if (ran.exitCode === 0 || ran.exitCode === 3) {
     lastSig = sig
@@ -217,7 +219,7 @@ async function wake($: EngineInterface, list: Row[]): Promise<void> {
   watched = { sid, rows: now }
   if (gone.length > 0) {
     const got = await $.process.run(['cactus', 'get', ...gone, '--json'], {
-      cwd: await $.session.cwd(),
+      cwd: await $.session.root(),
     })
     const parsed: unknown = got.exitCode === 0 ? JSON.parse(got.stdout) : null
     if (Array.isArray(parsed)) {
@@ -230,7 +232,7 @@ async function wake($: EngineInterface, list: Row[]): Promise<void> {
   }
   if (moved.length === 0) return
   const told = moved.map(describe)
-  const cwd = await $.session.cwd()
+  const cwd = await $.session.root()
   const clears = told.filter(t => t.clears).map(t => t.row.key)
   if (clears.length > 0) await $.process.run(['cactus', 'clear', ...clears, '--agent', sid], { cwd })
   // A read under the owner's --agent is what tells the human the verdict was
@@ -293,7 +295,7 @@ async function cactus(
   timeoutMs?: number,
 ): Promise<string | null> {
   const ran = await $.process.run(['cactus', ...args], {
-    cwd: await $.session.cwd(),
+    cwd: await $.session.root(),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   })
   if (ran.exitCode !== 0) {
