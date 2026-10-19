@@ -4,7 +4,7 @@
 // - draws a one-line rail per row and a TUI-style card for the selected one
 // - the card's buttons carry the TUI's row keys (1-9, y/n, s, i, c, x, d, e, b, r, m)
 // - acts through the `cactus` CLI, so cli.py stays the only validator
-// - /cactus-pane opens the pane focused; it never opens unasked
+// - /cactus-pane opens the pane focused; it also opens unasked at session start
 // - wakes this session when its own rows move, and turns its cactus waits off
 
 import { atom, read, update } from 'claude-code'
@@ -680,6 +680,7 @@ export const register: Register = on => {
       description: "Show this project's cactus inbox in a pane",
     })
     $.clock.every(POLL_MS, () => poll($))
+    if (e.isInteractive) await $.ui.open({ id: PANE, title: 'cactus' })
     void poll($)
 
     return next(e)
