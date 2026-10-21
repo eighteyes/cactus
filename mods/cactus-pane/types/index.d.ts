@@ -49,6 +49,9 @@ export type Row = {
   closed_by_pass?: boolean
 }
 
+// Kept in $.store across sessions. cooldown: seconds a wake waits so undo can cancel it.
+export type PaneSettings = { autoshow: boolean; cooldown: number }
+
 declare module 'claude-code' {
   interface PluginState {
     'cactus-pane': {
@@ -61,6 +64,9 @@ declare module 'claude-code' {
       modes: Record<string, 'elaborate'>
       flips: Record<string, true>
       drafts: Record<string, string>
+      settings: PaneSettings
+      settingsOpen: boolean
+      held: Record<string, number>
     }
   }
 }

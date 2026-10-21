@@ -4,8 +4,10 @@
 // - a multi row toggles picks and sends them all from the input
 // - a poll spawns cactus only when the db or its wal changed
 // - the feed runs in the session root, so a shell cd cannot empty the pane
+// - a wake waits out the cooldown; an undo inside it sends nothing
+// - h opens settings; a change is kept in the store
 
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 const ROW = {
@@ -61,8 +63,8 @@ function fakeCactus(row: typeof ROW, calls: string[][]) {
   let answered = false
   return (argv: readonly string[]) => {
     calls.push([...argv])
-    if (argv[1] === 'answer') {
-      answered = true
+    if (argv[1] === 'answer' || argv[1] === 'undo') {
+      answered = argv[1] === 'answer'
       return { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
     }
     if (argv[1] === 'get') {
@@ -222,8 +224,12 @@ test('answering this session’s own row wakes it with the verdict', async ($, o
     woke.push(e.text)
     return { text: e.text }
   })
+  const clock = mock.clock(on)
   const ui = await mounted($, on, ROW, calls, 'terminal')
   await ui.press({ key: 'q7:local' })
+  expect(woke).toEqual([])
+  expect(await ui.find({ text: /q7 → agent in 15s/ })).toBeDefined()
+  await clock.advance(15_000)
   expect(woke.join('\n')).toContain('answer: local')
   expect(woke.join('\n')).toContain('(cleared)')
   expect(calls).toContainEqual(['cactus', 'clear', 'q7', '--agent', 'a1'])
@@ -336,9 +342,11 @@ test('a pass that closed a review wakes with the verdict, not a decline', async 
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
   on('ui.focus', () => ({}))
+  const clock = mock.clock(on)
   await $.command.run(RUN)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'q7:pass' })
+  await clock.advance(15_000)
   const all = woke.join('\n')
   expect(all).toContain('verdict: pass')
   expect(all).not.toContain('declined')
@@ -460,4 +468,40 @@ test('the feed runs in the session root, not a shell cwd that drifted below it',
   expect(dirs.length).toBeGreaterThan(0)
   expect(dirs.every(d => d === '/repo')).toBe(true)
   expect((await ui.find({ text: /Which auth backend/ }))?.text).toContain('q7')
+})
+
+test('an undo inside the cooldown sends nothing to the agent', async ($, on) => {
+  const calls: string[][] = []
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const clock = mock.clock(on)
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.press({ key: 'q7:local' })
+  await clock.advance(10_000)
+  await ui.press({ key: 'undo' })
+  await clock.advance(30_000)
+  expect(woke).toEqual([])
+  expect(calls.some(c => c[1] === 'clear')).toBe(false)
+})
+
+test('h opens settings; the cooldown and autoshow are kept in the store', async ($, on) => {
+  const calls: string[][] = []
+  const saved: unknown[] = []
+  on('store.set', (_$, e) => {
+    saved.push(e.value)
+    return { value: undefined }
+  })
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ text: /wake cooldown: 15s/ })).toBeDefined()
+  await ui.press({ key: 'set:cooldown' })
+  await ui.press({ key: 'set:autoshow' })
+  expect(await ui.find({ text: /wake cooldown: 30s/ })).toBeDefined()
+  expect(await ui.find({ text: /autoshow at session start: off/ })).toBeDefined()
+  expect(saved[saved.length - 1]).toEqual({ autoshow: false, cooldown: 30 })
+  await ui.press({ key: 'set:close' })
+  expect(await ui.find({ text: /Which auth backend/ })).toBeDefined()
 })

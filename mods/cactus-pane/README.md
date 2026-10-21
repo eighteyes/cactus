@@ -9,9 +9,10 @@ A live [cactus](https://github.com/eighteyes/cactus) inbox inside Claude Code. Y
 
 ## Use
 
-- Opens at session start. `/cactus-pane` opens it again.
+- Opens at session start (turn off in settings). `/cactus-pane` opens it again.
 - A rail of open rows, a card for the focused one. A digit answers, `i` types (enter in the text line sends it), `g` sends a multi pick. Enter on a question only opens it; it never answers, so a stray enter cannot send a recommendation.
-- When one of the session's rows moves, the pane starts a turn carrying the answer in full and clears the row. The agent posts `cactus ask --no-wait` and keeps working.
+- When one of the session's rows moves, the pane waits the cooldown (15s by default), then starts a turn carrying the answer in full and clears the row. `u` inside the cooldown takes the answer back and nothing is sent. The agent posts `cactus ask --no-wait` and keeps working.
+- `h` opens settings: autoshow at session start, wake cooldown (0/5/15/30/60s). Kept across sessions.
 
 ## What it runs and sends
 

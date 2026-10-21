@@ -5,12 +5,13 @@
 // - the card's buttons carry the TUI's row keys (1-9, y/n, s, i, c, x, d, e, b, r, m)
 // - acts through the `cactus` CLI, so cli.py stays the only validator
 // - /cactus-pane opens the pane focused; it also opens unasked at session start
-// - wakes this session when its own rows move, and turns its cactus waits off
+// - wakes this session when its own rows move, after a cooldown an undo cancels, and turns its cactus waits off
+// - h opens settings: autoshow at session start, wake cooldown; kept in $.store
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Answer, Row } from '../types'
+import type { Answer, PaneSettings, Row } from '../types'
 
 const PANE = 'cactus-pane'
 const POLL_MS = 5000
@@ -29,6 +30,12 @@ const undo = atom({ plugin: 'cactus-pane', key: 'undo' } as const, [])
 const modes = atom({ plugin: 'cactus-pane', key: 'modes' } as const, {})
 const flips = atom({ plugin: 'cactus-pane', key: 'flips' } as const, {})
 const drafts = atom({ plugin: 'cactus-pane', key: 'drafts' } as const, {})
+const settings = atom({ plugin: 'cactus-pane', key: 'settings' } as const, { autoshow: true, cooldown: 15 })
+const settingsOpen = atom({ plugin: 'cactus-pane', key: 'settingsOpen' } as const, false)
+// Wakes waiting out the cooldown: row key -> seconds left at the last poll.
+const held = atom({ plugin: 'cactus-pane', key: 'held' } as const, {})
+const SETTINGS_KEY = 'h'
+const COOLDOWNS = [0, 5, 15, 30, 60]
 const UNDO_DEPTH = 20
 const RUN_TIMEOUT_MS = 600_000
 
@@ -117,6 +124,11 @@ async function retitle($: EngineInterface, list: readonly Row[]): Promise<void> 
 // Runs in the session root, not the shell cwd: a `cd` into a subdirectory of a
 // non-git project would scope `--here` to that subdirectory and empty the pane.
 async function poll($: EngineInterface): Promise<void> {
+  await refresh($)
+  await flush($).catch(() => undefined)
+}
+
+async function refresh($: EngineInterface): Promise<void> {
   const sig = await dbSignature($)
   if (sig !== null && sig === lastSig && Date.now() - lastSpawnAt < REFRESH_MS) return
   const ran = await $.process.run(['cactus', 'feed', '--json', '--here'], {
@@ -150,9 +162,23 @@ async function poll($: EngineInterface): Promise<void> {
   await wake($, doc.questions).catch(() => undefined)
 }
 
+// A row's state as the wake reads it; `sig` also tells a re-answer apart.
+type Seen = { status: string; n: number; sig: string }
+
+function seen(r: Row): Seen {
+  const last = r.answers[r.answers.length - 1]
+  return { status: r.status, n: r.answers.length, sig: `${r.status}:${r.answers.length}:${last?.created_at ?? ''}` }
+}
+
 // This session's own rows as last seen: key -> status and verdict count.
 // Null until the first poll seeds it, so rows already settled never wake.
-let watched: { sid: string; rows: Map<string, { status: string; n: number }> } | null = null
+let watched: { sid: string; rows: Map<string, Seen> } | null = null
+
+// Moves waiting out the cooldown: key -> the state before the move, the state
+// now, and when the wake is due. Back at `before` (an undo) drops it; any other
+// change restarts the clock.
+const pending = new Map<string, { before: Seen; sig: string; due: number }>()
+let cooldownMs = 15_000
 
 // What a wake says about one row, and what is left for the agent to do. A
 // proper answer arrives whole and is cleared here, so it needs no get/clear.
@@ -192,31 +218,61 @@ function describe(row: Row): Moved {
   return { row, text: `${asked}\n  answer: ${verdict(last)}${ran}\n  (cleared)`, clears: true, heard: false }
 }
 
-// The client end of delivery: when one of this session's rows moves, start a
-// turn (queued behind a running one). A prompt the mod submits replaces the
-// backgrounded wait while the mod is loaded.
+// The client end of delivery: when one of this session's rows moves, hold it
+// for the cooldown, then start a turn (queued behind a running one). A prompt
+// the mod submits replaces the backgrounded wait while the mod is loaded.
 async function wake($: EngineInterface, list: Row[]): Promise<void> {
   const sid = await $.session.id()
-  const now = new Map(
-    list.filter(r => r.agent === sid).map(r => [r.key, { status: r.status, n: r.answers.length }]),
-  )
+  const now = new Map(list.filter(r => r.agent === sid).map(r => [r.key, seen(r)]))
   if (watched === null || watched.sid !== sid) {
     watched = { sid, rows: now }
+    pending.clear()
     return
   }
-  const moved: Row[] = []
-  const gone: string[] = []
-  for (const [key, before] of watched.rows) {
+  const at = await $.clock.now()
+  for (const key of new Set([...watched.rows.keys(), ...pending.keys()])) {
     const after = now.get(key)
-    if (after === undefined) gone.push(key)
+    const sig = after?.sig ?? 'gone'
+    const p = pending.get(key)
+    if (p !== undefined) {
+      if (after !== undefined && after.status === p.before.status && after.n === p.before.n) pending.delete(key)
+      else if (sig !== p.sig) {
+        pending.set(key, { ...p, sig, due: at + cooldownMs })
+        $.clock.after(cooldownMs, () => poll($))
+      }
+      continue
+    }
+    const before = watched.rows.get(key)
+    if (before === undefined) continue
     // A move back to open/live with no new verdict is this agent's own edit
     // answering an elaborate request: never wake on it (q334's echo rule).
-    else if (after.n > before.n || (after.status !== before.status && !QUIET.has(after.status))) {
-      const row = list.find(r => r.key === key)
-      if (row !== undefined) moved.push(row)
+    if (after === undefined || after.n > before.n || (after.status !== before.status && !QUIET.has(after.status))) {
+      pending.set(key, { before, sig, due: at + cooldownMs })
+      if (cooldownMs > 0) $.clock.after(cooldownMs, () => poll($))
     }
   }
   watched = { sid, rows: now }
+  await flush($)
+}
+
+// Sends every held move whose cooldown ran out, and shows the rest counting down.
+async function flush($: EngineInterface): Promise<void> {
+  const at = await $.clock.now()
+  const due = [...pending].filter(([, p]) => p.due <= at).map(([key]) => key)
+  for (const key of due) pending.delete(key)
+  await update($, held, () =>
+    Object.fromEntries([...pending].map(([key, p]) => [key, Math.ceil((p.due - at) / 1000)])),
+  )
+  if (due.length === 0) return
+  const sid = await $.session.id()
+  const list = await read($, rows)
+  const moved: Row[] = []
+  const gone: string[] = []
+  for (const key of due) {
+    const row = list.find(r => r.key === key)
+    if (row === undefined) gone.push(key)
+    else moved.push(row)
+  }
   if (gone.length > 0) {
     const got = await $.process.run(['cactus', 'get', ...gone, '--json'], {
       cwd: await $.session.root(),
@@ -362,6 +418,24 @@ async function undoLast($: EngineInterface): Promise<void> {
     $.ui.toast(`cactus ${key}: answer withdrawn`)
     await select($, key)
   }
+}
+
+async function loadSettings($: EngineInterface): Promise<PaneSettings> {
+  const raw = (await $.store.get('settings').catch(() => undefined)) as Partial<PaneSettings> | undefined
+  const s: PaneSettings = {
+    autoshow: typeof raw?.autoshow === 'boolean' ? raw.autoshow : true,
+    cooldown: typeof raw?.cooldown === 'number' && raw.cooldown >= 0 ? raw.cooldown : 15,
+  }
+  cooldownMs = s.cooldown * 1000
+  await update($, settings, () => s)
+  return s
+}
+
+async function changeSettings($: EngineInterface, fn: (s: PaneSettings) => PaneSettings): Promise<void> {
+  const s = fn(await read($, settings))
+  cooldownMs = s.cooldown * 1000
+  await update($, settings, () => s)
+  await $.store.set('settings', s)
 }
 
 // The TUI's `R`: run the row's command; on a run row that is the approval.
@@ -681,8 +755,12 @@ export const register: Register = on => {
       name: 'cactus-pane',
       description: "Show this project's cactus inbox in a pane",
     })
+    const saved = await loadSettings($)
     $.clock.every(POLL_MS, () => poll($))
-    if (e.isInteractive) await $.ui.open({ id: PANE, title: 'cactus' })
+    // While a wake is held, poll each second: the countdown ticks and an undo
+    // from another surface is seen before the wake goes.
+    $.clock.every(1000, () => (pending.size > 0 ? poll($) : undefined))
+    if (e.isInteractive && saved.autoshow) await $.ui.open({ id: PANE, title: 'cactus' })
     void poll($)
 
     return next(e)
@@ -728,7 +806,34 @@ export const register: Register = on => {
     const modeOf = await read($, modes)
     const flipped = await read($, flips)
     const drafted = await read($, drafts)
+    const prefs = await read($, settings)
+    const holding = await read($, held)
     const current = list.find(r => r.key === wanted) ?? list[0]
+
+    if (await read($, settingsOpen)) {
+      const next = COOLDOWNS.find(c => c > prefs.cooldown) ?? COOLDOWNS[0] ?? 0
+      return (
+        <Box flexDirection="column">
+          <Text bold>cactus pane settings</Text>
+          <Button
+            key="set:autoshow"
+            label={`autoshow at session start: ${prefs.autoshow ? 'on' : 'off'}`}
+            hotkey="1"
+            plain
+            onPress={() => void changeSettings($, s => ({ ...s, autoshow: !s.autoshow }))}
+          />
+          <Button
+            key="set:cooldown"
+            label={`wake cooldown: ${prefs.cooldown}s (next ${next}s)`}
+            hotkey="2"
+            plain
+            onPress={() => void changeSettings($, s => ({ ...s, cooldown: next }))}
+          />
+          <Text dimColor>An answer waits the cooldown before it reaches the agent; u inside it takes it back.</Text>
+          <Button key="set:close" label="back" hotkey={SETTINGS_KEY} plain onPress={() => void update($, settingsOpen, () => false)} />
+        </Box>
+      )
+    }
 
     const card = (row: Row) => {
       // m turns a single-choice row into pick-several for this one answer.
@@ -1142,7 +1247,13 @@ export const register: Register = on => {
         {current !== undefined && card(current).body}
         {current !== undefined && card(current).input}
         {current !== undefined && card(current).controls}
+        {Object.keys(holding).length > 0 && (
+          <Text color="yellow">
+            {Object.entries(holding).map(([key, s]) => `${key} → agent in ${s}s`).join(' · ')}  (u takes it back)
+          </Text>
+        )}
         <Box display="none" flexDirection="row" columnGap={2}>
+          <Button key="settings" label="settings" hotkey={SETTINGS_KEY} plain onPress={() => void update($, settingsOpen, () => true)} />
           {stack.length > 0 && (
             <Button
               key="undo"
