@@ -6,6 +6,7 @@
 // - the feed runs in the session root, so a shell cd cannot empty the pane
 // - a wake waits out the cooldown; an undo inside it sends nothing
 // - h opens settings; a change is kept in the store
+// - escape out of the input returns the ring to the header, not the prompt
 
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
@@ -504,4 +505,35 @@ test('h opens settings; the cooldown and autoshow are kept in the store', async 
   expect(saved[saved.length - 1]).toEqual({ autoshow: false, cooldown: 30 })
   await ui.press({ key: 'set:close' })
   expect(await ui.find({ text: /Which auth backend/ })).toBeDefined()
+})
+
+test('escape out of the input takes the keys back onto the header; escape on a header leaves', async ($, on) => {
+  const calls: string[][] = []
+  const opens: { focus?: true }[] = []
+  const rings: string[] = []
+  on('ui.open', (_$, e) => {
+    opens.push(e)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.focus', (_$, e) => {
+    if (e.element !== undefined) rings.push(e.element)
+    return {}
+  })
+  const fake = fakeCactus(ROW, calls)
+  on('process.run', (_$, e) => ({ value: fake(e.argv) }))
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.toast', () => ({ value: undefined }))
+  await $.command.run(RUN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'q7:type' })
+  await ui.input({ key: 'q7:text', text: 'half a no', kind: 'change' })
+  const before = opens.length
+  await ui.redraw({ ...PANE.props, isFocused: false })
+  await ui.advance(0)
+  expect(opens.slice(before).some(o => o.focus === true)).toBe(true)
+  const after = opens.length
+  await ui.redraw({ ...PANE.props, isFocused: false })
+  await ui.advance(0)
+  expect(opens.length).toBe(after)
 })

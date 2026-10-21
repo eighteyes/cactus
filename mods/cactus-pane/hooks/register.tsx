@@ -7,6 +7,7 @@
 // - /cactus-pane opens the pane focused; it also opens unasked at session start
 // - wakes this session when its own rows move, after a cooldown an undo cancels, and turns its cactus waits off
 // - h opens settings: autoshow at session start, wake cooldown; kept in $.store
+// - Esc out of a text line takes the keys back onto the row header; Esc on a header leaves
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
@@ -494,7 +495,7 @@ async function enterOnOpen($: EngineInterface, row: Row): Promise<void> {
     return
   }
   if (row.choices.length === 0 && row.act !== 'run') {
-    await $.ui.focus({ requestId: PANE, key: `${row.key}:text` }).catch(() => undefined)
+    await focusInput($, row.key)
     return
   }
   $.ui.toast(`cactus ${row.key}: enter does not answer; press a digit or type a note${row.kind === 'multi' ? ', then g to send' : ''}`)
@@ -809,6 +810,7 @@ export const register: Register = on => {
     const prefs = await read($, settings)
     const holding = await read($, held)
     const current = list.find(r => r.key === wanted) ?? list[0]
+    if (!e.props.isFocused && ring?.endsWith(':text')) void reclaim($, ring).catch(() => undefined)
 
     if (await read($, settingsOpen)) {
       const next = COOLDOWNS.find(c => c > prefs.cooldown) ?? COOLDOWNS[0] ?? 0
@@ -1069,9 +1071,7 @@ export const register: Register = on => {
                 hotkey="i"
                 plain
                 onPress={() =>
-                  void $.ui
-                    .focus({ requestId: PANE, key: `${row.key}:text` })
-                    .catch(() => undefined)
+                  void focusInput($, row.key)
                 }
               />
             )}
@@ -1118,7 +1118,7 @@ export const register: Register = on => {
                   plain
                   onPress={() => {
                     void setMode($, row.key, isHinting ? null : 'elaborate')
-                    if (!isHinting) void $.ui.focus({ requestId: PANE, key: `${row.key}:text` }).catch(() => undefined)
+                    if (!isHinting) void focusInput($, row.key)
                   }}
                 />
                 <Button
@@ -1283,9 +1283,37 @@ export const register: Register = on => {
   // Arrows and tab are the person's focus steps. Only question headers may
   // take them; the keys below the list stay reachable by hotkey (and `i` puts
   // the ring in the input), so a step onto them is refused and the ring stays.
-  on('ui.focus', async ($, e, next) => {
-    if (e.requestId !== PANE || e.origin.kind !== 'person') return next(e)
-    if (e.element !== undefined && !e.element.endsWith(':sel')) return { deny: 'cactus-pane: headers only' }
+  // Typing in a row's input is proof the ring is there.
+  on('ui.input', ($, e, next) => {
+    if (e.plugin === 'cactus-pane' && e.element.endsWith(':text')) ring = e.element
     return next(e)
   })
+
+  on('ui.focus', async ($, e, next) => {
+    if (e.requestId !== PANE) return next(e)
+    if (e.origin.kind === 'person' && e.element !== undefined && !e.element.endsWith(':sel')) {
+      return { deny: 'cactus-pane: headers only' }
+    }
+    const moved = await next(e)
+    if (!('deny' in moved)) ring = e.element ?? null
+    return moved
+  })
+}
+
+// The element holding the pane's ring, as the last ui.focus left it.
+let ring: string | null = null
+
+async function focusInput($: EngineInterface, key: string): Promise<void> {
+  const moved = await $.ui.focus({ requestId: PANE, key: `${key}:text` }).catch(() => ({ deny: 'gone' }))
+  if (!('deny' in moved)) ring = `${key}:text`
+}
+
+// Escape is the engine's: in an input it hands the keys to the prompt, never
+// the pane. So the pane takes them back and puts the ring on the row's header;
+// Escape on a header is the deliberate way out and is left alone.
+async function reclaim($: EngineInterface, from: string): Promise<void> {
+  const header = from.replace(/:text$/, ':sel')
+  ring = header
+  await $.ui.open({ id: PANE, title: paneTitle(await read($, rows)), focus: true })
+  await $.ui.focus({ requestId: PANE, key: header }).catch(() => undefined)
 }
