@@ -488,6 +488,24 @@ test('an undo inside the cooldown sends nothing to the agent', async ($, on) => 
   expect(calls.some(c => c[1] === 'clear')).toBe(false)
 })
 
+test('n inside the cooldown sends the wake at once', async ($, on) => {
+  const calls: string[][] = []
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const clock = mock.clock(on)
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.press({ key: 'q7:local' })
+  await clock.advance(1_000)
+  expect(woke).toEqual([])
+  await ui.press({ key: 'send' })
+  expect(woke.length).toBe(1)
+  await clock.advance(30_000)
+  expect(woke.length).toBe(1)
+})
+
 test('h opens settings; the cooldown and autoshow are kept in the store', async ($, on) => {
   const calls: string[][] = []
   const saved: unknown[] = []

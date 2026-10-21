@@ -5,7 +5,7 @@
 // - the card's buttons carry the TUI's row keys (1-9, y/n, s, i, c, x, d, e, b, r, m)
 // - acts through the `cactus` CLI, so cli.py stays the only validator
 // - /cactus-pane opens the pane focused; it also opens unasked at session start
-// - wakes this session when its own rows move, after a cooldown an undo cancels, and turns its cactus waits off
+// - wakes this session when its own rows move, after a cooldown an undo cancels (n skips it), and turns its cactus waits off
 // - h opens settings: autoshow at session start, wake cooldown; kept in $.store
 // - Esc out of a text line takes the keys back onto the row header; Esc on a header leaves
 
@@ -36,6 +36,7 @@ const settingsOpen = atom({ plugin: 'cactus-pane', key: 'settingsOpen' } as cons
 // Wakes waiting out the cooldown: row key -> seconds left at the last poll.
 const held = atom({ plugin: 'cactus-pane', key: 'held' } as const, {})
 const SETTINGS_KEY = 'h'
+const SEND_KEY = 'n'
 const COOLDOWNS = [0, 5, 15, 30, 60]
 const UNDO_DEPTH = 20
 const RUN_TIMEOUT_MS = 600_000
@@ -253,6 +254,13 @@ async function wake($: EngineInterface, list: Row[]): Promise<void> {
     }
   }
   watched = { sid, rows: now }
+  await flush($)
+}
+
+// Skips the cooldown: every held move is due now.
+async function sendNow($: EngineInterface): Promise<void> {
+  const at = await $.clock.now()
+  for (const [key, p] of pending) pending.set(key, { ...p, due: at })
   await flush($)
 }
 
@@ -1249,11 +1257,14 @@ export const register: Register = on => {
         {current !== undefined && card(current).controls}
         {Object.keys(holding).length > 0 && (
           <Text color="yellow">
-            {Object.entries(holding).map(([key, s]) => `${key} → agent in ${s}s`).join(' · ')}  (u takes it back)
+            {Object.entries(holding).map(([key, s]) => `${key} → agent in ${s}s`).join(' · ')}  ({SEND_KEY} sends now · u takes it back)
           </Text>
         )}
         <Box display="none" flexDirection="row" columnGap={2}>
           <Button key="settings" label="settings" hotkey={SETTINGS_KEY} plain onPress={() => void update($, settingsOpen, () => true)} />
+          {Object.keys(holding).length > 0 && (
+            <Button key="send" label="send now" hotkey={SEND_KEY} plain onPress={() => void sendNow($).catch(() => undefined)} />
+          )}
           {stack.length > 0 && (
             <Button
               key="undo"
