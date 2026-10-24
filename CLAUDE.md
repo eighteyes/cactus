@@ -527,6 +527,14 @@ scope.
   row's own stamps, so a caller with no herdr env (the Mac app) reaches the
   same pane. Human verb, no `--agent`; no pane or a `PokeError` exits 1,
   missing key 3. `--json` is `{pane, session, raise_error}`.
+- `cactus write KEY [INPUT...]` is `w`: asks the row's owner to write about the
+  question in its own chat, nothing stored on the row. `poke.write_message`
+  (row text verbatim, capped 300, plus `Focus: INPUT` when given) goes out via
+  `poke.poke(webhook=False)` at the row's pane/session. Human verb, no
+  `--agent`; refuses a `cleared` row or one `poke.reachable` rejects (exit 1),
+  missing key 3; `--json` is `{key, sent, message}`. The TUI `w` opens the
+  input as `elaborate` does (`writing` flag on `elaborating`), enter sends
+  (empty ok), esc cancels; bound by `check_action` on reachable non-cleared rows.
 - `cactus history [--project DIR] [--limit N]` is the answers view (`a`):
   `Store.history`, newest verdict first, `--json` a list of `as_dict`; none
   is `no match`, exit 3.
@@ -618,8 +626,8 @@ scope.
   copy); `ask`/`edit --site URL` take http or https only — `cli._check_site`
   refuses any other scheme, exit 1, before the store is touched. `Store.edit`
   `site`: `None` keeps, `""` clears, a string replaces; `monitor._signature`
-  carries it beside `files`. The TUI's `w` (`open_site`) binds only on a row
-  with a site (`check_action`, keybar `w site`, `on_key` flashes `has no
+  carries it beside `files`. The TUI's `W` (`open_site`) binds only on a row
+  with a site (`check_action`, keybar `W site`, `on_key` flashes `has no
   site`) and calls `shell.open_url` — `open`/`xdg-open`, or `CACTUS_OPEN`
   with `{url}` per argument, never a shell; tests set it inert. The card
   prints `site: URL` (markup off); `www` renders an http(s) link with

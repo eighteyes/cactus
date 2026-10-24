@@ -474,7 +474,7 @@ def _card_lines(
         if q.pane:
             extras.append(("v", "visit"))
         if q.site:
-            extras.append(("w", "site"))
+            extras.append(("W", "site"))
     else:
         if q.kind == "confirm":
             pairs = _confirm_pairs(q)
@@ -492,7 +492,7 @@ def _card_lines(
         if q.pane:
             extras.append(("v", "visit"))
         if q.site:
-            extras.append(("w", "site"))
+            extras.append(("W", "site"))
         if q.act == "plan" and q.steps:
             # Past 9 steps the digits buffer briefly, so "1" then "2" reaches
             # step 12; the hint names the whole reachable range.
@@ -884,7 +884,8 @@ class CactusApp(App[int]):
         Binding("T", "open_tuning", "Tune"),
         Binding("p", "poke", "Poke", show=False),
         Binding("v", "visit", "Visit", show=False),
-        Binding("w", "open_site", "Site", show=False),
+        Binding("w", "write", "Write", show=False),
+        Binding("W", "open_site", "Site", show=False),
         Binding("C", "copy_command", "Copy", show=False),
         Binding("R", "run_command", "Run", show=False),
         Binding("O", "open_output", "Output", show=False),
@@ -974,6 +975,8 @@ class CactusApp(App[int]):
         # Set while the input is open for `e`'s prompt, so on_input_submitted
         # and escape route to the elaborate request instead of an answer.
         self.elaborating = False
+        # With `elaborating`, routes the open input to `w` (write) instead of `e`.
+        self.writing = False
         self.last_cursor: tuple[int, str, int] = (-1, "", -1)
         self._rebuilding = False
         # One lock serializes every reload and every rail rebuild: the rebuild
@@ -2153,8 +2156,10 @@ class CactusApp(App[int]):
                 items.append(("p", "poke"))
             if self.check_action("visit", ()):
                 items.append(("v", "visit"))
+            if self.check_action("write", ()):
+                items.append(("w", "write"))
             if self.check_action("open_site", ()):
-                items.append(("w", "site"))
+                items.append(("W", "site"))
             items.append(("`", "seed"))
             return items
 
@@ -2228,8 +2233,10 @@ class CactusApp(App[int]):
             items.append(("p", "poke"))
         if self.check_action("visit", ()):
             items.append(("v", "visit"))
+        if self.check_action("write", ()):
+            items.append(("w", "write"))
         if self.check_action("open_site", ()):
-            items.append(("w", "site"))
+            items.append(("W", "site"))
         if self.check_action("undo", ()):
             items.append(("u", "undo"))
         items.append(("`", "seed"))
@@ -2364,6 +2371,8 @@ class CactusApp(App[int]):
                 return bool(q.files)
             if action == "open_site":
                 return bool(q.site)
+            if action == "write":
+                return _pokeable(q)
             if action == "select_choice":
                 return self.file_pending is not None
             return action in (
@@ -2402,6 +2411,8 @@ class CactusApp(App[int]):
             return bool(q.pane)
         if action == "open_site":
             return bool(q.site)
+        if action == "write":
+            return q.status != "cleared" and _pokeable(q)
         if action == "undo":
             return bool(self.undo_stack)
         if action in ("elaborate", "decompose"):
@@ -3240,6 +3251,16 @@ class CactusApp(App[int]):
                 self._rebuild_status_bar()
                 event.stop()
         if event.key == "w":
+            # write only binds on a reachable, non-cleared row (check_action).
+            q = self._current_question()
+            if q is not None and not self.check_action("write", ()):
+                self.flash = (
+                    f"{q.key} is cleared" if q.status == "cleared"
+                    else f"{q.key} has no agent to write to"
+                )
+                self._rebuild_status_bar()
+                event.stop()
+        if event.key == "W":
             # open_site only binds on a row with a site (check_action).
             q = self._current_question()
             if q is not None and not q.site:
@@ -3415,11 +3436,45 @@ class CactusApp(App[int]):
         if q is None or q.status not in ("open", "live"):
             return
         self.elaborating = True
+        self.writing = False
         inp = self.query_one("#answer-input", Input)
         inp.value = ""
         inp.placeholder = "elaborate: — enter to send, esc to cancel"
         inp.display = True
         inp.focus()
+
+    def action_write(self) -> None:
+        """`w`: open the input as an optional focus line for a write-up.
+
+        Rides `elaborating` (so every text-entry guard holds) plus `writing`;
+        enter sends the owner a nudge, escape cancels. Empty input is allowed.
+        """
+        q = self._current_question()
+        if q is None or not self.check_action("write", ()):
+            return
+        self.elaborating = True
+        self.writing = True
+        inp = self.query_one("#answer-input", Input)
+        inp.value = ""
+        inp.placeholder = "write: focus (optional) — enter to send, esc to cancel"
+        inp.display = True
+        inp.focus()
+
+    async def _submit_write(self, q: Question, focus: str) -> None:
+        from .poke import PokeError, poke, write_message
+
+        message = write_message(q.key, project_label(q.project), q.text, focus)
+        try:
+            poke(q.agent, pane=q.pane, session=q.session, message=message, webhook=False)
+        except PokeError as exc:
+            self.flash = str(exc)
+        else:
+            self.flash = f"write asked of {q.pane or q.agent}"
+        self.elaborating = False
+        self.writing = False
+        self._hide_input()
+        self.query_one("#rail-list", ListView).focus()
+        self._rebuild_status_bar()
 
     async def action_decompose(self) -> None:
         """`D`: ask the owner to split a complex row via elaborate workflow."""
@@ -3479,6 +3534,9 @@ class CactusApp(App[int]):
         if q is None:
             return
         value = event.value.strip()
+        if self.elaborating and self.writing:
+            await self._submit_write(q, value)
+            return
         if self.elaborating:
             await self._submit_elaborate(q, value)
             return

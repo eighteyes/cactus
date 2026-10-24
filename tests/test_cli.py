@@ -980,6 +980,46 @@ def test_visit_refuses_a_row_with_no_pane_and_a_missing_key(cli, no_herdr):
     assert r.returncode == 3 and len(r.stderr.strip().splitlines()) == 1
 
 
+def _poke_capture(tmp_path, scratch_env):
+    log = tmp_path / "write.log"
+    script = tmp_path / "write.sh"
+    script.write_text(f'#!/bin/sh\necho "$1|$2" >> {log}\n')
+    script.chmod(0o755)
+    scratch_env["CACTUS_POKE"] = f"{script} {{agent}} {{message}}"
+    return log
+
+
+def test_write_sends_the_row_text_and_input_to_the_owner(cli, no_herdr, tmp_path, scratch_env):
+    log = _poke_capture(tmp_path, scratch_env)
+    cli("ask", "--no-wait", "which db?", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    r = cli("write", "q1", "mind", "the", "cost", "--json")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["key"] == "q1" and out["sent"] is True
+    agent, message = log.read_text().rstrip("\n").split("|", 1)
+    assert agent == AGENT_A and message == out["message"]
+    assert "q1" in message and "which db?" in message
+    assert message.endswith("Focus: mind the cost")
+    plain = cli("write", "q1")
+    assert plain.returncode == 0 and "write asked" in plain.stdout
+    assert "Focus" not in log.read_text().splitlines()[-1]
+
+
+def test_write_refuses_missing_cleared_and_unreachable_rows(cli, no_herdr, tmp_path, scratch_env):
+    _poke_capture(tmp_path, scratch_env)
+    cli("ask", "--no-wait", "one", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    r = cli("write", "q9")
+    assert r.returncode == 3 and len(r.stderr.strip().splitlines()) == 1
+    cli("retire", "q1")
+    r = cli("write", "q1")
+    assert r.returncode == 1 and "is cleared" in r.stderr
+    cli("ask", "--no-wait", "two", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    del scratch_env["CACTUS_POKE"]
+    no_herdr.delenv("CACTUS_POKE", raising=False)
+    r = cli("write", "q2")
+    assert r.returncode == 1 and len(r.stderr.strip().splitlines()) == 1
+
+
 def test_history_lists_answered_rows_newest_verdict_first(cli, project):
     cli("ask", "--no-wait", "one", "-c", "a", "-c", "b", "--agent", AGENT_A)
     cli("ask", "--no-wait", "two", "-c", "a", "-c", "b", "--agent", AGENT_A)

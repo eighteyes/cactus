@@ -459,3 +459,18 @@ def visit(pane: str | None, *, session: str | None = None, timeout: float = 5.0)
     except PokeError as exc:
         return Visited(ran, str(exc))
     return Visited(ran)
+
+
+WRITE_TEXT_CAP = 300
+
+
+def write_message(key: str, project: str, text: str, focus: str = "") -> str:
+    """The nudge behind `cactus write` / TUI `w`: ask the owning agent to write
+    about a question in its own chat, with optional human `focus`. Row text is
+    verbatim, whitespace-collapsed and capped at WRITE_TEXT_CAP characters."""
+    body = " ".join(text.split())
+    if len(body) > WRITE_TEXT_CAP:
+        body = body[:WRITE_TEXT_CAP].rstrip() + "…"
+    msg = f'cactus {key} ({project}): write about this question here in chat — "{body}"'
+    focus = " ".join(focus.split())
+    return f"{msg}\nFocus: {focus}" if focus else msg

@@ -3044,10 +3044,10 @@ async def test_open_site_binds_only_on_a_row_with_a_site(
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "w" in keybar_keys(app)
-        assert "w" not in footer_keys(app)
+        assert "W" in keybar_keys(app)
+        assert "W" not in footer_keys(app)
         assert "site: https://example.com/a" in str(app.query_one("#card-text", Static).content)
-        await pilot.press("w")
+        await pilot.press("W")
         await pilot.pause()
         assert app.flash == "opened https://example.com/a"
 
@@ -3064,8 +3064,8 @@ async def test_open_site_flashes_on_a_row_without_one(
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "w" not in keybar_keys(app)
-        await pilot.press("w")
+        assert "W" not in keybar_keys(app)
+        await pilot.press("W")
         await pilot.pause()
         assert app.flash == f"{q.key} has no site"
 
@@ -3442,3 +3442,80 @@ async def test_plan_verdict_parks_and_all_parked_lands_on_first(store: Store, pr
         await pilot.pause()
         assert app.questions[0].parked
         assert app.focused_key == pq.key
+
+
+async def test_w_asks_the_owner_to_write_with_a_focus_line(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _poke_log(tmp_path, monkeypatch)
+    q = store.ask("which db?", project=project, cwd=project, agent=AGENT, pane="w1:p1")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert keybar_keys(app).get("w") == "write"
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.elaborating and app.writing
+        await pilot.press(*"cost")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.flash == "write asked of w1:p1"
+        assert not app.elaborating
+
+    target, message = log.read_text().rstrip("\n").split("|", 1)
+    assert target == "w1:p1"
+    assert q.key in message and "which db?" in message
+    assert message.endswith("Focus: cost")
+
+
+async def test_w_with_empty_input_sends_no_focus_line(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _poke_log(tmp_path, monkeypatch)
+    store.ask("which db?", project=project, cwd=project, agent=AGENT, pane="w1:p1")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.flash == "write asked of w1:p1"
+
+    assert "Focus" not in log.read_text()
+
+
+async def test_w_escape_sends_nothing(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _poke_log(tmp_path, monkeypatch)
+    store.ask("which db?", project=project, cwd=project, agent=AGENT, pane="w1:p1")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.elaborating
+
+    assert not log.exists()
+
+
+async def test_w_flashes_on_an_unreachable_row(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CACTUS_POKE")
+    q = store.ask("orphan", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "w" not in keybar_keys(app)
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.flash == f"{q.key} has no agent to write to"
+        assert not app.elaborating

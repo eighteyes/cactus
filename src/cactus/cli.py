@@ -108,6 +108,7 @@ SYNOPSIS
   cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N] [-f PATH]... [--agent ID]
   cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
   cactus elaborate KEY [HINT] [--decompose | --withdraw]   human verb, no --agent
+  cactus write KEY [INPUT...]        human verb: ask the owner to write about the row in chat
   cactus undo KEY                    human verb: withdraw the latest answer/verdict
   cactus exec KEY                    human verb: run the row's command, record the result
   cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]... [-f PATH]... [--site URL]
@@ -1355,6 +1356,36 @@ def cmd_visit(args: argparse.Namespace, store: Store, project: str, cwd: str) ->
     return EXIT_OK
 
 
+def cmd_write(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Ask the row's owning agent to write about it in its chat (TUI `w`).
+
+    A human verb: no --agent, no ownership gate. Nothing is stored on the row.
+    """
+    from .poke import PokeError, poke, reachable, write_message
+
+    q = _human_row(args, store, project)
+    if isinstance(q, int):
+        return q
+    if q.status == "cleared":
+        print(f"cactus: {q.key} is cleared", file=sys.stderr)
+        return EXIT_ERROR
+    if not reachable(q.agent, q.pane):
+        print(f"cactus: {q.key} has no agent to reach", file=sys.stderr)
+        return EXIT_ERROR
+    message = write_message(q.key, project_label(q.project), q.text, " ".join(args.input))
+    try:
+        poke(q.agent, pane=q.pane, session=q.session, message=message, webhook=False)
+    except PokeError as exc:
+        print(f"cactus: {q.key}: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.json:
+        json.dump({"key": q.key, "sent": True, "message": message}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print(f"write asked of {q.pane or q.agent}: {message}")
+    return EXIT_OK
+
+
 def cmd_history(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """A project's answered and cleared rows, newest verdict first (TUI `a`)."""
     if args.project:
@@ -2059,6 +2090,11 @@ def build_parser() -> argparse.ArgumentParser:
     vs = verb("visit", help="jump herdr to the pane that asked a row (TUI v)")
     vs.add_argument("key")
     vs.set_defaults(fn=cmd_visit)
+
+    wr = verb("write", help="ask the owner to write about a row in its chat (TUI w)")
+    wr.add_argument("key")
+    wr.add_argument("input", nargs="*", help="optional focus for the write-up")
+    wr.set_defaults(fn=cmd_write)
 
     hs = verb("history", help="answered and cleared rows, newest verdict first (TUI a)")
     hs.add_argument("--project", help="project directory (default: this one)")
