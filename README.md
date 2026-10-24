@@ -156,7 +156,7 @@ cactus --watch        # read-only feed
 cactus --www          # localhost web surface (--host tailscale for a phone: token login, see `cactus www-token`)
 ```
 
-The Mac menu-bar app (`mac/`) is a right-edge sidebar on ⌃Space: hidden → slides in focused; shown elsewhere → takes focus; focused → slides out and hands focus back. If another app or an input-source shortcut already owns it, override with the `hotkeyKeyCode`/`hotkeyModifiers` defaults.
+The Mac menu-bar app (`mac/`) is a right-edge sidebar on ⌃Space: hidden → slides in focused; shown elsewhere → takes focus; focused → slides out and hands focus back. If another app or an input-source shortcut already owns it, override with the `hotkeyKeyCode`/`hotkeyModifiers` defaults. The hotkey works only while the app runs: tick Open at login in its menu.
 Keys match the TUI: ↑/↓, j/k, Tab/⇧Tab move; a digit answers (toggles on a multi, ticks a plan step, copies a data chunk) and advances; enter submits; i types (esc leaves, tab moves on); y/n confirm (review pass/fail); s skip; c retire; x close; d dismiss; m pick several; e elaborate; D decompose; A accept auto pick; u undo; p poke; v visit; w write (ask the owner to write about it in chat); C/R/O copy, run (esc stops), open output; f/F/o view, edit, preview files; W site; [ ] project; P projects (enter, * pin, I, A, p); a answers; r refresh; esc backs out, then hides. The footer shows only the keys the row allows.
 
 Agents:
