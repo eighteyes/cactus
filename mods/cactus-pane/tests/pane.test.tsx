@@ -359,6 +359,16 @@ test('a fresh row has no stale mark', async ($, on) => {
   expect(await ui.find({ key: 'q7:stale' })).toBeUndefined()
 })
 
+test('a parked row marks its rail line', async ($, on) => {
+  const ui = await mounted($, on, { ...ROW, parked: true } as typeof ROW, [], 'terminal')
+  expect((await ui.find({ key: 'q7:parked' }))?.text).toContain('parked')
+})
+
+test('an active row has no parked mark', async ($, on) => {
+  const ui = await mounted($, on, ROW, [], 'terminal')
+  expect(await ui.find({ key: 'q7:parked' })).toBeUndefined()
+})
+
 test('a pass that closed a review wakes with the verdict, not a decline', async ($, on) => {
   const woke: string[] = []
   on('prompt.submit', (_$, e) => {

@@ -1033,3 +1033,21 @@ def test_get_json_still_carries_context(cli):
     cli("ask", "plain", "--no-wait", "--agent", AGENT_A, "-c", "a", "-c", "b",
         "--context", "why")
     assert json.loads(cli("get", "q1", "--json").stdout)[0]["context"] == "why"
+
+
+def test_list_and_feed_park_last_and_response_unparks(cli):
+    _heard_review(cli)
+    assert cli("ask", "--no-wait", "pick", "--agent", AGENT_A, "-c", "a", "-c", "b").returncode == 0
+
+    listed = cli("list", "-s", "open,live")
+    assert [ln.split("\t")[0] for ln in listed.stdout.splitlines() if ln.startswith("q")] == ["q2", "q1"]
+    assert "q1\tlive\tparked" in listed.stdout
+    assert "q2\topen\tparked" not in listed.stdout
+
+    feed = json.loads(cli("feed").stdout)["questions"]
+    assert [(r["key"], r["parked"]) for r in feed] == [("q2", False), ("q1", True)]
+
+    assert cli("review", "q1", "--agent", AGENT_A, "--look-at", "fixed").returncode == 0
+    feed = json.loads(cli("feed").stdout)["questions"]
+    assert [(r["key"], r["parked"]) for r in feed] == [("q1", False), ("q2", False)]
+    assert "parked" not in cli("list", "-s", "open,live").stdout

@@ -25,7 +25,7 @@ from . import __version__, tradeoffs
 from .scope import project_display, project_label, resolve_project
 from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
                     DECOMPOSE_INSTRUCTION, DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
-                    Question, Store, default_db_path)
+                    Question, Store, default_db_path, park_last)
 
 # Exit codes are contract: agents and hooks branch on them. 2 is reserved for
 # a --wait timeout, so argparse usage errors are forced to 1 (_ArgumentParser).
@@ -232,6 +232,8 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         head = f"{q.key}\t{q.status}\t"
         if q.stale():
             head += f"stale {q.idle_label()}\t"
+        if q.parked:
+            head += "parked\t"
         if show_project:
             head += f"[{project_display(q.project)}]\t"
         if q.thread:
@@ -730,6 +732,7 @@ def cmd_list(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         tab=args.tab,
         pane=args.pane,
     )
+    questions = park_last(questions)
     if not questions:
         if args.json:
             print("[]")
@@ -1429,6 +1432,7 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         tab=args.tab,
         pane=args.pane,
     )
+    questions = park_last(questions)
     mid, mts, count = store.cursor()
     # Per-agent rollup of rows still waiting on a human. A board paints a cell
     # by whether its agent is blocked; without this it walks every row to learn
@@ -1444,8 +1448,8 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
             "count": count,
             "blocked": blocked,
         },
-        # Ordered by rowid. A projector may assign board letters from this
-        # order and rely on it not shifting between polls.
+        # Ordered by rowid, parked rows (q660) last. A projector may assign
+        # board letters from this order; a verdict moves a row, an arrival does not.
         "questions": [q.as_dict() for q in questions],
     }
     json.dump(doc, sys.stdout, indent=2 if args.pretty else None)

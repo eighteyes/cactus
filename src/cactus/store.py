@@ -414,6 +414,16 @@ class Question:
             return "heard"
         return "sent"
 
+    @property
+    def parked(self) -> bool:
+        """A live review/plan row waiting on the agent (q660).
+
+        The human's latest verdict is newer than the agent's response, whether
+        or not the agent has read it. Computed from `heard_state`, no column:
+        the agent answering (`responded_at`) or a pass closing the row ends it.
+        """
+        return self.status == "live" and self.heard_state in ("sent", "heard")
+
     def idle_hours(self, now: datetime | None = None) -> float:
         """Hours since the row was last touched (`updated_at`)."""
         now = now or datetime.now(timezone.utc)
@@ -483,6 +493,7 @@ class Question:
             "updated_at": self.updated_at,
             "stale": self.stale(),
             "closed_by_pass": self.closed_by_pass,
+            "parked": self.parked,
             "idle_hours": round(self.idle_hours(), 1),
             "elaborate": self.elaborate,
             "elaborate_at": self.elaborate_at,
@@ -504,6 +515,29 @@ class Question:
                 if self.auto_pick is not None else None
             ),
         }
+
+
+def park_last(questions: Sequence[Question]) -> list[Question]:
+    """Stable-partition so parked top-level rows (q660) sort to the end.
+
+    `Store.tree()` lays out each top-level row's subtree as a contiguous run
+    (parent, then its children, depth-first); only the top-level row's
+    `parked` decides the move, so a run travels whole rather than splitting a
+    row from its own follow-ups. A flat list (every depth 0) is its own runs.
+    """
+    runs: list[list[Question]] = []
+    for q in questions:
+        if q.depth == 0:
+            runs.append([q])
+        elif runs:
+            runs[-1].append(q)
+        else:
+            # Defensive: a child promoted to depth 0 out-of-order should
+            # not happen, but never drop a row if it does.
+            runs.append([q])
+    kept = [run for run in runs if not run[0].parked]
+    moved = [run for run in runs if run[0].parked]
+    return [q for run in (*kept, *moved) for q in run]
 
 
 class AlreadyAnswered(RuntimeError):

@@ -1019,11 +1019,22 @@ scope.
   changing the row after the human's latest verdict is visible without a diff.
   `tui._revised`/`cli._revised` compute it independently (no store change);
   the rail marks it `· revised`, the card adds a line under the verdicts
-  line, `_print_questions` matches it in text, and `CactusApp._load_questions`
-  stable-partitions revised top-level rows (with their subtree) to the end of
-  the rail so an unaddressed revision surfaces without hunting for it. It
-  shows alongside the sent/heard marks (q404-q406), never instead of them,
-  and the rail block stays a fixed 4 rows (q226); the partition runs inside
+  line, `_print_questions` matches it in text. Revised is a mark only: it no
+  longer moves the row (q660 reverses the q311 partition). What moves is
+  `Question.parked` (q660): act `review`/`plan`, status `live`, and
+  `heard_state` `sent` or `heard` — the human's latest verdict is newer than
+  the agent's response (`responded_at`). Computed, no column, not in
+  `monitor._signature`; `as_dict` carries `"parked"`. `store.park_last` is the
+  stable partition that sends parked top-level runs (a depth-0 row plus its
+  deeper followers) to the end; `CactusApp._load_questions`, `cmd_feed` and
+  `cmd_list` all apply it, so an agent's response (`cactus review/plan/edit
+  --agent`) puts the row back among the active ones and a pass (which clears
+  the row) never parks. The rail kind line adds `parked` and the block takes
+  `-parked` (dimmed, still 4 rows, q226); the card adds a dim `parked —
+  waiting on the agent`; the status bar adds `· N parked` after the live
+  count; `_print_questions` prints `parked` after the status. `_advance_after`
+  lands on the first active row at or after the old index (else the first
+  active, else the first parked), never the row that just parked. The partition runs inside
   `_load_questions`, so it stays under `_reload_lock`.
 - `Store.projects()` carries `newest_open` — `MAX(created_at)` over each
   project's `open`/`live`/`elaborate` rows, NULL when none — alongside

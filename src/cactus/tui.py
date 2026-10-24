@@ -71,7 +71,7 @@ from .scope import project_label
 from .sky import (SkyConfig, TuneField, slots as sky_slots, tuning_fields_for,
                   tuning_panel_of, tuning_panel_order)
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, DECOMPOSE_INSTRUCTION,
-                    AlreadyAnswered, Answer, Question, Store, stale_hours)
+                    AlreadyAnswered, Answer, Question, Store, park_last, stale_hours)
 
 POLL_INTERVAL = 0.5
 # Card first: the field gets only the rows the card leaves, and hides rather
@@ -371,6 +371,10 @@ def _card_lines(
         lines.append("")
         lines.append(Text(f"untouched {q.idle_label()}", style="dim"))
 
+    if q.parked:
+        lines.append("")
+        lines.append(Text("parked — waiting on the agent", style="dim"))
+
     heard = _heard_line(q)
     if heard:
         lines.append("")
@@ -658,6 +662,8 @@ class QuestionBlock(ListItem):
             parts.append("draft")
         if _revised(q):
             parts.append("revised")
+        if q.parked:
+            parts.append("parked")
         if q.stale():
             parts.append(f"stale {q.idle_label()}")
         return " · ".join(parts)
@@ -681,8 +687,10 @@ class QuestionBlock(ListItem):
         self._dim(question)
 
     def _dim(self, question: Question) -> None:
-        """`-sent` / `-heard` while a review/plan verdict awaits the agent (q405)."""
+        """`-sent` / `-heard` while a review/plan verdict awaits the agent (q405);
+        `-parked` while the row sorts last for it (q660)."""
         state = question.heard_state
+        self.set_class(question.parked, "-parked")
         self.set_class(state == "sent", "-sent")
         self.set_class(state == "heard", "-heard")
         self.set_class(question.stale(), "-stale")
@@ -807,7 +815,7 @@ class CactusApp(App[int]):
     #card.-sent #card-text, #card.-heard #card-text {
         opacity: 60%;
     }
-    QuestionBlock.-sent, QuestionBlock.-heard, QuestionBlock.-stale {
+    QuestionBlock.-sent, QuestionBlock.-heard, QuestionBlock.-stale, QuestionBlock.-parked {
         opacity: 60%;
     }
     /* Card first: the text takes every row it needs, up to the whole card
@@ -1807,31 +1815,8 @@ class CactusApp(App[int]):
         """
         return [r["project"] for r in self._live_projects_rows()]
 
-    @staticmethod
-    def _reorder_revised(questions: list[Question]) -> list[Question]:
-        """Stable-partition so a revised row's subtree moves to the rail's end.
-
-        `store.tree()` already lays out each top-level row's subtree as a
-        contiguous run (parent, then its children, depth-first) — only
-        top-level revised-ness decides the move (q311), so a run travels
-        whole rather than splitting a row from its own follow-ups.
-        """
-        runs: list[list[Question]] = []
-        for q in questions:
-            if q.depth == 0:
-                runs.append([q])
-            elif runs:
-                runs[-1].append(q)
-            else:
-                # Defensive: a child promoted to depth 0 out-of-order should
-                # not happen, but never drop a row if it does.
-                runs.append([q])
-        kept = [run for run in runs if not _revised(run[0])]
-        moved = [run for run in runs if _revised(run[0])]
-        return [q for run in (*kept, *moved) for q in run]
-
     def _load_questions(self) -> None:
-        self.questions = self._reorder_revised(self.store.tree(
+        self.questions = park_last(self.store.tree(
             project=self.current_project,
             status=list(ACTIONABLE),
             all_projects=self.current_project is None,
@@ -1842,7 +1827,7 @@ class CactusApp(App[int]):
         live = self._live_projects()
         if live and self.current_project not in live:
             self.current_project = live[0]
-            self.questions = self._reorder_revised(self.store.tree(
+            self.questions = park_last(self.store.tree(
                 project=self.current_project, status=list(ACTIONABLE)
             ))
             self.questions = self._raise_blocking_acp(self.questions)
@@ -2901,6 +2886,9 @@ class CactusApp(App[int]):
         counts = f"{open_total} open"
         if live_total:
             counts += f" · {live_total} live"
+        parked_total = sum(1 for q in self.store.list(status="live", all_projects=True) if q.parked)
+        if parked_total:
+            counts += f" · {parked_total} parked"
         undo = ""
         if self.undo_stack:
             last = self.undo_stack[-1]
@@ -3893,7 +3881,13 @@ class CactusApp(App[int]):
             self._load_questions()
             self.last_cursor = self.store.cursor()
             if self.questions:
+                # The answered row may have parked to the rail's end (q660):
+                # land on the next active row, else any active one, else the
+                # first parked row.
+                active = [i for i, q in enumerate(self.questions) if not q.parked]
                 next_index = min(old_index, len(self.questions) - 1)
+                if active:
+                    next_index = next((i for i in active if i >= old_index), active[0])
                 self.focused_key = self.questions[next_index].key
                 self.multi_selected = self._default_multi_selection(self.focused_key)
             else:

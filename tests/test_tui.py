@@ -3398,3 +3398,47 @@ async def test_figlet_banner_follows_auto_advance_to_next_project(
         assert store.get(last.key, project=project).status != "open"
         assert app.current_project == other_project
         assert f"BANNER {project_label(other_project)}" in str(banner.render())
+
+
+async def test_parked_row_sorts_last_dims_and_advance_lands_on_the_ask(store: Store, project: str) -> None:
+    rq = _review(store, project)
+    ask = store.ask("pick", project=project, cwd=project, agent=AGENT,
+                    choices=[Choice("a"), Choice("b")])
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert [q.key for q in app.questions] == [rq.key, ask.key]
+        assert app.focused_key == rq.key
+
+        store.answer(rq.key, project=project, selected=["fail"])
+        await app._advance_after(rq.key)
+        await pilot.pause()
+        assert [q.key for q in app.questions] == [ask.key, rq.key]
+        assert app.focused_key == ask.key
+        block = app.query_one(f"#row-{rq.key}", QuestionBlock)
+        assert block.has_class("-parked")
+        assert "parked" in QuestionBlock._kind_line(app.questions[1], False)
+        assert "1 parked" in str(app.query_one("#status-bar", Static).content)
+
+        app.focused_key = rq.key
+        app._rebuild_card()
+        assert "parked — waiting on the agent" in str(app.query_one("#card-text", Static).content)
+
+        # The agent responds: revised, active again, back in its place.
+        store.mark_responded(rq.id)
+        await app._reload(force=True)
+        await pilot.pause()
+        assert [q.key for q in app.questions] == [rq.key, ask.key]
+        assert not app.query_one(f"#row-{rq.key}", QuestionBlock).has_class("-parked")
+
+
+async def test_plan_verdict_parks_and_all_parked_lands_on_first(store: Store, project: str) -> None:
+    pq = store.ask("plan", project=project, cwd=project, agent=AGENT, kind="text", act="plan")
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        store.answer(pq.key, project=project, text="rework it")
+        await app._advance_after(pq.key)
+        await pilot.pause()
+        assert app.questions[0].parked
+        assert app.focused_key == pq.key

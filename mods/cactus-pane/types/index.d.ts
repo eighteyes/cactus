@@ -47,6 +47,8 @@ export type Row = {
   idle_hours?: number
   // A review a pass closed (q601): cleared by the verdict, not by a decline.
   closed_by_pass?: boolean
+  // A review/plan waiting on the agent after the human's verdict (q660); the feed sorts it last.
+  parked?: boolean
 }
 
 // Kept in $.store across sessions. cooldown: seconds a wake waits so undo can cancel it.

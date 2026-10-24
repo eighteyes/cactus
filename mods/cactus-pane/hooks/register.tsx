@@ -1278,7 +1278,12 @@ export const register: Register = on => {
                     <Text dimColor>stale {idleLabel(row.idle_hours ?? 0)}</Text>
                   </Box>
                 )}
-                <Text wrap="truncate-end" dimColor={!isCurrent || row.stale === true} bold={isCurrent}>
+                {row.parked === true && (
+                  <Box key={`${row.key}:parked`}>
+                    <Text dimColor>parked</Text>
+                  </Box>
+                )}
+                <Text wrap="truncate-end" dimColor={!isCurrent || row.stale === true || row.parked === true} bold={isCurrent}>
                   {row.word ? `${row.word}  ` : ''}
                   {firstLine(row.text)}
                 </Text>

@@ -689,3 +689,47 @@ def test_wait_returns_when_pass_closes_a_live_review(store: Store, project: str)
     got = store.wait_for_answer(q.key, project=project, timeout=10, poll=0.05)
     t.join()
     assert got is not None and got.status == "cleared" and got.answer.selected == ["pass"]
+
+
+def test_parked_after_fail_unparked_by_response_pass_closes(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    assert store.get(q.key, project=project).parked is False  # no verdict yet
+
+    store.answer(q.key, project=project, selected=["fail"])
+    got = store.get(q.key, project=project)
+    assert got.parked and got.as_dict()["parked"] is True
+    store.mark_heard(q.id)
+    assert store.get(q.key, project=project).parked  # heard still waits on the agent
+
+    store.mark_responded(q.id)
+    assert store.get(q.key, project=project).parked is False
+
+    store.answer(q.key, project=project, selected=["pass"])  # pass closes, never parks
+    assert store.get(q.key, project=project).parked is False
+
+
+def test_plan_with_verdict_parks_and_non_persistent_never(store: Store, project: str) -> None:
+    p = store.ask("plan", project=project, cwd=project, agent="a1", kind="text", act="plan")
+    store.answer(p.key, project=project, text="reorder step 2")
+    assert store.get(p.key, project=project).parked
+
+    a = store.ask("pick", project=project, cwd=project, agent="a1", choices=[Choice("x"), Choice("y")])
+    store.answer(a.key, project=project, selected=["x"])
+    assert store.get(a.key, project=project).parked is False
+
+
+def test_park_last_moves_parked_runs_whole_and_keeps_order(store: Store, project: str) -> None:
+    from cactus.store import park_last
+
+    r = _live_review(store, project)
+    store.answer(r.key, project=project, selected=["fail"])
+    a = store.ask("later", project=project, cwd=project, agent="a1")
+    c = store.ask("child", project=project, cwd=project, agent="a1", parent_key=r.key)
+    b = store.ask("last", project=project, cwd=project, agent="a1")
+    rows = store.tree(project=project, status=["open", "live"])
+    assert [q.key for q in rows] == [r.key, c.key, a.key, b.key]
+    assert [q.key for q in park_last(rows)] == [a.key, b.key, r.key, c.key]
+
+    store.mark_responded(r.id)  # revised: active again, back in place
+    rows = store.tree(project=project, status=["open", "live"])
+    assert [q.key for q in park_last(rows)] == [r.key, c.key, a.key, b.key]
