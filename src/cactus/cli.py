@@ -166,6 +166,19 @@ FORMATTING
   Hard-wrap context and choice descriptions at 80 columns, and keep labels
   short enough to leave room for their descriptions.
 
+ASKING WELL
+  2-3 options: the human takes the recommendation 79% at 2, 67% at 3, 51% at
+  4+; declines rise at 4+.
+  Always --recommend, honest --confidence: high is followed 79%, med 71%,
+  low 59%.
+  Options that can combine: offer "both"/"all" or use --multi; scope widens.
+  No progress polls or "what did you mean?" on the board (the real declines):
+  use chat, notify, or steer.
+  Pick names yourself; post them as a steer (most-skipped topic).
+  A text-only review verdict is a fail: fix what it names. Test keys, arrows
+  and layout stability before asking for a review.
+  A digit typed as free text ("3") means that option.
+
 STAMPS
   workspace tab pane session   from HERDR_WORKSPACE_ID HERDR_TAB_ID
                                      HERDR_PANE_ID HERDR_SESSION at ask

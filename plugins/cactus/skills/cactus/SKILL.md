@@ -71,3 +71,21 @@ The `UserPromptSubmit` hook injects your outstanding frontier. The `Stop` hook
 never blocks. The `PermissionRequest`
 hook converts an approval-needed Bash command into a Cactus run row and denies
 the transient request so the durable inbox remains the approval surface.
+
+## Asking well
+
+Rules from 3,062 answered rows across 50 projects.
+
+- Give 2-3 options. The human takes your recommendation 79% of the time at 2
+  options, 67% at 3, 51% at 4+; declines rise at 4+.
+- Always recommend, with an honest confidence. High is followed 79%, med 71%,
+  low 59%.
+- When options can combine, offer "both" or "all", or use `--multi`. The
+  human often widens scope.
+- Keep progress polls ("when does it land?") and "what did you mean?" off the
+  board; those are the real declines. Use chat, `notify`, or `steer`.
+- Pick names yourself and post them as a `steer`. Naming is the most-skipped
+  topic.
+- A text-only review verdict is a fail: fix what it names. Test keys, arrows
+  and layout stability yourself before asking for a review.
+- A digit typed as free text ("3") means that option.
