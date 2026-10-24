@@ -733,3 +733,23 @@ def test_park_last_moves_parked_runs_whole_and_keeps_order(store: Store, project
     store.mark_responded(r.id)  # revised: active again, back in place
     rows = store.tree(project=project, status=["open", "live"])
     assert [q.key for q in park_last(rows)] == [r.key, c.key, a.key, b.key]
+
+
+def test_adopt_reassigns_restamps_and_bumps(store: Store, project: str) -> None:
+    """adopt moves agent, restamps pane/session when given, bumps updated_at."""
+    q = store.ask("x", project=project, cwd=project, agent="old", pane="w1:p1", session="s1")
+    before = store.cursor()
+    new = store.adopt(q.key, agent="new", pane="w2:p2", session="s2", project=project)
+    assert (new.agent, new.pane, new.session) == ("new", "w2:p2", "s2")
+    assert store.cursor() != before
+    kept = store.adopt(q.key, agent="newer", project=project)
+    assert (kept.agent, kept.pane, kept.session) == ("newer", "w2:p2", "s2")
+
+
+def test_adopt_refuses_cleared_and_missing(store: Store, project: str) -> None:
+    q = store.ask("x", project=project, cwd=project, agent="old")
+    store.clear(keys=[q.key], project=project)
+    with pytest.raises(ValueError):
+        store.adopt(q.key, agent="new", project=project)
+    with pytest.raises(KeyError):
+        store.adopt("q99", agent="new", project=project)

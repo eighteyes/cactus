@@ -2186,6 +2186,49 @@ class Store:
             raise
         return keys
 
+    def adopt(
+        self,
+        key: str,
+        *,
+        agent: str,
+        pane: str | None = None,
+        session: str | None = None,
+        project: str,
+    ) -> Question:
+        """Hand one row to `agent` (q663), restamping `pane`/`session` when given.
+
+        For a row whose owning session died: nobody else can answer, edit or
+        clear it. Mechanism only; the CLI decides whether the owner is really
+        gone. Like `rehome` it changes `agent` (never in `monitor._signature`)
+        and bumps `updated_at` in one transaction. Refuses a `cleared` row, a
+        retired row must not come back under an owner that never asked it.
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT id, status FROM questions WHERE project = ? AND key = ?",
+                (project, key),
+            ).fetchone()
+            if row is None:
+                raise KeyError(key)
+            if row["status"] not in ("open", "live", "elaborate", "answered"):
+                raise ValueError(f"{key} is {row['status']}; only a row still in play can be adopted")
+            sets, params = ["agent = ?", "updated_at = ?"], [agent, _now()]
+            if pane:
+                sets.append("pane = ?")
+                params.append(pane)
+            if session:
+                sets.append("session = ?")
+                params.append(session)
+            self.conn.execute(
+                f"UPDATE questions SET {', '.join(sets)} WHERE id = ?", (*params, row["id"])
+            )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        return self._get_by_id(int(row["id"]))
+
 
     # ---- internals --------------------------------------------------------
 

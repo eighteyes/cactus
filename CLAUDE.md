@@ -401,6 +401,17 @@ scope.
   as a spurious `answered`/`verdict`/`asked` — a freshly started
   `--monitor --agent NEW` still sees the moved rows, as an ordinary arrival
   on its first poll.
+- `cactus adopt KEY... --agent NEW [--force]` (q663) hands rows whose owning
+  session died to NEW. `Store.adopt` sets `agent` (plus the caller's
+  `HERDR_PANE_ID`/`HERDR_SESSION` stamp when set) and bumps `updated_at` in
+  one transaction; `open`/`live`/`elaborate`/`answered` only, `cleared`
+  raises `ValueError`; `agent` stays out of `monitor._signature`; no record.
+  The CLI gates, whole call refused before any row changes (exit 1): already
+  NEW's, pane alive per `poke.pane_alive` (`herdr --session S agent list`
+  `.result.agents[].pane_id`; `CACTUS_PANE_ALIVE` template, exit 0 alive,
+  1 gone), herdr unreachable or an owned row with no pane stamp (both pass
+  with `--force`; alive never does). Unowned rows adopt freely. Missing key
+  exits 3.
 - `elaborate` (q212) is a status, not a rebuild: `status` has no CHECK
   constraint, so the new value needs only the additive `elaborate`/
   `elaborate_at` columns. `Store.answer` refuses it like `cleared`, exit 1.

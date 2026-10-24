@@ -1091,3 +1091,90 @@ def test_list_and_feed_park_last_and_response_unparks(cli):
     feed = json.loads(cli("feed").stdout)["questions"]
     assert [(r["key"], r["parked"]) for r in feed] == [("q1", False), ("q2", False)]
     assert "parked" not in cli("list", "-s", "open,live").stdout
+
+
+def _adopt_env(monkeypatch, template: str) -> None:
+    monkeypatch.setenv("CACTUS_PANE_ALIVE", template)
+
+
+def _post(cli, monkeypatch, agent: str, pane: str | None, session: str = "s1") -> None:
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    monkeypatch.delenv("HERDR_SESSION", raising=False)
+    if pane:
+        monkeypatch.setenv("HERDR_PANE_ID", pane)
+        monkeypatch.setenv("HERDR_SESSION", session)
+    r = cli("ask", "--no-wait", "q?", "-c", "a", "-c", "b", "--agent", agent)
+    assert r.returncode == 0, r.stderr
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    monkeypatch.delenv("HERDR_SESSION", raising=False)
+
+
+def test_adopt_dead_pane_restamps_from_env(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "dead")
+    _adopt_env(monkeypatch, "test {pane} = live")
+    monkeypatch.setenv("HERDR_PANE_ID", "live")
+    monkeypatch.setenv("HERDR_SESSION", "s2")
+    r = cli("adopt", "q1", "--agent", AGENT_B, "--json")
+    assert r.returncode == 0, r.stderr
+    row = json.loads(r.stdout)[0]
+    assert row == {"key": "q1", "from": AGENT_A, "to": AGENT_B, "pane": "live", "session": "s2"}
+    text = cli("get", "q1", "--json")
+    assert json.loads(text.stdout)[0]["agent"] == AGENT_B
+
+
+def test_adopt_text_output(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "dead")
+    _adopt_env(monkeypatch, "test {pane} = live")
+    r = cli("adopt", "q1", "--agent", AGENT_B)
+    assert r.returncode == 0
+    assert f"adopted q1 from {AGENT_A[:8]} (pane dead gone)" in r.stdout
+
+
+def test_adopt_live_pane_refuses_even_forced(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "live")
+    _adopt_env(monkeypatch, "test {pane} = live")
+    for extra in ([], ["--force"]):
+        r = cli("adopt", "q1", "--agent", AGENT_B, *extra)
+        assert r.returncode == 1
+        assert "pane live is alive" in r.stderr and "message that session" in r.stderr
+
+
+def test_adopt_herdr_down_needs_force(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "dead")
+    _adopt_env(monkeypatch, "sh -c 'exit 2'")
+    assert cli("adopt", "q1", "--agent", AGENT_B).returncode == 1
+    assert cli("adopt", "q1", "--agent", AGENT_B, "--force").returncode == 0
+
+
+def test_adopt_owned_without_pane_needs_force(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, None)
+    r = cli("adopt", "q1", "--agent", AGENT_B)
+    assert r.returncode == 1 and "no pane stamp" in r.stderr
+    assert cli("adopt", "q1", "--agent", AGENT_B, "--force").returncode == 0
+
+
+def test_adopt_unowned_row_adopts_freely(cli, monkeypatch, store, project):
+    store.ask("x", project=project, cwd=project)
+    r = cli("adopt", "q1", "--agent", AGENT_B)
+    assert r.returncode == 0, r.stderr
+    assert "from nobody" in r.stdout
+
+
+def test_adopt_refusals_cleared_mine_missing_and_agent_required(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, None)
+    assert cli("adopt", "q1", "--agent", AGENT_A).returncode == 1
+    assert cli("adopt", "q1").returncode == 1
+    assert cli("adopt", "q9", "--agent", AGENT_B, "--force").returncode == 3
+    cli("clear", "q1", "--agent", AGENT_A)
+    r = cli("adopt", "q1", "--agent", AGENT_B, "--force")
+    assert r.returncode == 1 and "cleared" in r.stderr
+
+
+def test_adopt_multi_key_is_all_or_nothing(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "dead")
+    _post(cli, monkeypatch, AGENT_A, "live")
+    _adopt_env(monkeypatch, "test {pane} = live")
+    r = cli("adopt", "q1", "q2", "--agent", AGENT_B)
+    assert r.returncode == 1
+    for key in ("q1", "q2"):
+        assert json.loads(cli("get", key, "--json").stdout)[0]["agent"] == AGENT_A

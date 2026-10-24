@@ -257,3 +257,46 @@ def test_poke_webhook_if_mapped_ignores_override_and_unmapped(
     monkeypatch.setenv("CACTUS_POKE_WEBHOOKS", str(tmp_path / "no-webhooks.json"))
     assert poke_mod.poke_webhook_if_mapped("agent-1") is None
     assert poke_mod.poke_webhook_if_mapped(None) is None
+
+
+_AGENT_LIST = json.dumps(
+    {"result": {"agents": [{"pane_id": "w1:p1"}, {"pane_id": "w1:p2"}]}}
+)
+
+
+def _fake_herdr_list(directory: Path, payload: str, code: int = 0) -> None:
+    exe = directory / "herdr"
+    exe.write_text(f"#!/bin/sh\necho '{payload}'\nexit {code}\n")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+
+
+def test_pane_alive_parses_herdr_agent_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CACTUS_PANE_ALIVE", raising=False)
+    _fake_herdr_list(tmp_path, _AGENT_LIST)
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    assert poke_mod.pane_alive("w1:p1", "s1") is True
+    assert poke_mod.pane_alive("w9:p9", "s1") is False
+
+
+def test_pane_alive_unknown_when_herdr_errors_or_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CACTUS_PANE_ALIVE", raising=False)
+    _fake_herdr_list(tmp_path, "{}", code=1)
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    assert poke_mod.pane_alive("w1:p1", "s1") is None
+    _fake_herdr_list(tmp_path, "not json")
+    assert poke_mod.pane_alive("w1:p1", "s1") is None
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(poke_mod, "FALLBACK_BIN_DIRS", ())
+    assert poke_mod.pane_alive("w1:p1", "s1") is None
+
+
+def test_pane_alive_override_template_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CACTUS_PANE_ALIVE", "test {pane} = live")
+    assert poke_mod.pane_alive("live", "s") is True
+    assert poke_mod.pane_alive("dead", "s") is False
+    monkeypatch.setenv("CACTUS_PANE_ALIVE", "sh -c 'exit 2'")
+    assert poke_mod.pane_alive("live", "s") is None

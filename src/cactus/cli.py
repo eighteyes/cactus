@@ -121,6 +121,8 @@ SYNOPSIS
                              how answers reach this agent (herdr pane prompt or webhook);
                              bare prints the entry, exit 3 if none
   cactus rehome --agent NEW [--json]
+  cactus adopt KEY... --agent NEW [--force] [--json]
+                             take a row whose owner's herdr pane is gone
   cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
   cactus --monitor --json --agent ID [--once]  plain event stream; --once exits on the first event
   cactus where | projects | threads
@@ -1623,6 +1625,74 @@ def cmd_rehome(args: argparse.Namespace, store: Store, project: str, cwd: str) -
     return EXIT_OK
 
 
+def cmd_adopt(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Hand rows whose owning session died to `--agent` (q663).
+
+    Refuses a live owner (message that session instead), an unreachable herdr
+    and an owned row with no pane stamp, since none of those prove the owner
+    is gone; `--force` overrides the last two, never a live pane. One refused
+    key refuses the whole call, so a batch never adopts part of itself. Stamps
+    the caller's own HERDR_PANE_ID/HERDR_SESSION the way `ask` does.
+    """
+    from . import poke
+
+    try:
+        refs = [(k, *store.resolve_ref(k, project)) for k in args.keys]
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    rows = [(raw, store.get(rkey, project=rproj)) for raw, rproj, rkey in refs]
+    missing = [raw for raw, q in rows if q is None]
+    if missing:
+        print(f"cactus: no such question: {', '.join(missing)}", file=sys.stderr)
+        return EXIT_EMPTY
+
+    notes: dict[str, str] = {}
+    refused: list[str] = []
+    for raw, q in rows:
+        if q.status == "cleared":
+            refused.append(f"{raw} is cleared; reopen it instead")
+        elif q.agent == args.agent:
+            refused.append(f"{raw} is already yours")
+        elif q.agent is None:
+            notes[q.key] = "unowned"
+        elif not q.pane:
+            if args.force:
+                notes[q.key] = "no pane stamp, forced"
+            else:
+                refused.append(f"{raw} has no pane stamp, so its owner cannot be shown dead (--force overrides)")
+        else:
+            alive = poke.pane_alive(q.pane, q.session)
+            if alive:
+                refused.append(f"{raw}: pane {q.pane} is alive; message that session instead")
+            elif alive is None and not args.force:
+                refused.append(f"{raw}: cannot reach herdr to check pane {q.pane} (--force overrides)")
+            else:
+                notes[q.key] = f"pane {q.pane} gone" if alive is False else f"pane {q.pane} unchecked, forced"
+    if refused:
+        for line in refused:
+            print(f"cactus: refusing to adopt {line}", file=sys.stderr)
+        return EXIT_ERROR
+
+    pane = os.environ.get("HERDR_PANE_ID") or None
+    session = os.environ.get("HERDR_SESSION") or None
+    out = []
+    for (raw, q), (_, rproj, rkey) in zip(rows, refs):
+        try:
+            new = store.adopt(rkey, agent=args.agent, pane=pane, session=session, project=rproj)
+        except (KeyError, ValueError) as exc:
+            print(f"cactus: {_msg(exc)}", file=sys.stderr)
+            return EXIT_ERROR
+        out.append({"key": q.key, "from": q.agent, "to": new.agent,
+                    "pane": new.pane, "session": new.session})
+        if not args.json:
+            print(f"adopted {q.key} from {(q.agent or 'nobody')[:8]} ({notes[q.key]})")
+    if args.json:
+        json.dump(out, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    return EXIT_OK
+
+
 def cmd_threads(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     rows = store.threads(project=project, all_projects=args.all)
     if args.json:
@@ -2147,6 +2217,14 @@ def build_parser() -> argparse.ArgumentParser:
               help="move this session's rows from a prior identity onto --agent")
     rh.add_argument("--agent", required=True, help="the identity to move matching rows onto")
     rh.set_defaults(fn=cmd_rehome)
+
+    ad = verb("adopt", parents=[common],
+              help="take rows whose owning session is gone (its herdr pane no longer exists)")
+    ad.add_argument("keys", nargs="+", metavar="KEY")
+    ad.add_argument("--agent", required=True, help="the identity that takes the rows")
+    ad.add_argument("--force", action="store_true",
+                    help="adopt when liveness cannot be checked (herdr down, no pane stamp)")
+    ad.set_defaults(fn=cmd_adopt)
 
     mg = verb("migrate", parents=[common], help="apply pending destructive-shaped table rebuilds")
     mg.add_argument("--yes", action="store_true", help="actually do it")
