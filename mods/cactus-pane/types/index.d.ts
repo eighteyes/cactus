@@ -5,6 +5,8 @@ export type Answer = {
   text: string | null
   skipped: boolean
   created_at: string
+  // Answered with --now: wake at once, no cooldown. Absent unless set.
+  now?: boolean
 }
 
 export type Step = { idx: number; n: number; text: string; done: boolean }

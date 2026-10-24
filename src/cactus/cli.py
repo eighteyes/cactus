@@ -106,7 +106,7 @@ SYNOPSIS
   cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
   cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X] [-f PATH]... [--agent ID]
   cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N] [-f PATH]... [--agent ID]
-  cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
+  cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss] [--now]
   cactus elaborate KEY [HINT] [--decompose | --withdraw]   human verb, no --agent
   cactus write KEY [INPUT...]        human verb: ask the owner to write about the row in chat
   cactus undo KEY                    human verb: withdraw the latest answer/verdict
@@ -769,6 +769,7 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             selected=args.select or [],
             text=text,
             skipped=args.skip or args.dismiss,
+            wake_now=args.now,
         )
     except AlreadyAnswered as exc:
         # Exit 3, not 1: a projector renders this as a stale cell rather than
@@ -2101,6 +2102,8 @@ def build_parser() -> argparse.ArgumentParser:
     skip_grp.add_argument("--skip", action="store_true", help="record a deliberate non-answer")
     skip_grp.add_argument("--dismiss", action="store_true",
                           help="dismiss a notify row without choosing (alias of --skip)")
+    ans.add_argument("--now", action="store_true",
+                     help="wake the agent at once; the pane skips its cooldown")
     ans.set_defaults(fn=cmd_answer)
 
     el = verb("elaborate", help="ask the owner to rewrite a row, or withdraw the request")

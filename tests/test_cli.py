@@ -174,6 +174,26 @@ def test_answer_flow_invalid_label_then_ok_then_already_answered(cli):
     assert r_again.returncode == 3
 
 
+def test_answer_now_round_trips_through_get_json(cli):
+    cli("ask", "--no-wait", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "free", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "decline", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "plain", "-c", "a", "--agent", AGENT_A)
+
+    assert cli("answer", "q1", "-s", "a", "--now").returncode == 0
+    assert cli("answer", "q2", "some words", "--now").returncode == 0
+    assert cli("answer", "q3", "--skip", "--now").returncode == 0
+    assert cli("answer", "q4", "-s", "a").returncode == 0
+
+    def last(key):
+        return json.loads(cli("get", key, "--json").stdout)[0]["answers"][-1]
+
+    assert last("q1")["now"] is True
+    assert last("q2")["now"] is True
+    assert last("q3")["now"] is True and last("q3")["skipped"] is True
+    assert "now" not in last("q4")
+
+
 def test_clear_ownership_then_reopen_restores_answered(cli):
     cli("ask", "--no-wait", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
     cli("answer", "q1", "-s", "a")

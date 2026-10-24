@@ -753,3 +753,25 @@ def test_adopt_refuses_cleared_and_missing(store: Store, project: str) -> None:
         store.adopt(q.key, agent="new", project=project)
     with pytest.raises(KeyError):
         store.adopt("q99", agent="new", project=project)
+
+
+def test_answer_now_survives_reload_and_old_answers_table_loads(
+    store: Store, project: str, scratch_env: dict[str, str]
+) -> None:
+    """`now` is stored on the answer; a database from before the column opens clean."""
+    q = store.ask("pick", project=project, cwd=project, agent=AGENT, choices=[Choice("a")])
+    done = store.answer(q.key, project=project, selected=["a"], wake_now=True)
+    assert done.answer is not None and done.answer.now is True
+    assert done.answer.as_dict()["now"] is True
+
+    # Drop the column the way a pre-`now` database lacks it, then reopen.
+    store.conn.execute("ALTER TABLE answers DROP COLUMN now")
+    store.close()
+    old = Store(scratch_env["CACTUS_DB"])
+    try:
+        row = old.get(q.key, project=project)
+        assert row is not None and row.answer is not None
+        assert row.answer.now is False
+        assert "now" not in row.answer.as_dict()
+    finally:
+        old.close()

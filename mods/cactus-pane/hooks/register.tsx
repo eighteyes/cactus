@@ -170,11 +170,16 @@ async function refresh($: EngineInterface): Promise<void> {
 }
 
 // A row's state as the wake reads it; `sig` also tells a re-answer apart.
-type Seen = { status: string; n: number; sig: string }
+type Seen = { status: string; n: number; sig: string; now: boolean }
 
 function seen(r: Row): Seen {
   const last = r.answers[r.answers.length - 1]
-  return { status: r.status, n: r.answers.length, sig: `${r.status}:${r.answers.length}:${last?.created_at ?? ''}` }
+  return {
+    status: r.status,
+    n: r.answers.length,
+    sig: `${r.status}:${r.answers.length}:${last?.created_at ?? ''}`,
+    now: last?.now === true,
+  }
 }
 
 // This session's own rows as last seen: key -> status and verdict count.
@@ -270,6 +275,11 @@ async function wake($: EngineInterface, list: Row[]): Promise<void> {
     // A move back to open/live with no new verdict is this agent's own edit
     // answering an elaborate request: never wake on it (q334's echo rule).
     if (after === undefined || after.n > before.n || (after.status !== before.status && !QUIET.has(after.status))) {
+      // An answer made with --now has no undo to wait out: due at once.
+      if (await answeredNow($, key, after, before)) {
+        pending.set(key, { before, sig, due: at })
+        continue
+      }
       pending.set(key, { before, sig, due: at + cooldownMs })
       if (cooldownMs > 0) $.clock.after(cooldownMs, () => poll($))
       await quiet($)
@@ -277,6 +287,21 @@ async function wake($: EngineInterface, list: Row[]): Promise<void> {
   }
   watched = { sid, rows: now }
   await flush($)
+}
+
+// Whether this move is a new answer made with --now. A one-shot row leaves the
+// feed once answered, so its answer is read with `get`; a persistent row is
+// still in the feed and carries it.
+async function answeredNow($: EngineInterface, key: string, after: Seen | undefined, before: Seen): Promise<boolean> {
+  if (after !== undefined) return after.n > before.n && after.now
+  try {
+    const got = await $.process.run(['cactus', 'get', key, '--json'], { cwd: await $.session.root() })
+    const parsed: unknown = got.exitCode === 0 ? JSON.parse(got.stdout) : null
+    const row = Array.isArray(parsed) ? (parsed[0] as Row | undefined) : undefined
+    return row?.status === 'answered' && row.answers.length > before.n && row.answers[row.answers.length - 1]?.now === true
+  } catch {
+    return false
+  }
 }
 
 // Skips the cooldown: every held move is due now.

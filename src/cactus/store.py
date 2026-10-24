@@ -160,7 +160,8 @@ CREATE TABLE IF NOT EXISTS answers (
     selected     TEXT    NOT NULL DEFAULT '[]',
     text         TEXT,
     skipped      INTEGER NOT NULL DEFAULT 0,
-    created_at   TEXT    NOT NULL
+    created_at   TEXT    NOT NULL,
+    now          INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
@@ -296,14 +297,21 @@ class Answer:
     text: str | None = None
     skipped: bool = False
     created_at: str = ""
+    # Wake the agent at once: a surface with no undo asks the pane to skip
+    # its cooldown. Left out of the dict when false, so older readers and
+    # every existing answer render exactly as before.
+    now: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "selected": self.selected,
             "text": self.text,
             "skipped": self.skipped,
             "created_at": self.created_at,
         }
+        if self.now:
+            d["now"] = True
+        return d
 
 
 @dataclass
@@ -602,6 +610,9 @@ class Store:
             )
         if "source" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN source TEXT")
+        acols = {r["name"] for r in self.conn.execute("PRAGMA table_info(answers)")}
+        if "now" not in acols:
+            self.conn.execute("ALTER TABLE answers ADD COLUMN now INTEGER NOT NULL DEFAULT 0")
         if "recommend" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN recommend TEXT")
         if "confidence" not in cols:
@@ -722,10 +733,11 @@ class Store:
                     selected     TEXT    NOT NULL DEFAULT '[]',
                     text         TEXT,
                     skipped      INTEGER NOT NULL DEFAULT 0,
-                    created_at   TEXT    NOT NULL
+                    created_at   TEXT    NOT NULL,
+                    now          INTEGER NOT NULL DEFAULT 0
                 )""",
-                """INSERT INTO answers_new (id, question_id, selected, text, skipped, created_at)
-                   SELECT id, question_id, selected, text, skipped, created_at FROM answers""",
+                """INSERT INTO answers_new (id, question_id, selected, text, skipped, created_at, now)
+                   SELECT id, question_id, selected, text, skipped, created_at, now FROM answers""",
                 "DROP TABLE answers",
                 "ALTER TABLE answers_new RENAME TO answers",
             ):
@@ -1044,8 +1056,10 @@ class Store:
         selected: Sequence[str] | None = None,
         text: str | None = None,
         skipped: bool = False,
+        wake_now: bool = False,
     ) -> Question:
-        """Append an answer.
+        """Append an answer. `wake_now` asks the pane to wake the agent without
+        waiting out its cooldown.
 
         A one-shot question flips to `answered`. A persistent one stays `live`
         and keeps its earlier verdicts: the append-only log is what lets a
@@ -1123,10 +1137,11 @@ class Store:
         try:
             self.conn.execute(
                 """
-                INSERT INTO answers (question_id, selected, text, skipped, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO answers (question_id, selected, text, skipped, created_at, now)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (q.id, json.dumps(list(selected or [])), text, 1 if skipped else 0, now),
+                (q.id, json.dumps(list(selected or [])), text, 1 if skipped else 0, now,
+                 1 if wake_now else 0),
             )
             self.conn.execute(
                 "UPDATE questions SET status = ?, updated_at = ?, "
@@ -2276,6 +2291,7 @@ class Store:
                 text=a["text"],
                 skipped=bool(a["skipped"]),
                 created_at=a["created_at"],
+                now=bool(a["now"]),
             )
             for a in arows
         ]

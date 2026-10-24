@@ -60,7 +60,7 @@ const PANE = {
   },
 } as const
 
-function fakeCactus(row: typeof ROW, calls: string[][]) {
+function fakeCactus(row: typeof ROW, calls: string[][], answerExtra: object = {}) {
   let answered = false
   return (argv: readonly string[]) => {
     calls.push([...argv])
@@ -73,7 +73,7 @@ function fakeCactus(row: typeof ROW, calls: string[][]) {
       const settled = {
         ...row,
         status: 'answered',
-        answers: [{ selected: [label], text: null, skipped: false, created_at: '' }],
+        answers: [{ selected: [label], text: null, skipped: false, created_at: '', ...answerExtra }],
       }
       return {
         exitCode: 0,
@@ -160,8 +160,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-async function mounted($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], row: typeof ROW, calls: string[][], surface: 'terminal' | 'desktop') {
-  const fake = fakeCactus(row, calls)
+async function mounted($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], row: typeof ROW, calls: string[][], surface: 'terminal' | 'desktop', answerExtra: object = {}) {
+  const fake = fakeCactus(row, calls, answerExtra)
   on('process.run', (_$, e) => ({ value: fake(e.argv) }))
   on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
@@ -548,6 +548,21 @@ test('n inside the cooldown sends the wake at once', async ($, on) => {
   await clock.advance(1_000)
   expect(woke).toEqual([])
   await ui.press({ key: 'send' })
+  expect(woke.length).toBe(1)
+  await clock.advance(30_000)
+  expect(woke.length).toBe(1)
+})
+
+test('a now:true answer wakes with no clock advance', async ($, on) => {
+  const calls: string[][] = []
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const clock = mock.clock(on)
+  const ui = await mounted($, on, ROW, calls, 'terminal', { now: true })
+  await ui.press({ key: 'q7:local' })
   expect(woke.length).toBe(1)
   await clock.advance(30_000)
   expect(woke.length).toBe(1)
