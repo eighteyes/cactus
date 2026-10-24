@@ -2,6 +2,8 @@
 // Responsibilities:
 // - Show the count of open questions as the status item's title, blank when
 //   zero.
+// - Show a disabled hotkey-failure line (and the defaults override hint) at the
+//   top of the menu when the global hotkey could not register.
 // - Provide a menu with "Show / hide (⌃Space)" (toggles the panel) and "Quit".
 
 import AppKit
@@ -13,12 +15,25 @@ final class StatusItemController {
     private var cancellable: AnyCancellable?
     private let onToggle: () -> Void
 
-    init(poller: Poller, onToggle: @escaping () -> Void) {
+    init(poller: Poller, hotKeyFailure: String? = nil, onToggle: @escaping () -> Void) {
         self.onToggle = onToggle
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = ""
 
         let menu = NSMenu()
+        if let hotKeyFailure {
+            let failItem = NSMenuItem(title: hotKeyFailure, action: nil, keyEquivalent: "")
+            failItem.isEnabled = false
+            menu.addItem(failItem)
+            let hintItem = NSMenuItem(
+                title: "Override: defaults write ai.cactus.mac hotkeyKeyCode/hotkeyModifiers",
+                action: nil,
+                keyEquivalent: ""
+            )
+            hintItem.isEnabled = false
+            menu.addItem(hintItem)
+            menu.addItem(NSMenuItem.separator())
+        }
         let showItem = NSMenuItem(
             title: "Show / hide (⌃Space)",
             action: #selector(showPressed),

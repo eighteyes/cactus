@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel?.toggle()
         }
 
-        statusItemController = StatusItemController(poller: poller) { [weak panel] in
+        statusItemController = StatusItemController(poller: poller, hotKeyFailure: hotKey.failure) { [weak panel] in
             panel?.toggle()
         }
 
