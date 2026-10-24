@@ -236,6 +236,43 @@ test('answering this session’s own row wakes it with the verdict', async ($, o
   expect(calls).toContainEqual(['cactus', 'clear', 'q7', '--agent', 'a1'])
 })
 
+test('a row of this session going stale wakes it once to reassert or clear', async ($, on) => {
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  let feeds = 0
+  on('process.run', (_$, e) => {
+    if (e.argv[1] !== 'feed') return { value: { exitCode: 0, stdout: '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    feeds += 1
+    // Fresh on the first feed, stale from the second on, then reasserted.
+    const row = feeds === 1 ? ROW : feeds < 4 ? { ...ROW, stale: true, idle_hours: 26 } : ROW
+    return {
+      value: {
+        exitCode: 0,
+        stdout: JSON.stringify({ cursor: { n: 0 }, questions: [row] }),
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  // Each run polls once: fresh, stale, still stale, reasserted, stale again.
+  const clock = mock.clock(on)
+  for (let i = 0; i < 3; i++) await $.command.run(RUN)
+  await clock.advance(0)
+  expect(feeds).toBe(3)
+  expect(woke.length).toBe(1)
+  expect(woke[0]).toContain('q7 Which auth backend?')
+  expect(woke[0]).toContain('untouched 26h')
+  expect(woke[0]).toContain('cactus edit KEY --agent a1')
+})
+
 test('j and k move the selection between questions', async ($, on) => {
   const calls: string[][] = []
   const two = { ...ROW }

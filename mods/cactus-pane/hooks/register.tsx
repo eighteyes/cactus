@@ -6,6 +6,7 @@
 // - acts through the `cactus` CLI, so cli.py stays the only validator
 // - /cactus-pane opens the pane focused; it also opens unasked at session start
 // - wakes this session when its own rows move, after a cooldown an undo cancels (n skips it), and turns its cactus waits off
+// - wakes the session once when one of its rows goes stale: reassert (bare edit) or clear
 // - h opens settings: autoshow at session start, wake cooldown; kept in $.store
 // - Esc out of a text line takes the keys back onto the row header; Esc on a header leaves
 
@@ -155,6 +156,8 @@ async function refresh($: EngineInterface): Promise<void> {
     return
   }
   const doc = JSON.parse(ran.stdout) as { cursor: unknown; questions: Row[] }
+  // Staleness moves with the clock, not the cursor: checked on every feed.
+  await nudgeStale($, doc.questions).catch(() => undefined)
   const cursor = JSON.stringify(doc.cursor)
   if (cursor === lastCursor) return
   lastCursor = cursor
@@ -262,6 +265,42 @@ async function sendNow($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
   for (const [key, p] of pending) pending.set(key, { ...p, due: at })
   await flush($)
+}
+
+// This session's own stale rows already nudged. Seeded on first sight, so the
+// rows the session-start hook listed are not repeated; a reassert (a bare edit)
+// or an answer restarts the clock, the row leaves stale, and leaves this set.
+let nudged: { sid: string; keys: Set<string> } | null = null
+
+// Wakes the session when one of its rows goes stale: reassert it or clear it.
+async function nudgeStale($: EngineInterface, list: Row[]): Promise<void> {
+  const sid = await $.session.id()
+  const stale = list.filter(r => r.agent === sid && r.stale === true)
+  const keys = new Set(stale.map(r => r.key))
+  if (nudged === null || nudged.sid !== sid) {
+    nudged = { sid, keys }
+    return
+  }
+  for (const key of nudged.keys) if (!keys.has(key)) nudged.keys.delete(key)
+  const fresh = stale.filter(r => !nudged?.keys.has(r.key))
+  if (fresh.length === 0) return
+  for (const r of fresh) nudged.keys.add(r.key)
+  const lines = fresh.map(r => `${r.key} ${firstLine(r.text)}\n  stale: untouched ${idleLabel(r.idle_hours ?? 0)}`)
+  // Off the clock, not inline: a poll from /cactus-pane runs inside a command
+  // hook, where a submit is refused and the nudge would be lost.
+  $.clock.after(0, () => void submitNudge($, sid, lines).catch(() => undefined))
+}
+
+async function submitNudge($: EngineInterface, sid: string, lines: string[]): Promise<void> {
+  await $.prompt.submit({
+    text: [
+      ...lines,
+      '',
+      `Still needed and unanswered: reassert with a bare \`cactus edit KEY --agent ${sid}\` (restarts the clock).`,
+      `Dead: \`cactus clear KEY --agent ${sid}\`.`,
+    ].join('\n'),
+    asUser: true,
+  })
 }
 
 // Sends every held move whose cooldown ran out, and shows the rest counting down.
