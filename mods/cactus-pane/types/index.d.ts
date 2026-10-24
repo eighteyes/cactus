@@ -5,6 +5,8 @@ export type Answer = {
   text: string | null
   skipped: boolean
   created_at: string
+  // Answered with --now: wake at once, no cooldown. Absent unless set.
+  now?: boolean
 }
 
 export type Step = { idx: number; n: number; text: string; done: boolean }
@@ -47,7 +49,13 @@ export type Row = {
   idle_hours?: number
   // A review a pass closed (q601): cleared by the verdict, not by a decline.
   closed_by_pass?: boolean
+  // A review/plan waiting on the agent after the human's verdict (q660); the feed sorts it last.
+  parked?: boolean
 }
+
+// Kept in $.store across sessions. cooldown: seconds a wake waits so undo can cancel it,
+// or 'idle': until the pane sits quiet and the agent's turn has ended.
+export type PaneSettings = { autoshow: boolean; cooldown: number | 'idle' }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -61,6 +69,10 @@ declare module 'claude-code' {
       modes: Record<string, 'elaborate'>
       flips: Record<string, true>
       drafts: Record<string, string>
+      settings: PaneSettings
+      settingsOpen: boolean
+      // Seconds left per held wake; -1 once due but waiting out the agent's turn.
+      held: Record<string, number>
     }
   }
 }

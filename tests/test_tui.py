@@ -51,6 +51,7 @@ from cactus.fieldproc import ProcessField, text_rows
 from cactus.store import Choice, Store
 from cactus.scope import project_label
 from cactus.tui import CactusApp, FieldView, QuestionBlock
+from cactus import tui as tui_module
 
 # The projects pane (P / I / A) is a separate change; until it lands these
 # tests skip rather than fail, and start running the moment it does.
@@ -3043,10 +3044,10 @@ async def test_open_site_binds_only_on_a_row_with_a_site(
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "w" in keybar_keys(app)
-        assert "w" not in footer_keys(app)
+        assert "W" in keybar_keys(app)
+        assert "W" not in footer_keys(app)
         assert "site: https://example.com/a" in str(app.query_one("#card-text", Static).content)
-        await pilot.press("w")
+        await pilot.press("W")
         await pilot.pause()
         assert app.flash == "opened https://example.com/a"
 
@@ -3063,8 +3064,8 @@ async def test_open_site_flashes_on_a_row_without_one(
     app = CactusApp(store, project=project)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "w" not in keybar_keys(app)
-        await pilot.press("w")
+        assert "W" not in keybar_keys(app)
+        await pilot.press("W")
         await pilot.pause()
         assert app.flash == f"{q.key} has no site"
 
@@ -3411,3 +3412,152 @@ async def test_f_uses_the_viewer_setting_when_no_env_pager(store: Store, project
         await pilot.press("f")
         await pilot.pause()
     assert log.read_text().split() == [str(f)]
+
+
+async def test_figlet_banner_follows_auto_advance_to_next_project(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = tmp_path / "xdg-config" / "cactus" / "tui.json"
+    settings.write_text('{"field": false, "figlet_header": true}', encoding="utf-8")
+    monkeypatch.setattr(tui_module, "_figlet_project_name", lambda label: f"BANNER {label}")
+    other = tmp_path / "other"
+    other.mkdir()
+    other_project = str(other)
+    last = store.ask("last here", project=project, cwd=project, agent=AGENT)
+    store.ask("waiting elsewhere", project=other_project, cwd=other_project, agent=AGENT)
+
+    app = CactusApp(store, project=None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.current_project = project
+        await app._reload(force=True)
+        await pilot.pause()
+        banner = app.query_one("#project-banner", Static)
+        assert f"BANNER {project_label(project)}" in str(banner.render())
+
+        await pilot.press("s")
+        await pilot.pause()
+        assert store.get(last.key, project=project).status != "open"
+        assert app.current_project == other_project
+        assert f"BANNER {project_label(other_project)}" in str(banner.render())
+
+
+async def test_parked_row_sorts_last_dims_and_advance_lands_on_the_ask(store: Store, project: str) -> None:
+    rq = _review(store, project)
+    ask = store.ask("pick", project=project, cwd=project, agent=AGENT,
+                    choices=[Choice("a"), Choice("b")])
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert [q.key for q in app.questions] == [rq.key, ask.key]
+        assert app.focused_key == rq.key
+
+        store.answer(rq.key, project=project, selected=["fail"])
+        await app._advance_after(rq.key)
+        await pilot.pause()
+        assert [q.key for q in app.questions] == [ask.key, rq.key]
+        assert app.focused_key == ask.key
+        block = app.query_one(f"#row-{rq.key}", QuestionBlock)
+        assert block.has_class("-parked")
+        assert "parked" in QuestionBlock._kind_line(app.questions[1], False)
+        assert "1 parked" in str(app.query_one("#status-bar", Static).content)
+
+        app.focused_key = rq.key
+        app._rebuild_card()
+        assert "parked — waiting on the agent" in str(app.query_one("#card-text", Static).content)
+
+        # The agent responds: revised, active again, back in its place.
+        store.mark_responded(rq.id)
+        await app._reload(force=True)
+        await pilot.pause()
+        assert [q.key for q in app.questions] == [rq.key, ask.key]
+        assert not app.query_one(f"#row-{rq.key}", QuestionBlock).has_class("-parked")
+
+
+async def test_plan_verdict_parks_and_all_parked_lands_on_first(store: Store, project: str) -> None:
+    pq = store.ask("plan", project=project, cwd=project, agent=AGENT, kind="text", act="plan")
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        store.answer(pq.key, project=project, text="rework it")
+        await app._advance_after(pq.key)
+        await pilot.pause()
+        assert app.questions[0].parked
+        assert app.focused_key == pq.key
+
+
+async def test_w_asks_the_owner_to_write_with_a_focus_line(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _poke_log(tmp_path, monkeypatch)
+    q = store.ask("which db?", project=project, cwd=project, agent=AGENT, pane="w1:p1")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert keybar_keys(app).get("w") == "write"
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.elaborating and app.writing
+        await pilot.press(*"cost")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.flash == "write asked of w1:p1"
+        assert not app.elaborating
+
+    target, message = log.read_text().rstrip("\n").split("|", 1)
+    assert target == "w1:p1"
+    assert q.key in message and "which db?" in message
+    assert message.endswith("Focus: cost")
+
+
+async def test_w_with_empty_input_sends_no_focus_line(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _poke_log(tmp_path, monkeypatch)
+    store.ask("which db?", project=project, cwd=project, agent=AGENT, pane="w1:p1")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.flash == "write asked of w1:p1"
+
+    assert "Focus" not in log.read_text()
+
+
+async def test_w_escape_sends_nothing(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _poke_log(tmp_path, monkeypatch)
+    store.ask("which db?", project=project, cwd=project, agent=AGENT, pane="w1:p1")
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("w")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.elaborating
+
+    assert not log.exists()
+
+
+async def test_w_flashes_on_an_unreachable_row(
+    store: Store, project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CACTUS_POKE")
+    q = store.ask("orphan", project=project, cwd=project, agent=AGENT)
+
+    app = CactusApp(store, project=project)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "w" not in keybar_keys(app)
+        await pilot.press("w")
+        await pilot.pause()
+        assert app.flash == f"{q.key} has no agent to write to"
+        assert not app.elaborating

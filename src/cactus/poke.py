@@ -363,6 +363,43 @@ def reachable(agent: str | None, pane: str | None) -> bool:
     return webhook_entry(agent) is not None
 
 
+def pane_alive(pane: str | None, session: str | None, timeout: float = 5.0) -> bool | None:
+    """Is `pane` still listed by herdr in `session`? (q663)
+
+    True when `herdr agent list` names it, False when herdr answered without
+    it, None when herdr is missing, errored or timed out: unknown, so the
+    caller must not call the owner dead. `CACTUS_PANE_ALIVE` is a command
+    template (`{pane}`, `{session}`) that replaces the lookup: exit 0 alive,
+    1 gone, anything else unknown.
+    """
+    if not pane:
+        return None
+    override = os.environ.get("CACTUS_PANE_ALIVE")
+    if override:
+        argv = [p.replace("{pane}", pane).replace("{session}", session or "")
+                for p in shlex.split(override)]
+    else:
+        argv = _herdr_argv("herdr agent list", session)
+    exe = resolve_executable(argv[0]) if argv else None
+    if exe is None:
+        return None
+    try:
+        done = subprocess.run(
+            [exe, *argv[1:]], capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if override:
+        return {0: True, 1: False}.get(done.returncode)
+    if done.returncode != 0:
+        return None
+    try:
+        agents = json.loads(done.stdout)["result"]["agents"]
+        return pane in {a.get("pane_id") for a in agents}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 class Visited(NamedTuple):
     """What `visit` did: the focus command, and why the window was not raised."""
 
@@ -459,3 +496,18 @@ def visit(pane: str | None, *, session: str | None = None, timeout: float = 5.0)
     except PokeError as exc:
         return Visited(ran, str(exc))
     return Visited(ran)
+
+
+WRITE_TEXT_CAP = 300
+
+
+def write_message(key: str, project: str, text: str, focus: str = "") -> str:
+    """The nudge behind `cactus write` / TUI `w`: ask the owning agent to write
+    about a question in its own chat, with optional human `focus`. Row text is
+    verbatim, whitespace-collapsed and capped at WRITE_TEXT_CAP characters."""
+    body = " ".join(text.split())
+    if len(body) > WRITE_TEXT_CAP:
+        body = body[:WRITE_TEXT_CAP].rstrip() + "…"
+    msg = f'cactus {key} ({project}): write about this question here in chat — "{body}"'
+    focus = " ".join(focus.split())
+    return f"{msg}\nFocus: {focus}" if focus else msg

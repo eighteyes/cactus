@@ -26,7 +26,7 @@ from . import __version__, tradeoffs
 from .scope import project_display, project_label, resolve_project
 from .store import (ACTS, ACT_SHAPES, CONFIDENCE, CONFIDENCE_GLYPH,
                     DECOMPOSE_INSTRUCTION, DEFAULT_BLOCKED, AlreadyAnswered, Answer, Choice,
-                    Question, Store, default_db_path)
+                    Question, Store, default_db_path, park_last)
 
 # Exit codes are contract: agents and hooks branch on them. 2 is reserved for
 # a --wait timeout, so argparse usage errors are forced to 1 (_ArgumentParser).
@@ -107,8 +107,9 @@ SYNOPSIS
   cactus list [-s STATUS] [-t THREAD] [--act A] [--agent ID] [SCOPE]
   cactus review KEY [--look-at X] [--run CMD] [--pass X] [--fail X] [--then X] [-f PATH]... [--agent ID]
   cactus plan KEY [--step TEXT]... [--reset-steps] [--done N] [--undone N] [-f PATH]... [--agent ID]
-  cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss]
+  cactus answer KEY [TEXT] [-s LABEL]... [--skip | --dismiss] [--now]
   cactus elaborate KEY [HINT] [--decompose | --withdraw]   human verb, no --agent
+  cactus write KEY [INPUT...]        human verb: ask the owner to write about the row in chat
   cactus undo KEY                    human verb: withdraw the latest answer/verdict
   cactus exec KEY                    human verb: run the row's command, record the result
   cactus edit KEY --agent ID [--text T] [--context C] [-c LABEL[: DESC]]... [-f PATH]... [--site URL]
@@ -121,6 +122,8 @@ SYNOPSIS
                              how answers reach this agent (herdr pane prompt or webhook);
                              bare prints the entry, exit 3 if none
   cactus rehome --agent NEW [--json]
+  cactus adopt KEY... --agent NEW [--force] [--json]
+                             take a row whose owner's herdr pane is gone
   cactus feed --json [--act A] [--agent ID] [SCOPE] [-t T] [-s S] [--here]
   cactus --monitor --json --agent ID [--once]  plain event stream; --once exits on the first event
   cactus where | projects | threads
@@ -166,6 +169,19 @@ FORMATTING
   would wrap past that. Decompose a larger decision into follow-up questions.
   Hard-wrap context and choice descriptions at 80 columns, and keep labels
   short enough to leave room for their descriptions.
+
+ASKING WELL
+  2-3 options: the human takes the recommendation 79% at 2, 67% at 3, 51% at
+  4+; declines rise at 4+.
+  Always --recommend, honest --confidence: high is followed 79%, med 71%,
+  low 59%.
+  Options that can combine: offer "both"/"all" or use --multi; scope widens.
+  No progress polls or "what did you mean?" on the board (the real declines):
+  use chat, notify, or steer.
+  Pick names yourself; post them as a steer (most-skipped topic).
+  A text-only review verdict is a fail: fix what it names. Test keys, arrows
+  and layout stability before asking for a review.
+  A digit typed as free text ("3") means that option.
 
 STAMPS
   workspace tab pane session   from HERDR_WORKSPACE_ID HERDR_TAB_ID
@@ -233,6 +249,8 @@ def _print_questions(questions: Sequence[Question], *, as_json: bool, show_proje
         head = f"{q.key}\t{q.status}\t"
         if q.stale():
             head += f"stale {q.idle_label()}\t"
+        if q.parked:
+            head += "parked\t"
         if show_project:
             head += f"[{project_display(q.project)}]\t"
         if q.thread:
@@ -731,6 +749,7 @@ def cmd_list(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         tab=args.tab,
         pane=args.pane,
     )
+    questions = park_last(questions)
     if not questions:
         if args.json:
             print("[]")
@@ -751,6 +770,7 @@ def cmd_answer(args: argparse.Namespace, store: Store, project: str, cwd: str) -
             selected=args.select or [],
             text=text,
             skipped=args.skip or args.dismiss,
+            wake_now=args.now,
         )
     except AlreadyAnswered as exc:
         # Exit 3, not 1: a projector renders this as a stale cell rather than
@@ -1385,6 +1405,36 @@ def cmd_view(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
     return EXIT_OK
 
 
+def cmd_write(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Ask the row's owning agent to write about it in its chat (TUI `w`).
+
+    A human verb: no --agent, no ownership gate. Nothing is stored on the row.
+    """
+    from .poke import PokeError, poke, reachable, write_message
+
+    q = _human_row(args, store, project)
+    if isinstance(q, int):
+        return q
+    if q.status == "cleared":
+        print(f"cactus: {q.key} is cleared", file=sys.stderr)
+        return EXIT_ERROR
+    if not reachable(q.agent, q.pane):
+        print(f"cactus: {q.key} has no agent to reach", file=sys.stderr)
+        return EXIT_ERROR
+    message = write_message(q.key, project_label(q.project), q.text, " ".join(args.input))
+    try:
+        poke(q.agent, pane=q.pane, session=q.session, message=message, webhook=False)
+    except PokeError as exc:
+        print(f"cactus: {q.key}: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.json:
+        json.dump({"key": q.key, "sent": True, "message": message}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        print(f"write asked of {q.pane or q.agent}: {message}")
+    return EXIT_OK
+
+
 def cmd_history(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
     """A project's answered and cleared rows, newest verdict first (TUI `a`)."""
     if args.project:
@@ -1475,6 +1525,7 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
         tab=args.tab,
         pane=args.pane,
     )
+    questions = park_last(questions)
     mid, mts, count = store.cursor()
     # Per-agent rollup of rows still waiting on a human. A board paints a cell
     # by whether its agent is blocked; without this it walks every row to learn
@@ -1490,8 +1541,8 @@ def cmd_feed(args: argparse.Namespace, store: Store, project: str, cwd: str) -> 
             "count": count,
             "blocked": blocked,
         },
-        # Ordered by rowid. A projector may assign board letters from this
-        # order and rely on it not shifting between polls.
+        # Ordered by rowid, parked rows (q660) last. A projector may assign
+        # board letters from this order; a verdict moves a row, an arrival does not.
         "questions": [q.as_dict() for q in questions],
     }
     json.dump(doc, sys.stdout, indent=2 if args.pretty else None)
@@ -1618,6 +1669,74 @@ def cmd_rehome(args: argparse.Namespace, store: Store, project: str, cwd: str) -
         sys.stdout.write("\n")
     else:
         print(f"rehomed {len(keys)}")
+    return EXIT_OK
+
+
+def cmd_adopt(args: argparse.Namespace, store: Store, project: str, cwd: str) -> int:
+    """Hand rows whose owning session died to `--agent` (q663).
+
+    Refuses a live owner (message that session instead), an unreachable herdr
+    and an owned row with no pane stamp, since none of those prove the owner
+    is gone; `--force` overrides the last two, never a live pane. One refused
+    key refuses the whole call, so a batch never adopts part of itself. Stamps
+    the caller's own HERDR_PANE_ID/HERDR_SESSION the way `ask` does.
+    """
+    from . import poke
+
+    try:
+        refs = [(k, *store.resolve_ref(k, project)) for k in args.keys]
+    except ValueError as exc:
+        print(f"cactus: {_msg(exc)}", file=sys.stderr)
+        return EXIT_ERROR
+    rows = [(raw, store.get(rkey, project=rproj)) for raw, rproj, rkey in refs]
+    missing = [raw for raw, q in rows if q is None]
+    if missing:
+        print(f"cactus: no such question: {', '.join(missing)}", file=sys.stderr)
+        return EXIT_EMPTY
+
+    notes: dict[str, str] = {}
+    refused: list[str] = []
+    for raw, q in rows:
+        if q.status == "cleared":
+            refused.append(f"{raw} is cleared; reopen it instead")
+        elif q.agent == args.agent:
+            refused.append(f"{raw} is already yours")
+        elif q.agent is None:
+            notes[q.key] = "unowned"
+        elif not q.pane:
+            if args.force:
+                notes[q.key] = "no pane stamp, forced"
+            else:
+                refused.append(f"{raw} has no pane stamp, so its owner cannot be shown dead (--force overrides)")
+        else:
+            alive = poke.pane_alive(q.pane, q.session)
+            if alive:
+                refused.append(f"{raw}: pane {q.pane} is alive; message that session instead")
+            elif alive is None and not args.force:
+                refused.append(f"{raw}: cannot reach herdr to check pane {q.pane} (--force overrides)")
+            else:
+                notes[q.key] = f"pane {q.pane} gone" if alive is False else f"pane {q.pane} unchecked, forced"
+    if refused:
+        for line in refused:
+            print(f"cactus: refusing to adopt {line}", file=sys.stderr)
+        return EXIT_ERROR
+
+    pane = os.environ.get("HERDR_PANE_ID") or None
+    session = os.environ.get("HERDR_SESSION") or None
+    out = []
+    for (raw, q), (_, rproj, rkey) in zip(rows, refs):
+        try:
+            new = store.adopt(rkey, agent=args.agent, pane=pane, session=session, project=rproj)
+        except (KeyError, ValueError) as exc:
+            print(f"cactus: {_msg(exc)}", file=sys.stderr)
+            return EXIT_ERROR
+        out.append({"key": q.key, "from": q.agent, "to": new.agent,
+                    "pane": new.pane, "session": new.session})
+        if not args.json:
+            print(f"adopted {q.key} from {(q.agent or 'nobody')[:8]} ({notes[q.key]})")
+    if args.json:
+        json.dump(out, sys.stdout, indent=2)
+        sys.stdout.write("\n")
     return EXIT_OK
 
 
@@ -1901,6 +2020,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="serve a localhost web answering surface (human)")
     p.add_argument("--port", type=int, default=8642, help="with --www, port to bind (default: 8642)")
     p.add_argument("--host", default="127.0.0.1", help="with --www, host to bind (default: 127.0.0.1; 'tailscale' binds this machine's tailnet IPv4). A non-loopback bind requires a login token")
+    p.add_argument("--serve", nargs="?", type=int, const=8443, default=None, metavar="PORT",
+                   help="implies --www: bind loopback, map https PORT (default 8443) to it with `tailscale serve`, require the login token")
     p.add_argument("--open", action="store_true", help="with --www, open the browser once bound")
     p.add_argument("--monitor", action="store_true",
                    help="stream inbox events as plain lines, one per change")
@@ -2027,6 +2148,8 @@ def build_parser() -> argparse.ArgumentParser:
     skip_grp.add_argument("--skip", action="store_true", help="record a deliberate non-answer")
     skip_grp.add_argument("--dismiss", action="store_true",
                           help="dismiss a notify row without choosing (alias of --skip)")
+    ans.add_argument("--now", action="store_true",
+                     help="wake the agent at once; the pane skips its cooldown")
     ans.set_defaults(fn=cmd_answer)
 
     el = verb("elaborate", help="ask the owner to rewrite a row, or withdraw the request")
@@ -2093,6 +2216,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="open a new window (herdr split, kitty, or open) instead of this terminal")
     vw.set_defaults(fn=cmd_view)
 
+    wr = verb("write", help="ask the owner to write about a row in its chat (TUI w)")
+    wr.add_argument("key")
+    wr.add_argument("input", nargs="*", help="optional focus for the write-up")
+    wr.set_defaults(fn=cmd_write)
+
     hs = verb("history", help="answered and cleared rows, newest verdict first (TUI a)")
     hs.add_argument("--project", help="project directory (default: this one)")
     hs.add_argument("--limit", type=int, default=200)
@@ -2144,6 +2272,14 @@ def build_parser() -> argparse.ArgumentParser:
               help="move this session's rows from a prior identity onto --agent")
     rh.add_argument("--agent", required=True, help="the identity to move matching rows onto")
     rh.set_defaults(fn=cmd_rehome)
+
+    ad = verb("adopt", parents=[common],
+              help="take rows whose owning session is gone (its herdr pane no longer exists)")
+    ad.add_argument("keys", nargs="+", metavar="KEY")
+    ad.add_argument("--agent", required=True, help="the identity that takes the rows")
+    ad.add_argument("--force", action="store_true",
+                    help="adopt when liveness cannot be checked (herdr down, no pane stamp)")
+    ad.set_defaults(fn=cmd_adopt)
 
     mg = verb("migrate", parents=[common], help="apply pending destructive-shaped table rebuilds")
     mg.add_argument("--yes", action="store_true", help="actually do it")
@@ -2234,6 +2370,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(AGENT_HELP, end="")
         return EXIT_OK
 
+    if args.serve is not None:
+        args.www = True
     surfaces = [name for name, on in
                 (("--tui", args.tui), ("--watch", args.watch), ("--www", args.www),
                  ("--monitor", args.monitor))
@@ -2288,6 +2426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 host=args.host,
                 port=args.port,
                 open_browser=args.open,
+                serve=args.serve,
             )
         if args.monitor:
             if not (args.agent or "").strip():

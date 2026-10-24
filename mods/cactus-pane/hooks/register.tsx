@@ -4,13 +4,16 @@
 // - draws a one-line rail per row and a TUI-style card for the selected one
 // - the card's buttons carry the TUI's row keys (1-9, y/n, s, i, c, x, d, e, b, r, m)
 // - acts through the `cactus` CLI, so cli.py stays the only validator
-// - /cactus-pane opens the pane focused; it never opens unasked
-// - wakes this session when its own rows move, and turns its cactus waits off
+// - /cactus-pane opens the pane focused; it also opens unasked at session start
+// - wakes this session when its own rows move, after a cooldown an undo cancels (n skips it), and turns its cactus waits off
+// - wakes the session once when one of its rows goes stale: reassert (bare edit) or clear
+// - h opens settings: autoshow at session start, wake cooldown (or idle: you quiet, agent's turn over); kept in $.store
+// - Esc out of a text line takes the keys back onto the row header; Esc on a header leaves
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Answer, Row } from '../types'
+import type { Answer, PaneSettings, Row } from '../types'
 
 const PANE = 'cactus-pane'
 const POLL_MS = 5000
@@ -29,6 +32,15 @@ const undo = atom({ plugin: 'cactus-pane', key: 'undo' } as const, [])
 const modes = atom({ plugin: 'cactus-pane', key: 'modes' } as const, {})
 const flips = atom({ plugin: 'cactus-pane', key: 'flips' } as const, {})
 const drafts = atom({ plugin: 'cactus-pane', key: 'drafts' } as const, {})
+const settings = atom({ plugin: 'cactus-pane', key: 'settings' } as const, { autoshow: true, cooldown: 15 })
+const settingsOpen = atom({ plugin: 'cactus-pane', key: 'settingsOpen' } as const, false)
+// Wakes waiting out the cooldown: row key -> seconds left at the last poll.
+const held = atom({ plugin: 'cactus-pane', key: 'held' } as const, {})
+const SETTINGS_KEY = 'h'
+const SEND_KEY = 'n'
+const COOLDOWNS: PaneSettings['cooldown'][] = [0, 5, 15, 30, 60, 'idle']
+// Under 'idle', how long the pane must sit untouched before a held wake goes.
+const IDLE_QUIET_MS = 15_000
 const UNDO_DEPTH = 20
 const RUN_TIMEOUT_MS = 600_000
 
@@ -114,11 +126,18 @@ async function retitle($: EngineInterface, list: readonly Row[]): Promise<void> 
   await $.ui.open({ id: PANE, title: paneTitle(list) })
 }
 
+// Runs in the session root, not the shell cwd: a `cd` into a subdirectory of a
+// non-git project would scope `--here` to that subdirectory and empty the pane.
 async function poll($: EngineInterface): Promise<void> {
+  await refresh($)
+  await flush($).catch(() => undefined)
+}
+
+async function refresh($: EngineInterface): Promise<void> {
   const sig = await dbSignature($)
   if (sig !== null && sig === lastSig && Date.now() - lastSpawnAt < REFRESH_MS) return
   const ran = await $.process.run(['cactus', 'feed', '--json', '--here'], {
-    cwd: await $.session.cwd(),
+    cwd: await $.session.root(),
   })
   if (ran.exitCode === 0 || ran.exitCode === 3) {
     lastSig = sig
@@ -139,6 +158,8 @@ async function poll($: EngineInterface): Promise<void> {
     return
   }
   const doc = JSON.parse(ran.stdout) as { cursor: unknown; questions: Row[] }
+  // Staleness moves with the clock, not the cursor: checked on every feed.
+  await nudgeStale($, doc.questions).catch(() => undefined)
   const cursor = JSON.stringify(doc.cursor)
   if (cursor === lastCursor) return
   lastCursor = cursor
@@ -148,9 +169,44 @@ async function poll($: EngineInterface): Promise<void> {
   await wake($, doc.questions).catch(() => undefined)
 }
 
+// A row's state as the wake reads it; `sig` also tells a re-answer apart.
+type Seen = { status: string; n: number; sig: string; now: boolean }
+
+function seen(r: Row): Seen {
+  const last = r.answers[r.answers.length - 1]
+  return {
+    status: r.status,
+    n: r.answers.length,
+    sig: `${r.status}:${r.answers.length}:${last?.created_at ?? ''}`,
+    now: last?.now === true,
+  }
+}
+
 // This session's own rows as last seen: key -> status and verdict count.
 // Null until the first poll seeds it, so rows already settled never wake.
-let watched: { sid: string; rows: Map<string, { status: string; n: number }> } | null = null
+let watched: { sid: string; rows: Map<string, Seen> } | null = null
+
+// Moves waiting out the cooldown: key -> the state before the move, the state
+// now, and when the wake is due. Back at `before` (an undo) drops it; any other
+// change restarts the clock.
+const pending = new Map<string, { before: Seen; sig: string; due: number }>()
+let cooldownMs = 15_000
+// 'idle': a wake waits for you to go quiet in the pane and the agent's own turn to end.
+let idleMode = false
+let agentBusy = false
+
+function applyCooldown(s: PaneSettings): void {
+  idleMode = s.cooldown === 'idle'
+  cooldownMs = s.cooldown === 'idle' ? IDLE_QUIET_MS : s.cooldown * 1000
+}
+
+// Under 'idle', any touch in the pane pushes every held wake back to a fresh quiet spell.
+async function quiet($: EngineInterface): Promise<void> {
+  if (!idleMode || pending.size === 0) return
+  const at = await $.clock.now()
+  for (const [key, p] of pending) pending.set(key, { ...p, due: at + cooldownMs })
+  $.clock.after(cooldownMs, () => poll($))
+}
 
 // What a wake says about one row, and what is left for the agent to do. A
 // proper answer arrives whole and is cleared here, so it needs no get/clear.
@@ -190,34 +246,132 @@ function describe(row: Row): Moved {
   return { row, text: `${asked}\n  answer: ${verdict(last)}${ran}\n  (cleared)`, clears: true, heard: false }
 }
 
-// The client end of delivery: when one of this session's rows moves, start a
-// turn (queued behind a running one). A prompt the mod submits replaces the
-// backgrounded wait while the mod is loaded.
+// The client end of delivery: when one of this session's rows moves, hold it
+// for the cooldown, then start a turn (queued behind a running one). A prompt
+// the mod submits replaces the backgrounded wait while the mod is loaded.
 async function wake($: EngineInterface, list: Row[]): Promise<void> {
   const sid = await $.session.id()
-  const now = new Map(
-    list.filter(r => r.agent === sid).map(r => [r.key, { status: r.status, n: r.answers.length }]),
-  )
+  const now = new Map(list.filter(r => r.agent === sid).map(r => [r.key, seen(r)]))
   if (watched === null || watched.sid !== sid) {
     watched = { sid, rows: now }
+    pending.clear()
     return
   }
-  const moved: Row[] = []
-  const gone: string[] = []
-  for (const [key, before] of watched.rows) {
+  const at = await $.clock.now()
+  for (const key of new Set([...watched.rows.keys(), ...pending.keys()])) {
     const after = now.get(key)
-    if (after === undefined) gone.push(key)
+    const sig = after?.sig ?? 'gone'
+    const p = pending.get(key)
+    if (p !== undefined) {
+      if (after !== undefined && after.status === p.before.status && after.n === p.before.n) pending.delete(key)
+      else if (sig !== p.sig) {
+        pending.set(key, { ...p, sig, due: at + cooldownMs })
+        $.clock.after(cooldownMs, () => poll($))
+      }
+      continue
+    }
+    const before = watched.rows.get(key)
+    if (before === undefined) continue
     // A move back to open/live with no new verdict is this agent's own edit
     // answering an elaborate request: never wake on it (q334's echo rule).
-    else if (after.n > before.n || (after.status !== before.status && !QUIET.has(after.status))) {
-      const row = list.find(r => r.key === key)
-      if (row !== undefined) moved.push(row)
+    if (after === undefined || after.n > before.n || (after.status !== before.status && !QUIET.has(after.status))) {
+      // An answer made with --now has no undo to wait out: due at once.
+      if (await answeredNow($, key, after, before)) {
+        pending.set(key, { before, sig, due: at })
+        continue
+      }
+      pending.set(key, { before, sig, due: at + cooldownMs })
+      if (cooldownMs > 0) $.clock.after(cooldownMs, () => poll($))
+      await quiet($)
     }
   }
   watched = { sid, rows: now }
+  await flush($)
+}
+
+// Whether this move is a new answer made with --now. A one-shot row leaves the
+// feed once answered, so its answer is read with `get`; a persistent row is
+// still in the feed and carries it.
+async function answeredNow($: EngineInterface, key: string, after: Seen | undefined, before: Seen): Promise<boolean> {
+  if (after !== undefined) return after.n > before.n && after.now
+  try {
+    const got = await $.process.run(['cactus', 'get', key, '--json'], { cwd: await $.session.root() })
+    const parsed: unknown = got.exitCode === 0 ? JSON.parse(got.stdout) : null
+    const row = Array.isArray(parsed) ? (parsed[0] as Row | undefined) : undefined
+    return row?.status === 'answered' && row.answers.length > before.n && row.answers[row.answers.length - 1]?.now === true
+  } catch {
+    return false
+  }
+}
+
+// Skips the cooldown: every held move is due now.
+async function sendNow($: EngineInterface): Promise<void> {
+  const at = await $.clock.now()
+  for (const [key, p] of pending) pending.set(key, { ...p, due: at })
+  await flush($, true)
+}
+
+// This session's own stale rows already nudged. Seeded on first sight, so the
+// rows the session-start hook listed are not repeated; a reassert (a bare edit)
+// or an answer restarts the clock, the row leaves stale, and leaves this set.
+let nudged: { sid: string; keys: Set<string> } | null = null
+
+// Wakes the session when one of its rows goes stale: reassert it or clear it.
+async function nudgeStale($: EngineInterface, list: Row[]): Promise<void> {
+  const sid = await $.session.id()
+  const stale = list.filter(r => r.agent === sid && r.stale === true)
+  const keys = new Set(stale.map(r => r.key))
+  if (nudged === null || nudged.sid !== sid) {
+    nudged = { sid, keys }
+    return
+  }
+  for (const key of nudged.keys) if (!keys.has(key)) nudged.keys.delete(key)
+  const fresh = stale.filter(r => !nudged?.keys.has(r.key))
+  if (fresh.length === 0) return
+  for (const r of fresh) nudged.keys.add(r.key)
+  const lines = fresh.map(r => `${r.key} ${firstLine(r.text)}\n  stale: untouched ${idleLabel(r.idle_hours ?? 0)}`)
+  // Off the clock, not inline: a poll from /cactus-pane runs inside a command
+  // hook, where a submit is refused and the nudge would be lost.
+  $.clock.after(0, () => void submitNudge($, sid, lines).catch(() => undefined))
+}
+
+async function submitNudge($: EngineInterface, sid: string, lines: string[]): Promise<void> {
+  await $.prompt.submit({
+    text: [
+      ...lines,
+      '',
+      `Still needed and unanswered: reassert with a bare \`cactus edit KEY --agent ${sid}\` (restarts the clock).`,
+      `Dead: \`cactus clear KEY --agent ${sid}\`.`,
+    ].join('\n'),
+    asUser: true,
+  })
+}
+
+// Sends every held move whose cooldown ran out, and shows the rest counting down.
+// Under 'idle' a due wake also waits out the agent's turn (-1 in `held`); send-now forces it.
+async function flush($: EngineInterface, force = false): Promise<void> {
+  const at = await $.clock.now()
+  const blocked = idleMode && agentBusy && !force
+  const due = blocked ? [] : [...pending].filter(([, p]) => p.due <= at).map(([key]) => key)
+  for (const key of due) pending.delete(key)
+  await update($, held, () =>
+    Object.fromEntries(
+      [...pending].map(([key, p]) => [key, p.due <= at ? -1 : Math.ceil((p.due - at) / 1000)]),
+    ),
+  )
+  if (due.length === 0) return
+  const sid = await $.session.id()
+  const list = await read($, rows)
+  const moved: Row[] = []
+  const gone: string[] = []
+  for (const key of due) {
+    const row = list.find(r => r.key === key)
+    if (row === undefined) gone.push(key)
+    else moved.push(row)
+  }
   if (gone.length > 0) {
     const got = await $.process.run(['cactus', 'get', ...gone, '--json'], {
-      cwd: await $.session.cwd(),
+      cwd: await $.session.root(),
     })
     const parsed: unknown = got.exitCode === 0 ? JSON.parse(got.stdout) : null
     if (Array.isArray(parsed)) {
@@ -230,7 +384,7 @@ async function wake($: EngineInterface, list: Row[]): Promise<void> {
   }
   if (moved.length === 0) return
   const told = moved.map(describe)
-  const cwd = await $.session.cwd()
+  const cwd = await $.session.root()
   const clears = told.filter(t => t.clears).map(t => t.row.key)
   if (clears.length > 0) await $.process.run(['cactus', 'clear', ...clears, '--agent', sid], { cwd })
   // A read under the owner's --agent is what tells the human the verdict was
@@ -293,7 +447,7 @@ async function cactus(
   timeoutMs?: number,
 ): Promise<string | null> {
   const ran = await $.process.run(['cactus', ...args], {
-    cwd: await $.session.cwd(),
+    cwd: await $.session.root(),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   })
   if (ran.exitCode !== 0) {
@@ -362,6 +516,24 @@ async function undoLast($: EngineInterface): Promise<void> {
   }
 }
 
+async function loadSettings($: EngineInterface): Promise<PaneSettings> {
+  const raw = (await $.store.get('settings').catch(() => undefined)) as Partial<PaneSettings> | undefined
+  const s: PaneSettings = {
+    autoshow: typeof raw?.autoshow === 'boolean' ? raw.autoshow : true,
+    cooldown: raw?.cooldown === 'idle' || (typeof raw?.cooldown === 'number' && raw.cooldown >= 0) ? raw.cooldown : 15,
+  }
+  applyCooldown(s)
+  await update($, settings, () => s)
+  return s
+}
+
+async function changeSettings($: EngineInterface, fn: (s: PaneSettings) => PaneSettings): Promise<void> {
+  const s = fn(await read($, settings))
+  applyCooldown(s)
+  await update($, settings, () => s)
+  await $.store.set('settings', s)
+}
+
 // The TUI's `R`: run the row's command; on a run row that is the approval.
 async function runRow($: EngineInterface, key: string, isRunAct: boolean): Promise<void> {
   $.ui.toast(`cactus ${key}: running`)
@@ -418,7 +590,7 @@ async function enterOnOpen($: EngineInterface, row: Row): Promise<void> {
     return
   }
   if (row.choices.length === 0 && row.act !== 'run') {
-    await $.ui.focus({ requestId: PANE, key: `${row.key}:text` }).catch(() => undefined)
+    await focusInput($, row.key)
     return
   }
   $.ui.toast(`cactus ${row.key}: enter does not answer; press a digit or type a note${row.kind === 'multi' ? ', then g to send' : ''}`)
@@ -679,7 +851,12 @@ export const register: Register = on => {
       name: 'cactus-pane',
       description: "Show this project's cactus inbox in a pane",
     })
+    const saved = await loadSettings($)
     $.clock.every(POLL_MS, () => poll($))
+    // While a wake is held, poll each second: the countdown ticks and an undo
+    // from another surface is seen before the wake goes.
+    $.clock.every(1000, () => (pending.size > 0 ? poll($) : undefined))
+    if (e.isInteractive && saved.autoshow) await $.ui.open({ id: PANE, title: 'cactus' })
     void poll($)
 
     return next(e)
@@ -725,7 +902,36 @@ export const register: Register = on => {
     const modeOf = await read($, modes)
     const flipped = await read($, flips)
     const drafted = await read($, drafts)
+    const prefs = await read($, settings)
+    const holding = await read($, held)
     const current = list.find(r => r.key === wanted) ?? list[0]
+    if (!e.props.isFocused && ring?.endsWith(':text')) void reclaim($, ring).catch(() => undefined)
+
+    if (await read($, settingsOpen)) {
+      const next = COOLDOWNS[(COOLDOWNS.indexOf(prefs.cooldown) + 1) % COOLDOWNS.length] ?? 0
+      const said = (c: PaneSettings['cooldown']) => (c === 'idle' ? `idle (${IDLE_QUIET_MS / 1000}s quiet, agent free)` : `${c}s`)
+      return (
+        <Box flexDirection="column">
+          <Text bold>cactus pane settings</Text>
+          <Button
+            key="set:autoshow"
+            label={`autoshow at session start: ${prefs.autoshow ? 'on' : 'off'}`}
+            hotkey="1"
+            plain
+            onPress={() => void changeSettings($, s => ({ ...s, autoshow: !s.autoshow }))}
+          />
+          <Button
+            key="set:cooldown"
+            label={`wake cooldown: ${said(prefs.cooldown)} (next ${said(next)})`}
+            hotkey="2"
+            plain
+            onPress={() => void changeSettings($, s => ({ ...s, cooldown: next }))}
+          />
+          <Text dimColor>An answer waits the cooldown before it reaches the agent; u inside it takes it back.</Text>
+          <Button key="set:close" label="back" hotkey={SETTINGS_KEY} plain onPress={() => void update($, settingsOpen, () => false)} />
+        </Box>
+      )
+    }
 
     const card = (row: Row) => {
       // m turns a single-choice row into pick-several for this one answer.
@@ -961,9 +1167,7 @@ export const register: Register = on => {
                 hotkey="i"
                 plain
                 onPress={() =>
-                  void $.ui
-                    .focus({ requestId: PANE, key: `${row.key}:text` })
-                    .catch(() => undefined)
+                  void focusInput($, row.key)
                 }
               />
             )}
@@ -1010,7 +1214,7 @@ export const register: Register = on => {
                   plain
                   onPress={() => {
                     void setMode($, row.key, isHinting ? null : 'elaborate')
-                    if (!isHinting) void $.ui.focus({ requestId: PANE, key: `${row.key}:text` }).catch(() => undefined)
+                    if (!isHinting) void focusInput($, row.key)
                   }}
                 />
                 <Button
@@ -1123,7 +1327,12 @@ export const register: Register = on => {
                     <Text dimColor>stale {idleLabel(row.idle_hours ?? 0)}</Text>
                   </Box>
                 )}
-                <Text wrap="truncate-end" dimColor={!isCurrent || row.stale === true} bold={isCurrent}>
+                {row.parked === true && (
+                  <Box key={`${row.key}:parked`}>
+                    <Text dimColor>parked</Text>
+                  </Box>
+                )}
+                <Text wrap="truncate-end" dimColor={!isCurrent || row.stale === true || row.parked === true} bold={isCurrent}>
                   {row.word ? `${row.word}  ` : ''}
                   {firstLine(row.text)}
                 </Text>
@@ -1139,7 +1348,16 @@ export const register: Register = on => {
         {current !== undefined && card(current).body}
         {current !== undefined && card(current).input}
         {current !== undefined && card(current).controls}
+        {Object.keys(holding).length > 0 && (
+          <Text color="yellow">
+            {Object.entries(holding).map(([key, s]) => (s < 0 ? `${key} → agent when its turn ends` : `${key} → agent in ${s}s`)).join(' · ')}  ({SEND_KEY} sends now · u takes it back)
+          </Text>
+        )}
         <Box display="none" flexDirection="row" columnGap={2}>
+          <Button key="settings" label="settings" hotkey={SETTINGS_KEY} plain onPress={() => void update($, settingsOpen, () => true)} />
+          {Object.keys(holding).length > 0 && (
+            <Button key="send" label="send now" hotkey={SEND_KEY} plain onPress={() => void sendNow($).catch(() => undefined)} />
+          )}
           {stack.length > 0 && (
             <Button
               key="undo"
@@ -1169,9 +1387,54 @@ export const register: Register = on => {
   // Arrows and tab are the person's focus steps. Only question headers may
   // take them; the keys below the list stay reachable by hotkey (and `i` puts
   // the ring in the input), so a step onto them is refused and the ring stays.
-  on('ui.focus', async ($, e, next) => {
-    if (e.requestId !== PANE || e.origin.kind !== 'person') return next(e)
-    if (e.element !== undefined && !e.element.endsWith(':sel')) return { deny: 'cactus-pane: headers only' }
+  // Typing in a row's input is proof the ring is there.
+  on('ui.input', ($, e, next) => {
+    if (e.plugin === 'cactus-pane' && e.element.endsWith(':text')) ring = e.element
+    if (e.plugin === 'cactus-pane') void quiet($).catch(() => undefined)
     return next(e)
   })
+
+  // The main loop's turn, for 'idle': a held wake goes once it ends.
+  on('turn.start', ($, e, next) => {
+    if (e.agentId === undefined) agentBusy = true
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (e.agentId === undefined) {
+      agentBusy = false
+      if (pending.size > 0) $.clock.after(0, () => poll($))
+    }
+    return done
+  })
+
+  on('ui.focus', async ($, e, next) => {
+    if (e.requestId !== PANE) return next(e)
+    if (e.origin.kind === 'person' && e.element !== undefined && !e.element.endsWith(':sel')) {
+      return { deny: 'cactus-pane: headers only' }
+    }
+    const moved = await next(e)
+    if (!('deny' in moved)) ring = e.element ?? null
+    void quiet($).catch(() => undefined)
+    return moved
+  })
+}
+
+// The element holding the pane's ring, as the last ui.focus left it.
+let ring: string | null = null
+
+async function focusInput($: EngineInterface, key: string): Promise<void> {
+  const moved = await $.ui.focus({ requestId: PANE, key: `${key}:text` }).catch(() => ({ deny: 'gone' }))
+  if (!('deny' in moved)) ring = `${key}:text`
+}
+
+// Escape is the engine's: in an input it hands the keys to the prompt, never
+// the pane. So the pane takes them back and puts the ring on the row's header;
+// Escape on a header is the deliberate way out and is left alone.
+async function reclaim($: EngineInterface, from: string): Promise<void> {
+  const header = from.replace(/:text$/, ':sel')
+  ring = header
+  await $.ui.open({ id: PANE, title: paneTitle(await read($, rows)), focus: true })
+  await $.ui.focus({ requestId: PANE, key: header }).catch(() => undefined)
 }

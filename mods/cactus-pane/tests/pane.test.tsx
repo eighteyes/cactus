@@ -2,8 +2,13 @@
 // - a one-row feed draws the row's key, text and choice buttons
 // - pressing a choice runs `cactus answer KEY -s LABEL`
 // - a multi row toggles picks and sends them all from the input
+// - a poll spawns cactus only when the db or its wal changed
+// - the feed runs in the session root, so a shell cd cannot empty the pane
+// - a wake waits out the cooldown; an undo inside it sends nothing
+// - h opens settings; a change is kept in the store
+// - escape out of the input returns the ring to the header, not the prompt
 
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 const ROW = {
@@ -55,12 +60,12 @@ const PANE = {
   },
 } as const
 
-function fakeCactus(row: typeof ROW, calls: string[][]) {
+function fakeCactus(row: typeof ROW, calls: string[][], answerExtra: object = {}) {
   let answered = false
   return (argv: readonly string[]) => {
     calls.push([...argv])
-    if (argv[1] === 'answer') {
-      answered = true
+    if (argv[1] === 'answer' || argv[1] === 'undo') {
+      answered = argv[1] === 'answer'
       return { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
     }
     if (argv[1] === 'get') {
@@ -68,7 +73,7 @@ function fakeCactus(row: typeof ROW, calls: string[][]) {
       const settled = {
         ...row,
         status: 'answered',
-        answers: [{ selected: [label], text: null, skipped: false, created_at: '' }],
+        answers: [{ selected: [label], text: null, skipped: false, created_at: '', ...answerExtra }],
       }
       return {
         exitCode: 0,
@@ -94,7 +99,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const calls: string[][] = []
     const fake = fakeCactus(ROW, calls)
     on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-    on('session.cwd', () => ({ value: '/repo' }))
+    on('session.root', () => ({ value: '/repo' }))
     on('session.id', () => ({ value: 'a1' }))
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('ui.toast', () => ({ value: undefined }))
@@ -115,7 +120,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const calls: string[][] = []
     const fake = fakeCactus({ ...ROW, kind: 'multi' }, calls)
     on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-    on('session.cwd', () => ({ value: '/repo' }))
+    on('session.root', () => ({ value: '/repo' }))
     on('session.id', () => ({ value: 'a1' }))
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('ui.toast', () => ({ value: undefined }))
@@ -137,7 +142,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const calls: string[][] = []
     const fake = fakeCactus(ROW, calls)
     on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-    on('session.cwd', () => ({ value: '/repo' }))
+    on('session.root', () => ({ value: '/repo' }))
     on('session.id', () => ({ value: 'a1' }))
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('ui.toast', () => ({ value: undefined }))
@@ -155,10 +160,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-async function mounted($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], row: typeof ROW, calls: string[][], surface: 'terminal' | 'desktop') {
-  const fake = fakeCactus(row, calls)
+async function mounted($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], row: typeof ROW, calls: string[][], surface: 'terminal' | 'desktop', answerExtra: object = {}) {
+  const fake = fakeCactus(row, calls, answerExtra)
   on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -220,11 +225,52 @@ test('answering this session’s own row wakes it with the verdict', async ($, o
     woke.push(e.text)
     return { text: e.text }
   })
+  const clock = mock.clock(on)
   const ui = await mounted($, on, ROW, calls, 'terminal')
   await ui.press({ key: 'q7:local' })
+  expect(woke).toEqual([])
+  expect(await ui.find({ text: /q7 → agent in 15s/ })).toBeDefined()
+  await clock.advance(15_000)
   expect(woke.join('\n')).toContain('answer: local')
   expect(woke.join('\n')).toContain('(cleared)')
   expect(calls).toContainEqual(['cactus', 'clear', 'q7', '--agent', 'a1'])
+})
+
+test('a row of this session going stale wakes it once to reassert or clear', async ($, on) => {
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  let feeds = 0
+  on('process.run', (_$, e) => {
+    if (e.argv[1] !== 'feed') return { value: { exitCode: 0, stdout: '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    feeds += 1
+    // Fresh on the first feed, stale from the second on, then reasserted.
+    const row = feeds === 1 ? ROW : feeds < 4 ? { ...ROW, stale: true, idle_hours: 26 } : ROW
+    return {
+      value: {
+        exitCode: 0,
+        stdout: JSON.stringify({ cursor: { n: 0 }, questions: [row] }),
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+  // Each run polls once: fresh, stale, still stale, reasserted, stale again.
+  const clock = mock.clock(on)
+  for (let i = 0; i < 3; i++) await $.command.run(RUN)
+  await clock.advance(0)
+  expect(feeds).toBe(3)
+  expect(woke.length).toBe(1)
+  expect(woke[0]).toContain('q7 Which auth backend?')
+  expect(woke[0]).toContain('untouched 26h')
+  expect(woke[0]).toContain('cactus edit KEY --agent a1')
 })
 
 test('j and k move the selection between questions', async ($, on) => {
@@ -242,7 +288,7 @@ test('j and k move the selection between questions', async ($, on) => {
     }
   }
   on('process.run', (_$, e) => ({ value: fake(e.argv) }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -313,6 +359,16 @@ test('a fresh row has no stale mark', async ($, on) => {
   expect(await ui.find({ key: 'q7:stale' })).toBeUndefined()
 })
 
+test('a parked row marks its rail line', async ($, on) => {
+  const ui = await mounted($, on, { ...ROW, parked: true } as typeof ROW, [], 'terminal')
+  expect((await ui.find({ key: 'q7:parked' }))?.text).toContain('parked')
+})
+
+test('an active row has no parked mark', async ($, on) => {
+  const ui = await mounted($, on, ROW, [], 'terminal')
+  expect(await ui.find({ key: 'q7:parked' })).toBeUndefined()
+})
+
 test('a pass that closed a review wakes with the verdict, not a decline', async ($, on) => {
   const woke: string[] = []
   on('prompt.submit', (_$, e) => {
@@ -329,24 +385,53 @@ test('a pass that closed a review wakes with the verdict, not a decline', async 
     n += 1
     return { value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n }, questions: [served] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
   on('ui.focus', () => ({}))
+  const clock = mock.clock(on)
   await $.command.run(RUN)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'q7:pass' })
+  await clock.advance(15_000)
   const all = woke.join('\n')
   expect(all).toContain('verdict: pass')
   expect(all).not.toContain('declined')
+})
+
+test('polls spawn cactus only when the db or its wal changed', async ($, on) => {
+  const feeds: number[] = []
+  let wal = { mtimeMs: 1, size: 10 }
+  on('env.get', (_$, e) => ({ value: e.name === 'CACTUS_DB' ? '/db/cactus.db' : '/home/u' }))
+  on('fs.stat', (_$, e) => {
+    if (e.path === '/db/cactus.db') return { value: { kind: 'file', size: 5, mtimeMs: 1, isLink: false } }
+    if (e.path === '/db/cactus.db-wal') return { value: { kind: 'file', isLink: false, ...wal } }
+    throw new Error('unexpected stat')
+  })
+  on('process.run', (_$, e) => {
+    if (e.argv[1] === 'feed') feeds.push(1)
+    return { value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n: feeds.length }, questions: [ROW] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.command.run(RUN)
+  expect(feeds.length).toBe(1)
+  await $.command.run(RUN)
+  expect(feeds.length).toBe(1)
+  wal = { mtimeMs: 2, size: 20 }
+  await $.command.run(RUN)
+  expect(feeds.length).toBe(2)
 })
 
 async function emptyPane($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], bodyColumns: number) {
   on('process.run', () => ({
     value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n: 0 }, questions: [] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   await $.command.run(RUN)
@@ -377,7 +462,7 @@ test('a verdict on a review moves the pane to the next question', async ($, on) 
   on('process.run', () => ({
     value: { exitCode: 0, stdout: JSON.stringify({ cursor: { n: 1 }, questions: [review, next] }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.root', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'a1' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -410,4 +495,146 @@ test('an open ask reads its act in the list', async ($, on) => {
   const calls: string[][] = []
   const ui = await mounted($, on, ROW, calls, 'terminal')
   expect((await ui.find({ key: 'q7:act' }))?.text).toContain('ask')
+})
+
+test('the feed runs in the session root, not a shell cwd that drifted below it', async ($, on) => {
+  const dirs: (string | undefined)[] = []
+  const fake = fakeCactus(ROW, [])
+  on('process.run', (_$, e) => {
+    if (e.argv[1] === 'feed') dirs.push(e.init?.cwd)
+    return { value: fake(e.argv) }
+  })
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.cwd', () => ({ value: '/repo/.ai/plan' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.command.run(RUN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  expect(dirs.length).toBeGreaterThan(0)
+  expect(dirs.every(d => d === '/repo')).toBe(true)
+  expect((await ui.find({ text: /Which auth backend/ }))?.text).toContain('q7')
+})
+
+test('an undo inside the cooldown sends nothing to the agent', async ($, on) => {
+  const calls: string[][] = []
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const clock = mock.clock(on)
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.press({ key: 'q7:local' })
+  await clock.advance(10_000)
+  await ui.press({ key: 'undo' })
+  await clock.advance(30_000)
+  expect(woke).toEqual([])
+  expect(calls.some(c => c[1] === 'clear')).toBe(false)
+})
+
+test('n inside the cooldown sends the wake at once', async ($, on) => {
+  const calls: string[][] = []
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const clock = mock.clock(on)
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.press({ key: 'q7:local' })
+  await clock.advance(1_000)
+  expect(woke).toEqual([])
+  await ui.press({ key: 'send' })
+  expect(woke.length).toBe(1)
+  await clock.advance(30_000)
+  expect(woke.length).toBe(1)
+})
+
+test('a now:true answer wakes with no clock advance', async ($, on) => {
+  const calls: string[][] = []
+  const woke: string[] = []
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const clock = mock.clock(on)
+  const ui = await mounted($, on, ROW, calls, 'terminal', { now: true })
+  await ui.press({ key: 'q7:local' })
+  expect(woke.length).toBe(1)
+  await clock.advance(30_000)
+  expect(woke.length).toBe(1)
+})
+
+test('h opens settings; the cooldown and autoshow are kept in the store', async ($, on) => {
+  const calls: string[][] = []
+  const saved: unknown[] = []
+  on('store.set', (_$, e) => {
+    saved.push(e.value)
+    return { value: undefined }
+  })
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ text: /wake cooldown: 15s/ })).toBeDefined()
+  await ui.press({ key: 'set:cooldown' })
+  await ui.press({ key: 'set:autoshow' })
+  expect(await ui.find({ text: /wake cooldown: 30s/ })).toBeDefined()
+  expect(await ui.find({ text: /autoshow at session start: off/ })).toBeDefined()
+  expect(saved[saved.length - 1]).toEqual({ autoshow: false, cooldown: 30 })
+  await ui.press({ key: 'set:close' })
+  expect(await ui.find({ text: /Which auth backend/ })).toBeDefined()
+})
+
+test('idle is the last cooldown: a wake goes after the pane sits quiet', async ($, on) => {
+  const calls: string[][] = []
+  const woke: string[] = []
+  on('store.set', () => ({ value: undefined }))
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const clock = mock.clock(on)
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.press({ key: 'settings' })
+  for (let i = 0; i < 3; i++) await ui.press({ key: 'set:cooldown' })
+  expect(await ui.find({ text: /wake cooldown: idle \(15s quiet, agent free\)/ })).toBeDefined()
+  await ui.press({ key: 'set:close' })
+  await ui.press({ key: 'q7:local' })
+  await clock.advance(14_000)
+  expect(woke).toEqual([])
+  await clock.advance(2_000)
+  expect(woke.join('\n')).toContain('answer: local')
+})
+
+test('escape out of the input takes the keys back onto the header; escape on a header leaves', async ($, on) => {
+  const calls: string[][] = []
+  const opens: { focus?: true }[] = []
+  const rings: string[] = []
+  on('ui.open', (_$, e) => {
+    opens.push(e)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.focus', (_$, e) => {
+    if (e.element !== undefined) rings.push(e.element)
+    return {}
+  })
+  const fake = fakeCactus(ROW, calls)
+  on('process.run', (_$, e) => ({ value: fake(e.argv) }))
+  on('session.root', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'a1' }))
+  on('ui.toast', () => ({ value: undefined }))
+  await $.command.run(RUN)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'q7:type' })
+  await ui.input({ key: 'q7:text', text: 'half a no', kind: 'change' })
+  const before = opens.length
+  await ui.redraw({ ...PANE.props, isFocused: false })
+  await ui.advance(0)
+  expect(opens.slice(before).some(o => o.focus === true)).toBe(true)
+  const after = opens.length
+  await ui.redraw({ ...PANE.props, isFocused: false })
+  await ui.advance(0)
+  expect(opens.length).toBe(after)
 })

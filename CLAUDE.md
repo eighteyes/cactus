@@ -366,6 +366,14 @@ scope.
   401 with no cookie. The file is re-read per request, so `cactus www-token
   --rotate` kills old cookies live. `log_message` stays silent so the token
   never reaches stderr.
+- `--www --serve [PORT]` (default 8443) fronts the loopback bind with
+  `tailscale serve --bg --https=PORT` (`CACTUS_TS_SERVE` template over
+  `{port}`/`{local}`; `CACTUS_TS_NAME` overrides the tailnet name; tests set
+  both inert). It forces the A1 token gate on although the bind is loopback,
+  allows a `*.ts.net` Host only on a `serve` server, prints the https login
+  URL on stdout and the `tailscale serve --https=PORT off` undo line on
+  stderr (`--bg` outlives cactus). Port 443 is refused, a non-loopback
+  `--host` is refused.
 - Hook identity (`hooks/cactus_identity.py`, q327) resolves the hook payload's
   `session_id` first, then herdr's view of the pane, then `CACTUS_AGENT`.
   herdr infers a conversation id from the transcript file, which at
@@ -393,6 +401,17 @@ scope.
   as a spurious `answered`/`verdict`/`asked` — a freshly started
   `--monitor --agent NEW` still sees the moved rows, as an ordinary arrival
   on its first poll.
+- `cactus adopt KEY... --agent NEW [--force]` (q663) hands rows whose owning
+  session died to NEW. `Store.adopt` sets `agent` (plus the caller's
+  `HERDR_PANE_ID`/`HERDR_SESSION` stamp when set) and bumps `updated_at` in
+  one transaction; `open`/`live`/`elaborate`/`answered` only, `cleared`
+  raises `ValueError`; `agent` stays out of `monitor._signature`; no record.
+  The CLI gates, whole call refused before any row changes (exit 1): already
+  NEW's, pane alive per `poke.pane_alive` (`herdr --session S agent list`
+  `.result.agents[].pane_id`; `CACTUS_PANE_ALIVE` template, exit 0 alive,
+  1 gone), herdr unreachable or an owned row with no pane stamp (both pass
+  with `--force`; alive never does). Unowned rows adopt freely. Missing key
+  exits 3.
 - `elaborate` (q212) is a status, not a rebuild: `status` has no CHECK
   constraint, so the new value needs only the additive `elaborate`/
   `elaborate_at` columns. `Store.answer` refuses it like `cleared`, exit 1.
@@ -476,6 +495,18 @@ scope.
   The MCP `cactus_ask`/`cactus_run` pass `--no-wait` unless `wait` is set,
   and the Codex session-start hook tells Codex to post `--no-wait`. The
   courier agent stays deleted (q412); `poke.wake_owner` was removed (q430).
+- `POST /api/voice` (voice-web) is the phone's hold-to-talk loop: `{audio_b64,
+  mime, key, project}` -> temp file -> `vhear` (`CACTUS_VHEAR`, `{path}`) ->
+  `voice.parse`, else `voice.interpret` (stub until W3), else "didn't catch
+  that" -> `voice.run` -> `vsay -o` (`CACTUS_VSAY`, `{path}` `{text}`) ->
+  `{ok, transcript, say, next_key, audio}`. `audio` is
+  `/api/voice/audio/<id>.wav`, kept 10 minutes under the same guard and token;
+  a render failure is `audio: null`, never an error, a `vhear` failure is 502.
+  Only Store calls touch the database: vhear, vsay and the interpreter run
+  outside them. `voice.run` refuses a `run` row ("that one needs the keyboard")
+  and never retires, execs, pokes or approves; `undo` follows `cactus undo`
+  (refuses an open, answerless or non-pass-cleared row). Tests set both
+  templates inert.
 - `www` guards every request (`_Handler._guard`), because a localhost POST is
   reachable from any page the human visits and approving a `run` row makes
   the agent execute it: Host must be loopback or the bound host (any Host on
@@ -507,6 +538,14 @@ scope.
   row's own stamps, so a caller with no herdr env (the Mac app) reaches the
   same pane. Human verb, no `--agent`; no pane or a `PokeError` exits 1,
   missing key 3. `--json` is `{pane, session, raise_error}`.
+- `cactus write KEY [INPUT...]` is `w`: asks the row's owner to write about the
+  question in its own chat, nothing stored on the row. `poke.write_message`
+  (row text verbatim, capped 300, plus `Focus: INPUT` when given) goes out via
+  `poke.poke(webhook=False)` at the row's pane/session. Human verb, no
+  `--agent`; refuses a `cleared` row or one `poke.reachable` rejects (exit 1),
+  missing key 3; `--json` is `{key, sent, message}`. The TUI `w` opens the
+  input as `elaborate` does (`writing` flag on `elaborating`), enter sends
+  (empty ok), esc cancels; bound by `check_action` on reachable non-cleared rows.
 - `cactus history [--project DIR] [--limit N]` is the answers view (`a`):
   `Store.history`, newest verdict first, `--json` a list of `as_dict`; none
   is `no match`, exit 3.
@@ -598,8 +637,8 @@ scope.
   copy); `ask`/`edit --site URL` take http or https only — `cli._check_site`
   refuses any other scheme, exit 1, before the store is touched. `Store.edit`
   `site`: `None` keeps, `""` clears, a string replaces; `monitor._signature`
-  carries it beside `files`. The TUI's `w` (`open_site`) binds only on a row
-  with a site (`check_action`, keybar `w site`, `on_key` flashes `has no
+  carries it beside `files`. The TUI's `W` (`open_site`) binds only on a row
+  with a site (`check_action`, keybar `W site`, `on_key` flashes `has no
   site`) and calls `shell.open_url` — `open`/`xdg-open`, or `CACTUS_OPEN`
   with `{url}` per argument, never a shell; tests set it inert. The card
   prints `site: URL` (markup off); `www` renders an http(s) link with
@@ -999,11 +1038,22 @@ scope.
   changing the row after the human's latest verdict is visible without a diff.
   `tui._revised`/`cli._revised` compute it independently (no store change);
   the rail marks it `· revised`, the card adds a line under the verdicts
-  line, `_print_questions` matches it in text, and `CactusApp._load_questions`
-  stable-partitions revised top-level rows (with their subtree) to the end of
-  the rail so an unaddressed revision surfaces without hunting for it. It
-  shows alongside the sent/heard marks (q404-q406), never instead of them,
-  and the rail block stays a fixed 4 rows (q226); the partition runs inside
+  line, `_print_questions` matches it in text. Revised is a mark only: it no
+  longer moves the row (q660 reverses the q311 partition). What moves is
+  `Question.parked` (q660): act `review`/`plan`, status `live`, and
+  `heard_state` `sent` or `heard` — the human's latest verdict is newer than
+  the agent's response (`responded_at`). Computed, no column, not in
+  `monitor._signature`; `as_dict` carries `"parked"`. `store.park_last` is the
+  stable partition that sends parked top-level runs (a depth-0 row plus its
+  deeper followers) to the end; `CactusApp._load_questions`, `cmd_feed` and
+  `cmd_list` all apply it, so an agent's response (`cactus review/plan/edit
+  --agent`) puts the row back among the active ones and a pass (which clears
+  the row) never parks. The rail kind line adds `parked` and the block takes
+  `-parked` (dimmed, still 4 rows, q226); the card adds a dim `parked —
+  waiting on the agent`; the status bar adds `· N parked` after the live
+  count; `_print_questions` prints `parked` after the status. `_advance_after`
+  lands on the first active row at or after the old index (else the first
+  active, else the first parked), never the row that just parked. The partition runs inside
   `_load_questions`, so it stays under `_reload_lock`.
 - `Store.projects()` carries `newest_open` — `MAX(created_at)` over each
   project's `open`/`live`/`elaborate` rows, NULL when none — alongside

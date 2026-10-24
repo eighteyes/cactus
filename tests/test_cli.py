@@ -174,6 +174,26 @@ def test_answer_flow_invalid_label_then_ok_then_already_answered(cli):
     assert r_again.returncode == 3
 
 
+def test_answer_now_round_trips_through_get_json(cli):
+    cli("ask", "--no-wait", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "free", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "decline", "--agent", AGENT_A)
+    cli("ask", "--no-wait", "plain", "-c", "a", "--agent", AGENT_A)
+
+    assert cli("answer", "q1", "-s", "a", "--now").returncode == 0
+    assert cli("answer", "q2", "some words", "--now").returncode == 0
+    assert cli("answer", "q3", "--skip", "--now").returncode == 0
+    assert cli("answer", "q4", "-s", "a").returncode == 0
+
+    def last(key):
+        return json.loads(cli("get", key, "--json").stdout)[0]["answers"][-1]
+
+    assert last("q1")["now"] is True
+    assert last("q2")["now"] is True
+    assert last("q3")["now"] is True and last("q3")["skipped"] is True
+    assert "now" not in last("q4")
+
+
 def test_clear_ownership_then_reopen_restores_answered(cli):
     cli("ask", "--no-wait", "pick one", "-c", "a", "-c", "b", "--agent", AGENT_A)
     cli("answer", "q1", "-s", "a")
@@ -980,6 +1000,46 @@ def test_visit_refuses_a_row_with_no_pane_and_a_missing_key(cli, no_herdr):
     assert r.returncode == 3 and len(r.stderr.strip().splitlines()) == 1
 
 
+def _poke_capture(tmp_path, scratch_env):
+    log = tmp_path / "write.log"
+    script = tmp_path / "write.sh"
+    script.write_text(f'#!/bin/sh\necho "$1|$2" >> {log}\n')
+    script.chmod(0o755)
+    scratch_env["CACTUS_POKE"] = f"{script} {{agent}} {{message}}"
+    return log
+
+
+def test_write_sends_the_row_text_and_input_to_the_owner(cli, no_herdr, tmp_path, scratch_env):
+    log = _poke_capture(tmp_path, scratch_env)
+    cli("ask", "--no-wait", "which db?", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    r = cli("write", "q1", "mind", "the", "cost", "--json")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["key"] == "q1" and out["sent"] is True
+    agent, message = log.read_text().rstrip("\n").split("|", 1)
+    assert agent == AGENT_A and message == out["message"]
+    assert "q1" in message and "which db?" in message
+    assert message.endswith("Focus: mind the cost")
+    plain = cli("write", "q1")
+    assert plain.returncode == 0 and "write asked" in plain.stdout
+    assert "Focus" not in log.read_text().splitlines()[-1]
+
+
+def test_write_refuses_missing_cleared_and_unreachable_rows(cli, no_herdr, tmp_path, scratch_env):
+    _poke_capture(tmp_path, scratch_env)
+    cli("ask", "--no-wait", "one", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    r = cli("write", "q9")
+    assert r.returncode == 3 and len(r.stderr.strip().splitlines()) == 1
+    cli("retire", "q1")
+    r = cli("write", "q1")
+    assert r.returncode == 1 and "is cleared" in r.stderr
+    cli("ask", "--no-wait", "two", "-c", "a", "-c", "b", "--agent", AGENT_A)
+    del scratch_env["CACTUS_POKE"]
+    no_herdr.delenv("CACTUS_POKE", raising=False)
+    r = cli("write", "q2")
+    assert r.returncode == 1 and len(r.stderr.strip().splitlines()) == 1
+
+
 def test_history_lists_answered_rows_newest_verdict_first(cli, project):
     cli("ask", "--no-wait", "one", "-c", "a", "-c", "b", "--agent", AGENT_A)
     cli("ask", "--no-wait", "two", "-c", "a", "-c", "b", "--agent", AGENT_A)
@@ -1083,3 +1143,108 @@ def test_view_window_dispatches_through_the_override(cli, scratch_env, monkeypat
     r = cli("view", "--window", str(f))
     assert r.returncode == 0, r.stderr
     assert out.read_text() == f"glow -p {f}"
+
+
+def test_list_and_feed_park_last_and_response_unparks(cli):
+    _heard_review(cli)
+    assert cli("ask", "--no-wait", "pick", "--agent", AGENT_A, "-c", "a", "-c", "b").returncode == 0
+
+    listed = cli("list", "-s", "open,live")
+    assert [ln.split("\t")[0] for ln in listed.stdout.splitlines() if ln.startswith("q")] == ["q2", "q1"]
+    assert "q1\tlive\tparked" in listed.stdout
+    assert "q2\topen\tparked" not in listed.stdout
+
+    feed = json.loads(cli("feed").stdout)["questions"]
+    assert [(r["key"], r["parked"]) for r in feed] == [("q2", False), ("q1", True)]
+
+    assert cli("review", "q1", "--agent", AGENT_A, "--look-at", "fixed").returncode == 0
+    feed = json.loads(cli("feed").stdout)["questions"]
+    assert [(r["key"], r["parked"]) for r in feed] == [("q1", False), ("q2", False)]
+    assert "parked" not in cli("list", "-s", "open,live").stdout
+
+
+def _adopt_env(monkeypatch, template: str) -> None:
+    monkeypatch.setenv("CACTUS_PANE_ALIVE", template)
+
+
+def _post(cli, monkeypatch, agent: str, pane: str | None, session: str = "s1") -> None:
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    monkeypatch.delenv("HERDR_SESSION", raising=False)
+    if pane:
+        monkeypatch.setenv("HERDR_PANE_ID", pane)
+        monkeypatch.setenv("HERDR_SESSION", session)
+    r = cli("ask", "--no-wait", "q?", "-c", "a", "-c", "b", "--agent", agent)
+    assert r.returncode == 0, r.stderr
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    monkeypatch.delenv("HERDR_SESSION", raising=False)
+
+
+def test_adopt_dead_pane_restamps_from_env(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "dead")
+    _adopt_env(monkeypatch, "test {pane} = live")
+    monkeypatch.setenv("HERDR_PANE_ID", "live")
+    monkeypatch.setenv("HERDR_SESSION", "s2")
+    r = cli("adopt", "q1", "--agent", AGENT_B, "--json")
+    assert r.returncode == 0, r.stderr
+    row = json.loads(r.stdout)[0]
+    assert row == {"key": "q1", "from": AGENT_A, "to": AGENT_B, "pane": "live", "session": "s2"}
+    text = cli("get", "q1", "--json")
+    assert json.loads(text.stdout)[0]["agent"] == AGENT_B
+
+
+def test_adopt_text_output(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "dead")
+    _adopt_env(monkeypatch, "test {pane} = live")
+    r = cli("adopt", "q1", "--agent", AGENT_B)
+    assert r.returncode == 0
+    assert f"adopted q1 from {AGENT_A[:8]} (pane dead gone)" in r.stdout
+
+
+def test_adopt_live_pane_refuses_even_forced(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "live")
+    _adopt_env(monkeypatch, "test {pane} = live")
+    for extra in ([], ["--force"]):
+        r = cli("adopt", "q1", "--agent", AGENT_B, *extra)
+        assert r.returncode == 1
+        assert "pane live is alive" in r.stderr and "message that session" in r.stderr
+
+
+def test_adopt_herdr_down_needs_force(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "dead")
+    _adopt_env(monkeypatch, "sh -c 'exit 2'")
+    assert cli("adopt", "q1", "--agent", AGENT_B).returncode == 1
+    assert cli("adopt", "q1", "--agent", AGENT_B, "--force").returncode == 0
+
+
+def test_adopt_owned_without_pane_needs_force(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, None)
+    r = cli("adopt", "q1", "--agent", AGENT_B)
+    assert r.returncode == 1 and "no pane stamp" in r.stderr
+    assert cli("adopt", "q1", "--agent", AGENT_B, "--force").returncode == 0
+
+
+def test_adopt_unowned_row_adopts_freely(cli, monkeypatch, store, project):
+    store.ask("x", project=project, cwd=project)
+    r = cli("adopt", "q1", "--agent", AGENT_B)
+    assert r.returncode == 0, r.stderr
+    assert "from nobody" in r.stdout
+
+
+def test_adopt_refusals_cleared_mine_missing_and_agent_required(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, None)
+    assert cli("adopt", "q1", "--agent", AGENT_A).returncode == 1
+    assert cli("adopt", "q1").returncode == 1
+    assert cli("adopt", "q9", "--agent", AGENT_B, "--force").returncode == 3
+    cli("clear", "q1", "--agent", AGENT_A)
+    r = cli("adopt", "q1", "--agent", AGENT_B, "--force")
+    assert r.returncode == 1 and "cleared" in r.stderr
+
+
+def test_adopt_multi_key_is_all_or_nothing(cli, monkeypatch):
+    _post(cli, monkeypatch, AGENT_A, "dead")
+    _post(cli, monkeypatch, AGENT_A, "live")
+    _adopt_env(monkeypatch, "test {pane} = live")
+    r = cli("adopt", "q1", "q2", "--agent", AGENT_B)
+    assert r.returncode == 1
+    for key in ("q1", "q2"):
+        assert json.loads(cli("get", key, "--json").stdout)[0]["agent"] == AGENT_A

@@ -160,7 +160,8 @@ CREATE TABLE IF NOT EXISTS answers (
     selected     TEXT    NOT NULL DEFAULT '[]',
     text         TEXT,
     skipped      INTEGER NOT NULL DEFAULT 0,
-    created_at   TEXT    NOT NULL
+    created_at   TEXT    NOT NULL,
+    now          INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS reviews (
@@ -296,14 +297,21 @@ class Answer:
     text: str | None = None
     skipped: bool = False
     created_at: str = ""
+    # Wake the agent at once: a surface with no undo asks the pane to skip
+    # its cooldown. Left out of the dict when false, so older readers and
+    # every existing answer render exactly as before.
+    now: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "selected": self.selected,
             "text": self.text,
             "skipped": self.skipped,
             "created_at": self.created_at,
         }
+        if self.now:
+            d["now"] = True
+        return d
 
 
 @dataclass
@@ -414,6 +422,16 @@ class Question:
             return "heard"
         return "sent"
 
+    @property
+    def parked(self) -> bool:
+        """A live review/plan row waiting on the agent (q660).
+
+        The human's latest verdict is newer than the agent's response, whether
+        or not the agent has read it. Computed from `heard_state`, no column:
+        the agent answering (`responded_at`) or a pass closing the row ends it.
+        """
+        return self.status == "live" and self.heard_state in ("sent", "heard")
+
     def idle_hours(self, now: datetime | None = None) -> float:
         """Hours since the row was last touched (`updated_at`)."""
         now = now or datetime.now(timezone.utc)
@@ -483,6 +501,7 @@ class Question:
             "updated_at": self.updated_at,
             "stale": self.stale(),
             "closed_by_pass": self.closed_by_pass,
+            "parked": self.parked,
             "idle_hours": round(self.idle_hours(), 1),
             "elaborate": self.elaborate,
             "elaborate_at": self.elaborate_at,
@@ -504,6 +523,29 @@ class Question:
                 if self.auto_pick is not None else None
             ),
         }
+
+
+def park_last(questions: Sequence[Question]) -> list[Question]:
+    """Stable-partition so parked top-level rows (q660) sort to the end.
+
+    `Store.tree()` lays out each top-level row's subtree as a contiguous run
+    (parent, then its children, depth-first); only the top-level row's
+    `parked` decides the move, so a run travels whole rather than splitting a
+    row from its own follow-ups. A flat list (every depth 0) is its own runs.
+    """
+    runs: list[list[Question]] = []
+    for q in questions:
+        if q.depth == 0:
+            runs.append([q])
+        elif runs:
+            runs[-1].append(q)
+        else:
+            # Defensive: a child promoted to depth 0 out-of-order should
+            # not happen, but never drop a row if it does.
+            runs.append([q])
+    kept = [run for run in runs if not run[0].parked]
+    moved = [run for run in runs if run[0].parked]
+    return [q for run in (*kept, *moved) for q in run]
 
 
 class AlreadyAnswered(RuntimeError):
@@ -568,6 +610,9 @@ class Store:
             )
         if "source" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN source TEXT")
+        acols = {r["name"] for r in self.conn.execute("PRAGMA table_info(answers)")}
+        if "now" not in acols:
+            self.conn.execute("ALTER TABLE answers ADD COLUMN now INTEGER NOT NULL DEFAULT 0")
         if "recommend" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN recommend TEXT")
         if "confidence" not in cols:
@@ -688,10 +733,11 @@ class Store:
                     selected     TEXT    NOT NULL DEFAULT '[]',
                     text         TEXT,
                     skipped      INTEGER NOT NULL DEFAULT 0,
-                    created_at   TEXT    NOT NULL
+                    created_at   TEXT    NOT NULL,
+                    now          INTEGER NOT NULL DEFAULT 0
                 )""",
-                """INSERT INTO answers_new (id, question_id, selected, text, skipped, created_at)
-                   SELECT id, question_id, selected, text, skipped, created_at FROM answers""",
+                """INSERT INTO answers_new (id, question_id, selected, text, skipped, created_at, now)
+                   SELECT id, question_id, selected, text, skipped, created_at, now FROM answers""",
                 "DROP TABLE answers",
                 "ALTER TABLE answers_new RENAME TO answers",
             ):
@@ -1010,8 +1056,10 @@ class Store:
         selected: Sequence[str] | None = None,
         text: str | None = None,
         skipped: bool = False,
+        wake_now: bool = False,
     ) -> Question:
-        """Append an answer.
+        """Append an answer. `wake_now` asks the pane to wake the agent without
+        waiting out its cooldown.
 
         A one-shot question flips to `answered`. A persistent one stays `live`
         and keeps its earlier verdicts: the append-only log is what lets a
@@ -1089,10 +1137,11 @@ class Store:
         try:
             self.conn.execute(
                 """
-                INSERT INTO answers (question_id, selected, text, skipped, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO answers (question_id, selected, text, skipped, created_at, now)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (q.id, json.dumps(list(selected or [])), text, 1 if skipped else 0, now),
+                (q.id, json.dumps(list(selected or [])), text, 1 if skipped else 0, now,
+                 1 if wake_now else 0),
             )
             self.conn.execute(
                 "UPDATE questions SET status = ?, updated_at = ?, "
@@ -2152,6 +2201,49 @@ class Store:
             raise
         return keys
 
+    def adopt(
+        self,
+        key: str,
+        *,
+        agent: str,
+        pane: str | None = None,
+        session: str | None = None,
+        project: str,
+    ) -> Question:
+        """Hand one row to `agent` (q663), restamping `pane`/`session` when given.
+
+        For a row whose owning session died: nobody else can answer, edit or
+        clear it. Mechanism only; the CLI decides whether the owner is really
+        gone. Like `rehome` it changes `agent` (never in `monitor._signature`)
+        and bumps `updated_at` in one transaction. Refuses a `cleared` row, a
+        retired row must not come back under an owner that never asked it.
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT id, status FROM questions WHERE project = ? AND key = ?",
+                (project, key),
+            ).fetchone()
+            if row is None:
+                raise KeyError(key)
+            if row["status"] not in ("open", "live", "elaborate", "answered"):
+                raise ValueError(f"{key} is {row['status']}; only a row still in play can be adopted")
+            sets, params = ["agent = ?", "updated_at = ?"], [agent, _now()]
+            if pane:
+                sets.append("pane = ?")
+                params.append(pane)
+            if session:
+                sets.append("session = ?")
+                params.append(session)
+            self.conn.execute(
+                f"UPDATE questions SET {', '.join(sets)} WHERE id = ?", (*params, row["id"])
+            )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        return self._get_by_id(int(row["id"]))
+
 
     # ---- internals --------------------------------------------------------
 
@@ -2199,6 +2291,7 @@ class Store:
                 text=a["text"],
                 skipped=bool(a["skipped"]),
                 created_at=a["created_at"],
+                now=bool(a["now"]),
             )
             for a in arows
         ]

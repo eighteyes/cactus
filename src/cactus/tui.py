@@ -71,7 +71,7 @@ from .scope import project_label
 from .sky import (SkyConfig, TuneField, slots as sky_slots, tuning_fields_for,
                   tuning_panel_of, tuning_panel_order)
 from .store import (ACTIONABLE, CONFIDENCE_GLYPH, DECOMPOSE_INSTRUCTION,
-                    AlreadyAnswered, Answer, Question, Store, stale_hours)
+                    AlreadyAnswered, Answer, Question, Store, park_last, stale_hours)
 
 POLL_INTERVAL = 0.5
 # Card first: the field gets only the rows the card leaves, and hides rather
@@ -374,6 +374,10 @@ def _card_lines(
         lines.append("")
         lines.append(Text(f"untouched {q.idle_label()}", style="dim"))
 
+    if q.parked:
+        lines.append("")
+        lines.append(Text("parked — waiting on the agent", style="dim"))
+
     heard = _heard_line(q)
     if heard:
         lines.append("")
@@ -473,7 +477,7 @@ def _card_lines(
         if q.pane:
             extras.append(("v", "visit"))
         if q.site:
-            extras.append(("w", "site"))
+            extras.append(("W", "site"))
     else:
         if q.kind == "confirm":
             pairs = _confirm_pairs(q)
@@ -491,7 +495,7 @@ def _card_lines(
         if q.pane:
             extras.append(("v", "visit"))
         if q.site:
-            extras.append(("w", "site"))
+            extras.append(("W", "site"))
         if q.act == "plan" and q.steps:
             # Past 9 steps the digits buffer briefly, so "1" then "2" reaches
             # step 12; the hint names the whole reachable range.
@@ -661,6 +665,8 @@ class QuestionBlock(ListItem):
             parts.append("draft")
         if _revised(q):
             parts.append("revised")
+        if q.parked:
+            parts.append("parked")
         if q.stale():
             parts.append(f"stale {q.idle_label()}")
         return " · ".join(parts)
@@ -684,8 +690,10 @@ class QuestionBlock(ListItem):
         self._dim(question)
 
     def _dim(self, question: Question) -> None:
-        """`-sent` / `-heard` while a review/plan verdict awaits the agent (q405)."""
+        """`-sent` / `-heard` while a review/plan verdict awaits the agent (q405);
+        `-parked` while the row sorts last for it (q660)."""
         state = question.heard_state
+        self.set_class(question.parked, "-parked")
         self.set_class(state == "sent", "-sent")
         self.set_class(state == "heard", "-heard")
         self.set_class(question.stale(), "-stale")
@@ -810,7 +818,7 @@ class CactusApp(App[int]):
     #card.-sent #card-text, #card.-heard #card-text {
         opacity: 60%;
     }
-    QuestionBlock.-sent, QuestionBlock.-heard, QuestionBlock.-stale {
+    QuestionBlock.-sent, QuestionBlock.-heard, QuestionBlock.-stale, QuestionBlock.-parked {
         opacity: 60%;
     }
     /* Card first: the text takes every row it needs, up to the whole card
@@ -879,7 +887,8 @@ class CactusApp(App[int]):
         Binding("T", "open_tuning", "Tune"),
         Binding("p", "poke", "Poke", show=False),
         Binding("v", "visit", "Visit", show=False),
-        Binding("w", "open_site", "Site", show=False),
+        Binding("w", "write", "Write", show=False),
+        Binding("W", "open_site", "Site", show=False),
         Binding("C", "copy_command", "Copy", show=False),
         Binding("R", "run_command", "Run", show=False),
         Binding("O", "open_output", "Output", show=False),
@@ -969,6 +978,8 @@ class CactusApp(App[int]):
         # Set while the input is open for `e`'s prompt, so on_input_submitted
         # and escape route to the elaborate request instead of an answer.
         self.elaborating = False
+        # With `elaborating`, routes the open input to `w` (write) instead of `e`.
+        self.writing = False
         self.last_cursor: tuple[int, str, int] = (-1, "", -1)
         self._rebuilding = False
         # One lock serializes every reload and every rail rebuild: the rebuild
@@ -1820,31 +1831,8 @@ class CactusApp(App[int]):
         """
         return [r["project"] for r in self._live_projects_rows()]
 
-    @staticmethod
-    def _reorder_revised(questions: list[Question]) -> list[Question]:
-        """Stable-partition so a revised row's subtree moves to the rail's end.
-
-        `store.tree()` already lays out each top-level row's subtree as a
-        contiguous run (parent, then its children, depth-first) — only
-        top-level revised-ness decides the move (q311), so a run travels
-        whole rather than splitting a row from its own follow-ups.
-        """
-        runs: list[list[Question]] = []
-        for q in questions:
-            if q.depth == 0:
-                runs.append([q])
-            elif runs:
-                runs[-1].append(q)
-            else:
-                # Defensive: a child promoted to depth 0 out-of-order should
-                # not happen, but never drop a row if it does.
-                runs.append([q])
-        kept = [run for run in runs if not _revised(run[0])]
-        moved = [run for run in runs if _revised(run[0])]
-        return [q for run in (*kept, *moved) for q in run]
-
     def _load_questions(self) -> None:
-        self.questions = self._reorder_revised(self.store.tree(
+        self.questions = park_last(self.store.tree(
             project=self.current_project,
             status=list(ACTIONABLE),
             all_projects=self.current_project is None,
@@ -1855,7 +1843,7 @@ class CactusApp(App[int]):
         live = self._live_projects()
         if live and self.current_project not in live:
             self.current_project = live[0]
-            self.questions = self._reorder_revised(self.store.tree(
+            self.questions = park_last(self.store.tree(
                 project=self.current_project, status=list(ACTIONABLE)
             ))
             self.questions = self._raise_blocking_acp(self.questions)
@@ -2181,8 +2169,10 @@ class CactusApp(App[int]):
                 items.append(("p", "poke"))
             if self.check_action("visit", ()):
                 items.append(("v", "visit"))
+            if self.check_action("write", ()):
+                items.append(("w", "write"))
             if self.check_action("open_site", ()):
-                items.append(("w", "site"))
+                items.append(("W", "site"))
             items.append(("`", "seed"))
             return items
 
@@ -2256,8 +2246,10 @@ class CactusApp(App[int]):
             items.append(("p", "poke"))
         if self.check_action("visit", ()):
             items.append(("v", "visit"))
+        if self.check_action("write", ()):
+            items.append(("w", "write"))
         if self.check_action("open_site", ()):
-            items.append(("w", "site"))
+            items.append(("W", "site"))
         if self.check_action("undo", ()):
             items.append(("u", "undo"))
         items.append(("`", "seed"))
@@ -2392,6 +2384,8 @@ class CactusApp(App[int]):
                 return bool(q.files)
             if action == "open_site":
                 return bool(q.site)
+            if action == "write":
+                return _pokeable(q)
             if action == "select_choice":
                 return self.file_pending is not None
             return action in (
@@ -2430,6 +2424,8 @@ class CactusApp(App[int]):
             return bool(q.pane)
         if action == "open_site":
             return bool(q.site)
+        if action == "write":
+            return q.status != "cleared" and _pokeable(q)
         if action == "undo":
             return bool(self.undo_stack)
         if action in ("elaborate", "decompose"):
@@ -2915,6 +2911,9 @@ class CactusApp(App[int]):
         counts = f"{open_total} open"
         if live_total:
             counts += f" · {live_total} live"
+        parked_total = sum(1 for q in self.store.list(status="live", all_projects=True) if q.parked)
+        if parked_total:
+            counts += f" · {parked_total} parked"
         undo = ""
         if self.undo_stack:
             last = self.undo_stack[-1]
@@ -3268,6 +3267,16 @@ class CactusApp(App[int]):
                 self._rebuild_status_bar()
                 event.stop()
         if event.key == "w":
+            # write only binds on a reachable, non-cleared row (check_action).
+            q = self._current_question()
+            if q is not None and not self.check_action("write", ()):
+                self.flash = (
+                    f"{q.key} is cleared" if q.status == "cleared"
+                    else f"{q.key} has no agent to write to"
+                )
+                self._rebuild_status_bar()
+                event.stop()
+        if event.key == "W":
             # open_site only binds on a row with a site (check_action).
             q = self._current_question()
             if q is not None and not q.site:
@@ -3443,11 +3452,45 @@ class CactusApp(App[int]):
         if q is None or q.status not in ("open", "live"):
             return
         self.elaborating = True
+        self.writing = False
         inp = self.query_one("#answer-input", Input)
         inp.value = ""
         inp.placeholder = "elaborate: — enter to send, esc to cancel"
         inp.display = True
         inp.focus()
+
+    def action_write(self) -> None:
+        """`w`: open the input as an optional focus line for a write-up.
+
+        Rides `elaborating` (so every text-entry guard holds) plus `writing`;
+        enter sends the owner a nudge, escape cancels. Empty input is allowed.
+        """
+        q = self._current_question()
+        if q is None or not self.check_action("write", ()):
+            return
+        self.elaborating = True
+        self.writing = True
+        inp = self.query_one("#answer-input", Input)
+        inp.value = ""
+        inp.placeholder = "write: focus (optional) — enter to send, esc to cancel"
+        inp.display = True
+        inp.focus()
+
+    async def _submit_write(self, q: Question, focus: str) -> None:
+        from .poke import PokeError, poke, write_message
+
+        message = write_message(q.key, project_label(q.project), q.text, focus)
+        try:
+            poke(q.agent, pane=q.pane, session=q.session, message=message, webhook=False)
+        except PokeError as exc:
+            self.flash = str(exc)
+        else:
+            self.flash = f"write asked of {q.pane or q.agent}"
+        self.elaborating = False
+        self.writing = False
+        self._hide_input()
+        self.query_one("#rail-list", ListView).focus()
+        self._rebuild_status_bar()
 
     async def action_decompose(self) -> None:
         """`D`: ask the owner to split a complex row via elaborate workflow."""
@@ -3507,6 +3550,9 @@ class CactusApp(App[int]):
         if q is None:
             return
         value = event.value.strip()
+        if self.elaborating and self.writing:
+            await self._submit_write(q, value)
+            return
         if self.elaborating:
             await self._submit_elaborate(q, value)
             return
@@ -3909,12 +3955,21 @@ class CactusApp(App[int]):
             self._load_questions()
             self.last_cursor = self.store.cursor()
             if self.questions:
+                # The answered row may have parked to the rail's end (q660):
+                # land on the next active row, else any active one, else the
+                # first parked row.
+                active = [i for i, q in enumerate(self.questions) if not q.parked]
                 next_index = min(old_index, len(self.questions) - 1)
+                if active:
+                    next_index = next((i for i in active if i >= old_index), active[0])
                 self.focused_key = self.questions[next_index].key
                 self.multi_selected = self._default_multi_selection(self.focused_key)
             else:
                 self.focused_key = None
+            # `_load_questions` may have moved to the next project.
+            self._rebuild_project_banner()
             self._rebuild_project_head()
+            self._rebuild_projects_pane()
             await self._rebuild_rail_locked()
         if self._reload_pending:
             await self._reload()

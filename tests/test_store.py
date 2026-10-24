@@ -689,3 +689,89 @@ def test_wait_returns_when_pass_closes_a_live_review(store: Store, project: str)
     got = store.wait_for_answer(q.key, project=project, timeout=10, poll=0.05)
     t.join()
     assert got is not None and got.status == "cleared" and got.answer.selected == ["pass"]
+
+
+def test_parked_after_fail_unparked_by_response_pass_closes(store: Store, project: str) -> None:
+    q = _live_review(store, project)
+    assert store.get(q.key, project=project).parked is False  # no verdict yet
+
+    store.answer(q.key, project=project, selected=["fail"])
+    got = store.get(q.key, project=project)
+    assert got.parked and got.as_dict()["parked"] is True
+    store.mark_heard(q.id)
+    assert store.get(q.key, project=project).parked  # heard still waits on the agent
+
+    store.mark_responded(q.id)
+    assert store.get(q.key, project=project).parked is False
+
+    store.answer(q.key, project=project, selected=["pass"])  # pass closes, never parks
+    assert store.get(q.key, project=project).parked is False
+
+
+def test_plan_with_verdict_parks_and_non_persistent_never(store: Store, project: str) -> None:
+    p = store.ask("plan", project=project, cwd=project, agent="a1", kind="text", act="plan")
+    store.answer(p.key, project=project, text="reorder step 2")
+    assert store.get(p.key, project=project).parked
+
+    a = store.ask("pick", project=project, cwd=project, agent="a1", choices=[Choice("x"), Choice("y")])
+    store.answer(a.key, project=project, selected=["x"])
+    assert store.get(a.key, project=project).parked is False
+
+
+def test_park_last_moves_parked_runs_whole_and_keeps_order(store: Store, project: str) -> None:
+    from cactus.store import park_last
+
+    r = _live_review(store, project)
+    store.answer(r.key, project=project, selected=["fail"])
+    a = store.ask("later", project=project, cwd=project, agent="a1")
+    c = store.ask("child", project=project, cwd=project, agent="a1", parent_key=r.key)
+    b = store.ask("last", project=project, cwd=project, agent="a1")
+    rows = store.tree(project=project, status=["open", "live"])
+    assert [q.key for q in rows] == [r.key, c.key, a.key, b.key]
+    assert [q.key for q in park_last(rows)] == [a.key, b.key, r.key, c.key]
+
+    store.mark_responded(r.id)  # revised: active again, back in place
+    rows = store.tree(project=project, status=["open", "live"])
+    assert [q.key for q in park_last(rows)] == [r.key, c.key, a.key, b.key]
+
+
+def test_adopt_reassigns_restamps_and_bumps(store: Store, project: str) -> None:
+    """adopt moves agent, restamps pane/session when given, bumps updated_at."""
+    q = store.ask("x", project=project, cwd=project, agent="old", pane="w1:p1", session="s1")
+    before = store.cursor()
+    new = store.adopt(q.key, agent="new", pane="w2:p2", session="s2", project=project)
+    assert (new.agent, new.pane, new.session) == ("new", "w2:p2", "s2")
+    assert store.cursor() != before
+    kept = store.adopt(q.key, agent="newer", project=project)
+    assert (kept.agent, kept.pane, kept.session) == ("newer", "w2:p2", "s2")
+
+
+def test_adopt_refuses_cleared_and_missing(store: Store, project: str) -> None:
+    q = store.ask("x", project=project, cwd=project, agent="old")
+    store.clear(keys=[q.key], project=project)
+    with pytest.raises(ValueError):
+        store.adopt(q.key, agent="new", project=project)
+    with pytest.raises(KeyError):
+        store.adopt("q99", agent="new", project=project)
+
+
+def test_answer_now_survives_reload_and_old_answers_table_loads(
+    store: Store, project: str, scratch_env: dict[str, str]
+) -> None:
+    """`now` is stored on the answer; a database from before the column opens clean."""
+    q = store.ask("pick", project=project, cwd=project, agent=AGENT, choices=[Choice("a")])
+    done = store.answer(q.key, project=project, selected=["a"], wake_now=True)
+    assert done.answer is not None and done.answer.now is True
+    assert done.answer.as_dict()["now"] is True
+
+    # Drop the column the way a pre-`now` database lacks it, then reopen.
+    store.conn.execute("ALTER TABLE answers DROP COLUMN now")
+    store.close()
+    old = Store(scratch_env["CACTUS_DB"])
+    try:
+        row = old.get(q.key, project=project)
+        assert row is not None and row.answer is not None
+        assert row.answer.now is False
+        assert "now" not in row.answer.as_dict()
+    finally:
+        old.close()
