@@ -572,6 +572,27 @@ test('h opens settings; the cooldown and autoshow are kept in the store', async 
   expect(await ui.find({ text: /Which auth backend/ })).toBeDefined()
 })
 
+test('idle is the last cooldown: a wake goes after the pane sits quiet', async ($, on) => {
+  const calls: string[][] = []
+  const woke: string[] = []
+  on('store.set', () => ({ value: undefined }))
+  on('prompt.submit', (_$, e) => {
+    woke.push(e.text)
+    return { text: e.text }
+  })
+  const clock = mock.clock(on)
+  const ui = await mounted($, on, ROW, calls, 'terminal')
+  await ui.press({ key: 'settings' })
+  for (let i = 0; i < 3; i++) await ui.press({ key: 'set:cooldown' })
+  expect(await ui.find({ text: /wake cooldown: idle \(15s quiet, agent free\)/ })).toBeDefined()
+  await ui.press({ key: 'set:close' })
+  await ui.press({ key: 'q7:local' })
+  await clock.advance(14_000)
+  expect(woke).toEqual([])
+  await clock.advance(2_000)
+  expect(woke.join('\n')).toContain('answer: local')
+})
+
 test('escape out of the input takes the keys back onto the header; escape on a header leaves', async ($, on) => {
   const calls: string[][] = []
   const opens: { focus?: true }[] = []

@@ -51,8 +51,9 @@ export type Row = {
   parked?: boolean
 }
 
-// Kept in $.store across sessions. cooldown: seconds a wake waits so undo can cancel it.
-export type PaneSettings = { autoshow: boolean; cooldown: number }
+// Kept in $.store across sessions. cooldown: seconds a wake waits so undo can cancel it,
+// or 'idle': until the pane sits quiet and the agent's turn has ended.
+export type PaneSettings = { autoshow: boolean; cooldown: number | 'idle' }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -68,6 +69,7 @@ declare module 'claude-code' {
       drafts: Record<string, string>
       settings: PaneSettings
       settingsOpen: boolean
+      // Seconds left per held wake; -1 once due but waiting out the agent's turn.
       held: Record<string, number>
     }
   }

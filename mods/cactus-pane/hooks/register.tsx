@@ -7,7 +7,7 @@
 // - /cactus-pane opens the pane focused; it also opens unasked at session start
 // - wakes this session when its own rows move, after a cooldown an undo cancels (n skips it), and turns its cactus waits off
 // - wakes the session once when one of its rows goes stale: reassert (bare edit) or clear
-// - h opens settings: autoshow at session start, wake cooldown; kept in $.store
+// - h opens settings: autoshow at session start, wake cooldown (or idle: you quiet, agent's turn over); kept in $.store
 // - Esc out of a text line takes the keys back onto the row header; Esc on a header leaves
 
 import { atom, read, update } from 'claude-code'
@@ -38,7 +38,9 @@ const settingsOpen = atom({ plugin: 'cactus-pane', key: 'settingsOpen' } as cons
 const held = atom({ plugin: 'cactus-pane', key: 'held' } as const, {})
 const SETTINGS_KEY = 'h'
 const SEND_KEY = 'n'
-const COOLDOWNS = [0, 5, 15, 30, 60]
+const COOLDOWNS: PaneSettings['cooldown'][] = [0, 5, 15, 30, 60, 'idle']
+// Under 'idle', how long the pane must sit untouched before a held wake goes.
+const IDLE_QUIET_MS = 15_000
 const UNDO_DEPTH = 20
 const RUN_TIMEOUT_MS = 600_000
 
@@ -184,6 +186,22 @@ let watched: { sid: string; rows: Map<string, Seen> } | null = null
 // change restarts the clock.
 const pending = new Map<string, { before: Seen; sig: string; due: number }>()
 let cooldownMs = 15_000
+// 'idle': a wake waits for you to go quiet in the pane and the agent's own turn to end.
+let idleMode = false
+let agentBusy = false
+
+function applyCooldown(s: PaneSettings): void {
+  idleMode = s.cooldown === 'idle'
+  cooldownMs = s.cooldown === 'idle' ? IDLE_QUIET_MS : s.cooldown * 1000
+}
+
+// Under 'idle', any touch in the pane pushes every held wake back to a fresh quiet spell.
+async function quiet($: EngineInterface): Promise<void> {
+  if (!idleMode || pending.size === 0) return
+  const at = await $.clock.now()
+  for (const [key, p] of pending) pending.set(key, { ...p, due: at + cooldownMs })
+  $.clock.after(cooldownMs, () => poll($))
+}
 
 // What a wake says about one row, and what is left for the agent to do. A
 // proper answer arrives whole and is cleared here, so it needs no get/clear.
@@ -254,6 +272,7 @@ async function wake($: EngineInterface, list: Row[]): Promise<void> {
     if (after === undefined || after.n > before.n || (after.status !== before.status && !QUIET.has(after.status))) {
       pending.set(key, { before, sig, due: at + cooldownMs })
       if (cooldownMs > 0) $.clock.after(cooldownMs, () => poll($))
+      await quiet($)
     }
   }
   watched = { sid, rows: now }
@@ -264,7 +283,7 @@ async function wake($: EngineInterface, list: Row[]): Promise<void> {
 async function sendNow($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
   for (const [key, p] of pending) pending.set(key, { ...p, due: at })
-  await flush($)
+  await flush($, true)
 }
 
 // This session's own stale rows already nudged. Seeded on first sight, so the
@@ -304,12 +323,16 @@ async function submitNudge($: EngineInterface, sid: string, lines: string[]): Pr
 }
 
 // Sends every held move whose cooldown ran out, and shows the rest counting down.
-async function flush($: EngineInterface): Promise<void> {
+// Under 'idle' a due wake also waits out the agent's turn (-1 in `held`); send-now forces it.
+async function flush($: EngineInterface, force = false): Promise<void> {
   const at = await $.clock.now()
-  const due = [...pending].filter(([, p]) => p.due <= at).map(([key]) => key)
+  const blocked = idleMode && agentBusy && !force
+  const due = blocked ? [] : [...pending].filter(([, p]) => p.due <= at).map(([key]) => key)
   for (const key of due) pending.delete(key)
   await update($, held, () =>
-    Object.fromEntries([...pending].map(([key, p]) => [key, Math.ceil((p.due - at) / 1000)])),
+    Object.fromEntries(
+      [...pending].map(([key, p]) => [key, p.due <= at ? -1 : Math.ceil((p.due - at) / 1000)]),
+    ),
   )
   if (due.length === 0) return
   const sid = await $.session.id()
@@ -472,16 +495,16 @@ async function loadSettings($: EngineInterface): Promise<PaneSettings> {
   const raw = (await $.store.get('settings').catch(() => undefined)) as Partial<PaneSettings> | undefined
   const s: PaneSettings = {
     autoshow: typeof raw?.autoshow === 'boolean' ? raw.autoshow : true,
-    cooldown: typeof raw?.cooldown === 'number' && raw.cooldown >= 0 ? raw.cooldown : 15,
+    cooldown: raw?.cooldown === 'idle' || (typeof raw?.cooldown === 'number' && raw.cooldown >= 0) ? raw.cooldown : 15,
   }
-  cooldownMs = s.cooldown * 1000
+  applyCooldown(s)
   await update($, settings, () => s)
   return s
 }
 
 async function changeSettings($: EngineInterface, fn: (s: PaneSettings) => PaneSettings): Promise<void> {
   const s = fn(await read($, settings))
-  cooldownMs = s.cooldown * 1000
+  applyCooldown(s)
   await update($, settings, () => s)
   await $.store.set('settings', s)
 }
@@ -860,7 +883,8 @@ export const register: Register = on => {
     if (!e.props.isFocused && ring?.endsWith(':text')) void reclaim($, ring).catch(() => undefined)
 
     if (await read($, settingsOpen)) {
-      const next = COOLDOWNS.find(c => c > prefs.cooldown) ?? COOLDOWNS[0] ?? 0
+      const next = COOLDOWNS[(COOLDOWNS.indexOf(prefs.cooldown) + 1) % COOLDOWNS.length] ?? 0
+      const said = (c: PaneSettings['cooldown']) => (c === 'idle' ? `idle (${IDLE_QUIET_MS / 1000}s quiet, agent free)` : `${c}s`)
       return (
         <Box flexDirection="column">
           <Text bold>cactus pane settings</Text>
@@ -873,7 +897,7 @@ export const register: Register = on => {
           />
           <Button
             key="set:cooldown"
-            label={`wake cooldown: ${prefs.cooldown}s (next ${next}s)`}
+            label={`wake cooldown: ${said(prefs.cooldown)} (next ${said(next)})`}
             hotkey="2"
             plain
             onPress={() => void changeSettings($, s => ({ ...s, cooldown: next }))}
@@ -1301,7 +1325,7 @@ export const register: Register = on => {
         {current !== undefined && card(current).controls}
         {Object.keys(holding).length > 0 && (
           <Text color="yellow">
-            {Object.entries(holding).map(([key, s]) => `${key} → agent in ${s}s`).join(' · ')}  ({SEND_KEY} sends now · u takes it back)
+            {Object.entries(holding).map(([key, s]) => (s < 0 ? `${key} → agent when its turn ends` : `${key} → agent in ${s}s`)).join(' · ')}  ({SEND_KEY} sends now · u takes it back)
           </Text>
         )}
         <Box display="none" flexDirection="row" columnGap={2}>
@@ -1341,7 +1365,23 @@ export const register: Register = on => {
   // Typing in a row's input is proof the ring is there.
   on('ui.input', ($, e, next) => {
     if (e.plugin === 'cactus-pane' && e.element.endsWith(':text')) ring = e.element
+    if (e.plugin === 'cactus-pane') void quiet($).catch(() => undefined)
     return next(e)
+  })
+
+  // The main loop's turn, for 'idle': a held wake goes once it ends.
+  on('turn.start', ($, e, next) => {
+    if (e.agentId === undefined) agentBusy = true
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (e.agentId === undefined) {
+      agentBusy = false
+      if (pending.size > 0) $.clock.after(0, () => poll($))
+    }
+    return done
   })
 
   on('ui.focus', async ($, e, next) => {
@@ -1351,6 +1391,7 @@ export const register: Register = on => {
     }
     const moved = await next(e)
     if (!('deny' in moved)) ring = e.element ?? null
+    void quiet($).catch(() => undefined)
     return moved
   })
 }
