@@ -4,6 +4,8 @@
 // - Default to ⌃Space (kVK_Space + controlKey); read an override from
 //   UserDefaults keys "hotkeyKeyCode"/"hotkeyModifiers" when present.
 // - Invoke its callback on the main thread.
+// - Re-register live with a new combo (`update`), persisting it to the same
+//   defaults keys; `suspend`/`resume` free the combo while Settings records one.
 // - Keep the OSStatus of both Carbon calls: expose `isRegistered` and a human
 //   `failure` string (key rendered from the real keyCode/modifiers), and log
 //   a failure to stderr.
@@ -31,14 +33,51 @@ final class HotKey {
         unregister()
     }
 
-    private func register() {
+    static let defaultKeyCode = UInt32(kVK_Space)
+    static let defaultModifiers = UInt32(controlKey)
+
+    /// The combo in effect: the defaults override, else ⌃Space.
+    static var current: (keyCode: UInt32, modifiers: UInt32) {
         let defaults = UserDefaults.standard
-        let keyCode: UInt32 = defaults.object(forKey: "hotkeyKeyCode") != nil
-            ? UInt32(defaults.integer(forKey: "hotkeyKeyCode"))
-            : UInt32(kVK_Space)
-        let modifiers: UInt32 = defaults.object(forKey: "hotkeyModifiers") != nil
-            ? UInt32(defaults.integer(forKey: "hotkeyModifiers"))
-            : UInt32(controlKey)
+        let keyCode = defaults.object(forKey: "hotkeyKeyCode") != nil
+            ? UInt32(defaults.integer(forKey: "hotkeyKeyCode")) : defaultKeyCode
+        let modifiers = defaults.object(forKey: "hotkeyModifiers") != nil
+            ? UInt32(defaults.integer(forKey: "hotkeyModifiers")) : defaultModifiers
+        return (keyCode, modifiers)
+    }
+
+    /// "⌃Space" for the combo in effect.
+    static var currentLabel: String {
+        describe(keyCode: current.keyCode, modifiers: current.modifiers)
+    }
+
+    /// Save a new combo and register it in place of the old one.
+    func update(keyCode: UInt32, modifiers: UInt32) {
+        let defaults = UserDefaults.standard
+        if keyCode == Self.defaultKeyCode && modifiers == Self.defaultModifiers {
+            defaults.removeObject(forKey: "hotkeyKeyCode")
+            defaults.removeObject(forKey: "hotkeyModifiers")
+        } else {
+            defaults.set(Int(keyCode), forKey: "hotkeyKeyCode")
+            defaults.set(Int(modifiers), forKey: "hotkeyModifiers")
+        }
+        unregister()
+        register()
+    }
+
+    /// Release the combo so a key recorder can receive it.
+    func suspend() {
+        unregister()
+    }
+
+    /// Register the saved combo again after `suspend`.
+    func resume() {
+        unregister()
+        register()
+    }
+
+    private func register() {
+        let (keyCode, modifiers) = Self.current
 
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
@@ -102,11 +141,43 @@ final class HotKey {
         if modifiers & UInt32(optionKey) != 0 { out += "⌥" }
         if modifiers & UInt32(shiftKey) != 0 { out += "⇧" }
         if modifiers & UInt32(cmdKey) != 0 { out += "⌘" }
-        let names: [Int: String] = [
+        return out + (keyNames[Int(keyCode)] ?? "key \(keyCode)")
+    }
+
+    /// ANSI virtual key codes to labels, for the menu and Settings.
+    static let keyNames: [Int: String] = {
+        var names: [Int: String] = [
             kVK_Space: "Space", kVK_Return: "Return", kVK_Tab: "Tab",
-            kVK_Escape: "Esc", kVK_Delete: "Delete",
+            kVK_Escape: "Esc", kVK_Delete: "Delete", kVK_ForwardDelete: "⌦",
+            kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
+            kVK_Home: "Home", kVK_End: "End", kVK_PageUp: "PgUp", kVK_PageDown: "PgDn",
+            kVK_ANSI_Grave: "`", kVK_ANSI_Minus: "-", kVK_ANSI_Equal: "=",
+            kVK_ANSI_LeftBracket: "[", kVK_ANSI_RightBracket: "]", kVK_ANSI_Backslash: "\\",
+            kVK_ANSI_Semicolon: ";", kVK_ANSI_Quote: "'", kVK_ANSI_Comma: ",",
+            kVK_ANSI_Period: ".", kVK_ANSI_Slash: "/",
         ]
-        return out + (names[Int(keyCode)] ?? "key \(keyCode)")
+        let letters: [(Int, String)] = [
+            (kVK_ANSI_A, "A"), (kVK_ANSI_B, "B"), (kVK_ANSI_C, "C"), (kVK_ANSI_D, "D"),
+            (kVK_ANSI_E, "E"), (kVK_ANSI_F, "F"), (kVK_ANSI_G, "G"), (kVK_ANSI_H, "H"),
+            (kVK_ANSI_I, "I"), (kVK_ANSI_J, "J"), (kVK_ANSI_K, "K"), (kVK_ANSI_L, "L"),
+            (kVK_ANSI_M, "M"), (kVK_ANSI_N, "N"), (kVK_ANSI_O, "O"), (kVK_ANSI_P, "P"),
+            (kVK_ANSI_Q, "Q"), (kVK_ANSI_R, "R"), (kVK_ANSI_S, "S"), (kVK_ANSI_T, "T"),
+            (kVK_ANSI_U, "U"), (kVK_ANSI_V, "V"), (kVK_ANSI_W, "W"), (kVK_ANSI_X, "X"),
+            (kVK_ANSI_Y, "Y"), (kVK_ANSI_Z, "Z"),
+            (kVK_ANSI_0, "0"), (kVK_ANSI_1, "1"), (kVK_ANSI_2, "2"), (kVK_ANSI_3, "3"),
+            (kVK_ANSI_4, "4"), (kVK_ANSI_5, "5"), (kVK_ANSI_6, "6"), (kVK_ANSI_7, "7"),
+            (kVK_ANSI_8, "8"), (kVK_ANSI_9, "9"),
+        ]
+        for (code, label) in letters { names[code] = label }
+        let fkeys = [kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8,
+                     kVK_F9, kVK_F10, kVK_F11, kVK_F12]
+        for (i, code) in fkeys.enumerated() { names[code] = "F\(i + 1)" }
+        return names
+    }()
+
+    /// F1-F12 may stand alone; every other key needs a modifier.
+    static func isFunctionKey(_ keyCode: UInt32) -> Bool {
+        (keyNames[Int(keyCode)] ?? "").range(of: "^F[0-9]+$", options: .regularExpression) != nil
     }
 
     /// Failure text for the two Carbon statuses, nil when both are noErr.
@@ -128,9 +199,12 @@ final class HotKey {
     private func unregister() {
         if let hotKeyRef {
             UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
         }
         if let handler {
             RemoveEventHandler(handler)
+            self.handler = nil
         }
+        isRegistered = false
     }
 }

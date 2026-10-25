@@ -2,7 +2,7 @@
 // Responsibilities:
 // - Bootstrap NSApplication as a menu-bar-only (.accessory) app, no Dock icon.
 // - Own the long-lived pieces: CactusCLI, Poller, the floating Panel, the
-//   global HotKey, and the StatusItem, wiring them together.
+//   global HotKey, the StatusItem and the Settings window, wiring them together.
 // - The sidebar stays up when another app becomes active; hotkey, status
 //   menu and Esc all toggle/hide it through CactusPanel.
 // - Run the app.
@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: CactusPanel!
     private var hotKey: HotKey!
     private var statusItemController: StatusItemController!
+    private var settings: SettingsWindowController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -36,9 +37,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel?.toggle()
         }
 
-        statusItemController = StatusItemController(poller: poller, hotKeyFailure: hotKey.failure) { [weak panel] in
-            panel?.toggle()
-        }
+        settings = SettingsWindowController(hotKey: hotKey)
+
+        statusItemController = StatusItemController(
+            poller: poller,
+            hotKey: hotKey,
+            onToggle: { [weak panel] in panel?.toggle() },
+            onSettings: { [weak self] in self?.settings.show() }
+        )
 
         poller.setVisible(false)
     }
